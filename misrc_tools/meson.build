@@ -144,3 +144,53 @@ executable('misrc_capture',
               link_args: ldflags + ldflags_capture,
               c_args: cflags,
               install: true)
+
+# GUI application (requires raylib)
+raylib_dep = dependency('raylib', required: false)
+
+if raylib_dep.found()
+  sources_gui = [
+    'misrc_gui/misrc_gui.c',
+    'misrc_gui/gui_ui.c',
+    'misrc_gui/gui_render.c',
+    'misrc_gui/gui_capture.c',
+    'misrc_gui/clay_renderer_raylib.c',
+    'extract.c',
+    'ringbuffer.c',
+    version_target
+  ]
+
+  if host_cpu_family == 'x86_64'
+    sources_gui += nasm_genb
+  endif
+
+  gui_deps = deps + [ raylib_dep ]
+
+  gui_cflags = cflags
+
+  # GUI doesn't need all the ldflags_capture (e.g., onecore conflicts with raylib's CloseWindow)
+  gui_ldflags = ldflags
+
+  if host_system == 'windows' or host_system == 'cygwin'
+    gui_ldflags += ['-static']
+    # gui_ldflags += ['-mwindows']  # Hide console window - disabled for debugging
+    gui_ldflags += ['-lopengl32', '-lgdi32', '-lwinmm']
+    # Need mincore for VirtualAlloc2/MapViewOfFile3 used by ringbuffer
+    gui_ldflags += ['-lmincore']
+  elif host_system == 'linux'
+    gui_ldflags += ['-lGL', '-lm', '-lpthread', '-ldl', '-lrt', '-lX11']
+  elif host_system == 'darwin'
+    gui_ldflags += ['-Wl,-framework,OpenGL', '-Wl,-framework,Cocoa', '-Wl,-framework,IOKit', '-Wl,-framework,CoreAudio', '-Wl,-framework,CoreVideo']
+  endif
+
+  executable('misrc_gui',
+              sources_gui,
+              dependencies: gui_deps,
+              link_args: gui_ldflags,
+              c_args: gui_cflags,
+              install: true)
+
+  message('raylib found, building GUI application')
+else
+  message('raylib not found, skipping GUI application')
+endif

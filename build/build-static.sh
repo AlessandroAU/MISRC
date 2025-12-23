@@ -109,6 +109,27 @@ else
 fi
 cd ../../
 
+# Build raylib (static)
+curl -L --silent -o "raylib-5.5.tar.gz" "https://github.com/raysan5/raylib/archive/refs/tags/5.5.tar.gz"
+tar xzf raylib-5.5.tar.gz
+cd raylib-5.5
+mkdir build
+cd build
+cmake -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DBUILD_SHARED_LIBS=OFF -DBUILD_EXAMPLES=OFF -DCMAKE_INSTALL_PREFIX="${WORKSPACE}" -DCMAKE_BUILD_TYPE=Release ../
+if [[ ("$OSTYPE" == "cygwin"*) || ("$OSTYPE" == "msys"*) ]]; then
+  cmake --build . --config Release
+  cmake --install .
+else
+  make
+  make install
+fi
+cd ../../
+
+# Download Clay (header-only library)
+curl -L --silent -o "clay.h" "https://raw.githubusercontent.com/nicbarker/clay/main/clay.h"
+mkdir -p "${WORKSPACE}/include"
+cp clay.h "${WORKSPACE}/include/"
+
 cd ../misrc_tools
 meson setup ../build/misrc --prefix="${WORKSPACE}" --buildtype=release --default-library=static --libdir="${WORKSPACE}"/lib
 ninja -C ../build/misrc
