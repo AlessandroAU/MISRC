@@ -12,8 +12,9 @@
 #include <string.h>
 
 // Dropdown identifiers
-#define DROPDOWN_DEVICE     "Device"
-#define DROPDOWN_SCOPE_MODE "ScopeMode"
+#define DROPDOWN_DEVICE       "Device"
+#define DROPDOWN_SCOPE_MODE   "ScopeMode"
+#define DROPDOWN_TRIGGER_MODE "TriggerMode"
 
 // Color conversions
 static inline Clay_Color to_clay_color(Color c) {
@@ -304,8 +305,8 @@ static void render_channel_stats(gui_app_t *app, int channel) {
             .backgroundColor = to_clay_color(COLOR_TEXT_DIM)
         }) {}
 
-        // Trigger section header row with enable button
-        CLAY(CLAY_IDI("TrigHeader", channel), {
+        // Trigger row with combined mode/off dropdown
+        CLAY(CLAY_IDI("TrigRow", channel), {
             .layout = {
                 .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0) },
                 .layoutDirection = CLAY_LEFT_TO_RIGHT,
@@ -316,18 +317,100 @@ static void render_channel_stats(gui_app_t *app, int channel) {
             CLAY_TEXT(CLAY_STRING("Trigger:"),
                 CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
 
-            // Enable button
-            Color enable_color = trig->enabled ? channel_color : COLOR_BUTTON;
-            CLAY(CLAY_IDI("TrigEnable", channel), {
+            // Trigger mode dropdown button (includes Off option)
+            const char *trig_mode_name;
+            if (!trig->enabled) {
+                trig_mode_name = "Off";
+            } else {
+                switch (trig->trigger_mode) {
+                    case TRIGGER_MODE_RISING:     trig_mode_name = "Rising"; break;
+                    case TRIGGER_MODE_FALLING:    trig_mode_name = "Falling"; break;
+                    case TRIGGER_MODE_CVBS_HSYNC: trig_mode_name = "CVBS"; break;
+                    default:                      trig_mode_name = "Rising"; break;
+                }
+            }
+            bool trig_dropdown_open = gui_dropdown_is_open(DROPDOWN_TRIGGER_MODE, channel);
+            Color btn_color = trig->enabled ? channel_color : COLOR_BUTTON;
+            if (trig_dropdown_open) btn_color = COLOR_BUTTON_HOVER;
+            CLAY(CLAY_IDI("TrigModeBtn", channel), {
                 .layout = {
-                    .sizing = { CLAY_SIZING_FIXED(32), CLAY_SIZING_FIXED(18) },
+                    .sizing = { CLAY_SIZING_FIXED(60), CLAY_SIZING_FIXED(18) },
                     .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER }
                 },
-                .backgroundColor = to_clay_color(enable_color),
+                .backgroundColor = to_clay_color(btn_color),
                 .cornerRadius = CLAY_CORNER_RADIUS(3)
             }) {
-                CLAY_TEXT(trig->enabled ? CLAY_STRING("ON") : CLAY_STRING("OFF"),
-                    CLAY_TEXT_CONFIG({ .fontSize = 12, .textColor = to_clay_color(COLOR_TEXT) }));
+                CLAY_TEXT(make_string(trig_mode_name),
+                    CLAY_TEXT_CONFIG({ .fontSize = 11, .textColor = to_clay_color(COLOR_TEXT) }));
+            }
+        }
+
+        // Trigger mode dropdown options (floating, visible when open)
+        if (gui_dropdown_is_open(DROPDOWN_TRIGGER_MODE, channel)) {
+            CLAY(CLAY_IDI("TrigModeOpts", channel), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_FIXED(60), CLAY_SIZING_FIT(0) },
+                    .layoutDirection = CLAY_TOP_TO_BOTTOM
+                },
+                .floating = {
+                    .attachTo = CLAY_ATTACH_TO_ELEMENT_WITH_ID,
+                    .parentId = CLAY_IDI("TrigModeBtn", channel).id,
+                    .attachPoints = { .element = CLAY_ATTACH_POINT_LEFT_TOP, .parent = CLAY_ATTACH_POINT_LEFT_BOTTOM }
+                },
+                .backgroundColor = to_clay_color(COLOR_PANEL_BG),
+                .cornerRadius = CLAY_CORNER_RADIUS(3)
+            }) {
+                // Off option
+                Color off_color = !trig->enabled ? COLOR_BUTTON_ACTIVE : COLOR_BUTTON;
+                CLAY(CLAY_IDI("TrigModeOptOff", channel), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(20) },
+                        .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER }
+                    },
+                    .backgroundColor = to_clay_color(off_color)
+                }) {
+                    CLAY_TEXT(CLAY_STRING("Off"),
+                        CLAY_TEXT_CONFIG({ .fontSize = 11, .textColor = to_clay_color(COLOR_TEXT) }));
+                }
+
+                // Rising edge option
+                Color rising_color = (trig->enabled && trig->trigger_mode == TRIGGER_MODE_RISING) ? COLOR_BUTTON_ACTIVE : COLOR_BUTTON;
+                CLAY(CLAY_IDI("TrigModeOptRising", channel), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(20) },
+                        .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER }
+                    },
+                    .backgroundColor = to_clay_color(rising_color)
+                }) {
+                    CLAY_TEXT(CLAY_STRING("Rising"),
+                        CLAY_TEXT_CONFIG({ .fontSize = 11, .textColor = to_clay_color(COLOR_TEXT) }));
+                }
+
+                // Falling edge option
+                Color falling_color = (trig->enabled && trig->trigger_mode == TRIGGER_MODE_FALLING) ? COLOR_BUTTON_ACTIVE : COLOR_BUTTON;
+                CLAY(CLAY_IDI("TrigModeOptFalling", channel), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(20) },
+                        .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER }
+                    },
+                    .backgroundColor = to_clay_color(falling_color)
+                }) {
+                    CLAY_TEXT(CLAY_STRING("Falling"),
+                        CLAY_TEXT_CONFIG({ .fontSize = 11, .textColor = to_clay_color(COLOR_TEXT) }));
+                }
+
+                // CVBS H-Sync option
+                Color cvbs_color = (trig->enabled && trig->trigger_mode == TRIGGER_MODE_CVBS_HSYNC) ? COLOR_BUTTON_ACTIVE : COLOR_BUTTON;
+                CLAY(CLAY_IDI("TrigModeOptCVBS", channel), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(20) },
+                        .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER }
+                    },
+                    .backgroundColor = to_clay_color(cvbs_color)
+                }) {
+                    CLAY_TEXT(CLAY_STRING("CVBS"),
+                        CLAY_TEXT_CONFIG({ .fontSize = 11, .textColor = to_clay_color(COLOR_TEXT) }));
+                }
             }
         }
 
@@ -738,8 +821,34 @@ void gui_handle_interactions(gui_app_t *app) {
         for (int ch = 0; ch < 2; ch++) {
             channel_trigger_t *trig = (ch == 0) ? &app->trigger_a : &app->trigger_b;
 
-            if (Clay_PointerOver(CLAY_IDI("TrigEnable", ch))) {
-                trig->enabled = !trig->enabled;
+            // Per-channel trigger mode dropdown (includes Off option)
+            if (Clay_PointerOver(CLAY_IDI("TrigModeBtn", ch))) {
+                gui_dropdown_toggle(DROPDOWN_TRIGGER_MODE, ch);
+                dropdown_clicked = true;
+            } else if (gui_dropdown_is_open(DROPDOWN_TRIGGER_MODE, ch)) {
+                if (Clay_PointerOver(CLAY_IDI("TrigModeOptOff", ch))) {
+                    trig->enabled = false;
+                    gui_dropdown_close_all();
+                    dropdown_clicked = true;
+                }
+                if (Clay_PointerOver(CLAY_IDI("TrigModeOptRising", ch))) {
+                    trig->enabled = true;
+                    trig->trigger_mode = TRIGGER_MODE_RISING;
+                    gui_dropdown_close_all();
+                    dropdown_clicked = true;
+                }
+                if (Clay_PointerOver(CLAY_IDI("TrigModeOptFalling", ch))) {
+                    trig->enabled = true;
+                    trig->trigger_mode = TRIGGER_MODE_FALLING;
+                    gui_dropdown_close_all();
+                    dropdown_clicked = true;
+                }
+                if (Clay_PointerOver(CLAY_IDI("TrigModeOptCVBS", ch))) {
+                    trig->enabled = true;
+                    trig->trigger_mode = TRIGGER_MODE_CVBS_HSYNC;
+                    gui_dropdown_close_all();
+                    dropdown_clicked = true;
+                }
             }
 
             // Per-channel scope mode dropdown

@@ -10,6 +10,33 @@
 #include <math.h>
 
 //-----------------------------------------------------------------------------
+// Color Lookup Table (LUT) for fast intensity-to-color conversion
+//-----------------------------------------------------------------------------
+
+#define PHOSPHOR_LUT_SIZE 256
+static Color phosphor_color_lut[PHOSPHOR_LUT_SIZE];
+static bool phosphor_lut_initialized = false;
+
+// Initialize the color LUT - call once at startup
+static void init_phosphor_lut(void) {
+    if (phosphor_lut_initialized) return;
+
+    for (int i = 0; i < PHOSPHOR_LUT_SIZE; i++) {
+        float intensity = (float)i / (float)(PHOSPHOR_LUT_SIZE - 1);
+        phosphor_color_lut[i] = gui_phosphor_intensity_to_color(intensity);
+    }
+    phosphor_lut_initialized = true;
+}
+
+// Fast LUT-based color lookup
+static inline Color phosphor_color_from_lut(float intensity) {
+    if (intensity <= 0.005f) return (Color){0, 0, 0, 0};
+    int idx = (int)(intensity * (PHOSPHOR_LUT_SIZE - 1));
+    if (idx >= PHOSPHOR_LUT_SIZE) idx = PHOSPHOR_LUT_SIZE - 1;
+    return phosphor_color_lut[idx];
+}
+
+//-----------------------------------------------------------------------------
 // Color Conversion
 //-----------------------------------------------------------------------------
 
@@ -57,6 +84,9 @@ Color gui_phosphor_intensity_to_color(float intensity) {
 
 bool gui_phosphor_init(gui_app_t *app, int width, int height) {
     if (!app) return false;
+
+    // Initialize color LUT on first call
+    init_phosphor_lut();
 
     // Clamp to maximum dimensions
     if (width > PHOSPHOR_MAX_WIDTH) width = PHOSPHOR_MAX_WIDTH;
@@ -129,23 +159,11 @@ void gui_phosphor_clear(gui_app_t *app) {
 }
 
 void gui_phosphor_decay(gui_app_t *app) {
-    if (!app) return;
-
-    size_t total_pixels = (size_t)app->phosphor_width * (size_t)app->phosphor_height;
-    if (total_pixels == 0) return;
-
-    // Decay channel A if in phosphor mode
-    if (app->trigger_a.scope_mode == SCOPE_MODE_PHOSPHOR && app->phosphor_a) {
-        for (size_t i = 0; i < total_pixels; i++) {
-            app->phosphor_a[i] *= PHOSPHOR_DECAY_RATE;
-        }
-    }
-    // Decay channel B if in phosphor mode
-    if (app->trigger_b.scope_mode == SCOPE_MODE_PHOSPHOR && app->phosphor_b) {
-        for (size_t i = 0; i < total_pixels; i++) {
-            app->phosphor_b[i] *= PHOSPHOR_DECAY_RATE;
-        }
-    }
+    // NOTE: Decay is now integrated into gui_phosphor_render() for better performance.
+    // This function is kept for API compatibility but does nothing.
+    // The render function applies decay during the color conversion pass,
+    // avoiding a separate iteration over the buffer.
+    (void)app;
 }
 
 void gui_phosphor_cleanup(gui_app_t *app) {
@@ -167,35 +185,65 @@ void gui_phosphor_cleanup(gui_app_t *app) {
 // Drawing Helpers
 //-----------------------------------------------------------------------------
 
-// Helper to add intensity to a pixel with bounds checking
-static inline void add_phosphor_hit(float *phosphor, int buf_width, int buf_height,
-                                     int x, int y, float amount) {
-    if (x < 0 || x >= buf_width || y < 0 || y >= buf_height) return;
-    int idx = y * buf_width + x;
+// Helper to add intensity to a pixel - no bounds checking (caller must ensure validity)
+static inline void add_phosphor_hit_unchecked(float *phosphor, int idx, float amount) {
     phosphor[idx] += amount;
     if (phosphor[idx] > 1.0f) phosphor[idx] = 1.0f;
 }
 
+// Helper to add intensity with bounds checking (for bloom pixels)
+static inline void add_phosphor_hit(float *phosphor, int buf_width, int buf_height,
+                                     int x, int y, float amount) {
+    if (x < 0 || x >= buf_width || y < 0 || y >= buf_height) return;
+    int idx = y * buf_width + x;
+    add_phosphor_hit_unchecked(phosphor, idx, amount);
+}
+
 // Draw a line with Bresenham's algorithm and bloom effect
+// Optimized: clips line to buffer bounds, reduces per-pixel bounds checks
 static void draw_phosphor_line(float *phosphor, int buf_width, int buf_height,
                                 int x0, int y0, int x1, int y1) {
+    // Quick reject if entirely outside buffer
+    if ((x0 < 0 && x1 < 0) || (x0 >= buf_width && x1 >= buf_width) ||
+        (y0 < 0 && y1 < 0) || (y0 >= buf_height && y1 >= buf_height)) {
+        return;
+    }
+
     int dx = abs(x1 - x0);
     int dy = abs(y1 - y0);
     int sx = (x0 < x1) ? 1 : -1;
     int sy = (y0 < y1) ? 1 : -1;
     int err = dx - dy;
 
+    // Precompute bloom values
+    const float hit_inc = PHOSPHOR_HIT_INCREMENT;
+    const float bloom1 = hit_inc * 0.4f;
+    const float bloom2 = hit_inc * 0.2f;
+
     int x = x0, y = y0;
     while (1) {
-        // Core pixel - full intensity
-        add_phosphor_hit(phosphor, buf_width, buf_height, x, y, PHOSPHOR_HIT_INCREMENT);
+        // Only process pixels within x bounds
+        if (x >= 0 && x < buf_width) {
+            // Core pixel - check y bounds once
+            if (y >= 0 && y < buf_height) {
+                int idx = y * buf_width + x;
+                add_phosphor_hit_unchecked(phosphor, idx, hit_inc);
+            }
 
-        // Bloom: add lower intensity to neighboring pixels (creates glow)
-        float bloom = PHOSPHOR_HIT_INCREMENT * 0.4f;
-        add_phosphor_hit(phosphor, buf_width, buf_height, x, y - 1, bloom);
-        add_phosphor_hit(phosphor, buf_width, buf_height, x, y + 1, bloom);
-        add_phosphor_hit(phosphor, buf_width, buf_height, x, y - 2, bloom * 0.5f);
-        add_phosphor_hit(phosphor, buf_width, buf_height, x, y + 2, bloom * 0.5f);
+            // Bloom pixels - only check y bounds (x already validated)
+            if (y - 1 >= 0 && y - 1 < buf_height) {
+                add_phosphor_hit_unchecked(phosphor, (y - 1) * buf_width + x, bloom1);
+            }
+            if (y + 1 >= 0 && y + 1 < buf_height) {
+                add_phosphor_hit_unchecked(phosphor, (y + 1) * buf_width + x, bloom1);
+            }
+            if (y - 2 >= 0 && y - 2 < buf_height) {
+                add_phosphor_hit_unchecked(phosphor, (y - 2) * buf_width + x, bloom2);
+            }
+            if (y + 2 >= 0 && y + 2 < buf_height) {
+                add_phosphor_hit_unchecked(phosphor, (y + 2) * buf_width + x, bloom2);
+            }
+        }
 
         if (x == x1 && y == y1) break;
 
@@ -250,10 +298,20 @@ void gui_phosphor_update(gui_app_t *app, int channel,
         // Ensure min_y > max_y (max_y is higher on screen = lower y value)
         if (max_y > min_y) { int t = max_y; max_y = min_y; min_y = t; }
 
-        // Fill vertical envelope with gradient intensity
+        // Skip envelope if x is out of bounds
+        if (x0 < 0 || x0 >= buf_width) continue;
+
+        // Clamp y range to buffer bounds (avoids per-pixel bounds check)
+        if (max_y < 0) max_y = 0;
+        if (min_y >= buf_height) min_y = buf_height - 1;
+        if (max_y > min_y) continue;  // Entirely clipped
+
+        // Fill vertical envelope - x already validated, y range clamped
+        const float envelope_intensity = PHOSPHOR_HIT_INCREMENT * 0.2f;
+        int base_idx = max_y * buf_width + x0;
         for (int py = max_y; py <= min_y; py++) {
-            float envelope_intensity = PHOSPHOR_HIT_INCREMENT * 0.2f;
-            add_phosphor_hit(phosphor, buf_width, buf_height, x0, py, envelope_intensity);
+            add_phosphor_hit_unchecked(phosphor, base_idx, envelope_intensity);
+            base_idx += buf_width;  // Move to next row
         }
     }
 }
@@ -271,10 +329,25 @@ void gui_phosphor_render(gui_app_t *app, int channel, float x, float y) {
 
     if (!phosphor || !pixels) return;
 
-    // Convert intensity buffer to RGBA pixels (heatmap colors)
+    // Convert intensity to colors, then apply decay for next frame
+    // This ensures pixels are displayed at full intensity before decay
     int total_pixels = app->phosphor_width * app->phosphor_height;
+    const float decay_rate = PHOSPHOR_DECAY_RATE;
+    const float threshold = 0.005f;
+
     for (int i = 0; i < total_pixels; i++) {
-        pixels[i] = gui_phosphor_intensity_to_color(phosphor[i]);
+        float intensity = phosphor[i];
+
+        // Convert to color FIRST (before decay) so we see full intensity
+        if (intensity < threshold) {
+            pixels[i] = (Color){0, 0, 0, 0};
+            phosphor[i] = 0.0f;
+        } else {
+            // Use LUT for fast color conversion
+            pixels[i] = phosphor_color_from_lut(intensity);
+            // Apply decay for next frame
+            phosphor[i] = intensity * decay_rate;
+        }
     }
 
     // Update GPU texture with new pixel data

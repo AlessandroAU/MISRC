@@ -39,15 +39,23 @@ typedef enum {
     SCOPE_MODE_COUNT      // Number of modes (for cycling)
 } scope_display_mode_t;
 
+// Trigger modes (per-channel)
+typedef enum {
+    TRIGGER_MODE_RISING,      // Rising edge crossing level
+    TRIGGER_MODE_FALLING,     // Falling edge crossing level
+    TRIGGER_MODE_CVBS_HSYNC,  // CVBS horizontal sync (auto PAL/NTSC)
+    TRIGGER_MODE_COUNT
+} trigger_mode_t;
+
 // Per-channel trigger configuration and state
-// Simplified: rising edge only, always auto-update
 typedef struct {
     bool enabled;              // Trigger enabled for this channel
     int16_t level;             // Trigger level (-2048 to +2047, 12-bit range)
     float zoom_scale;          // Samples per pixel (1.0 = max zoom, higher = more zoomed out)
     int trigger_display_pos;   // Where trigger appears in display buffer (-1 if not triggered)
     atomic_int display_width;  // Actual pixel width of oscilloscope display (updated by renderer, read by extraction thread)
-    scope_display_mode_t scope_mode; // Display mode for this channel (line or phosphor)
+    scope_display_mode_t scope_mode;   // Display mode for this channel (line or phosphor)
+    trigger_mode_t trigger_mode;       // Trigger mode (rising edge, falling edge, CVBS)
 } channel_trigger_t;
 
 // Zoom limits

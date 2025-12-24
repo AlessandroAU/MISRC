@@ -386,26 +386,118 @@ void handle_oscilloscope_interaction(gui_app_t *app) {
 // Trigger Detection
 //-----------------------------------------------------------------------------
 
-// Find trigger point in buffer, starting search from a minimum index
-// This allows skipping early triggers that don't have enough pre-trigger room
-ssize_t find_trigger_point_from(const int16_t *buf, size_t count,
-                                 const channel_trigger_t *trig, size_t min_index) {
-    if (!trig->enabled || count < 2) return -1;
+// CVBS H-Sync detection constants (for ~40 MSPS sample rate)
+// H-sync pulse is ~4.7µs, which is 188 samples at 40 MSPS
+#define CVBS_MIN_SYNC_WIDTH  100    // Minimum samples in sync pulse (~2.5µs)
+#define CVBS_MAX_SYNC_WIDTH  280    // Maximum samples in sync pulse (~7µs, allows for vsync)
+#define CVBS_SYNC_MARGIN     0.25f  // Threshold is 25% above minimum (into the sync pulse region)
 
-    int16_t level = trig->level;
+// Find CVBS H-sync trigger point
+// Detects the rising edge at the end of horizontal sync pulse
+// Adaptive: finds signal min/max to work regardless of DC offset
+static ssize_t find_cvbs_hsync_trigger(const int16_t *buf, size_t count, size_t min_index) {
+    if (count < CVBS_MAX_SYNC_WIDTH + 2) return -1;
+
+    // First pass: find signal min and max to determine adaptive threshold
+    // Sample a portion of the buffer for efficiency (every 8th sample)
+    int16_t sig_min = buf[0];
+    int16_t sig_max = buf[0];
+    for (size_t i = 0; i < count; i += 8) {
+        if (buf[i] < sig_min) sig_min = buf[i];
+        if (buf[i] > sig_max) sig_max = buf[i];
+    }
+
+    // Calculate adaptive threshold: sync tip is at minimum, threshold is slightly above
+    // The sync pulse goes to the minimum level, so we set threshold at 25% of the range
+    // above the minimum to reliably detect when we're "in" the sync pulse
+    int16_t range = sig_max - sig_min;
+    if (range < 100) return -1;  // Signal too weak, no valid sync
+
+    int16_t sync_threshold = sig_min + (int16_t)((float)range * CVBS_SYNC_MARGIN);
+
+    size_t start = (min_index > 1) ? min_index : 1;
+    size_t search_limit = count - CVBS_MAX_SYNC_WIDTH;
+
+    for (size_t i = start; i < search_limit; i++) {
+        // Check for falling edge into sync (entering sync pulse)
+        if (buf[i - 1] > sync_threshold && buf[i] <= sync_threshold) {
+            // Measure how long signal stays below threshold
+            size_t sync_end = i;
+            while (sync_end < count && buf[sync_end] <= sync_threshold) {
+                sync_end++;
+            }
+
+            size_t pulse_width = sync_end - i;
+
+            // Valid H-sync pulse width? (not too short = noise, not too long = vsync)
+            if (pulse_width >= CVBS_MIN_SYNC_WIDTH && pulse_width <= CVBS_MAX_SYNC_WIDTH) {
+                // Trigger at rising edge (end of sync pulse = start of back porch)
+                return (ssize_t)sync_end;
+            }
+
+            // Skip past this pulse for next iteration
+            i = sync_end;
+        }
+    }
+
+    return -1;  // No valid H-sync found
+}
+
+// Find rising edge trigger point
+static ssize_t find_rising_edge_trigger(const int16_t *buf, size_t count,
+                                         int16_t level, size_t min_index) {
     size_t start = (min_index > 1) ? min_index : 1;
 
     for (size_t i = start; i < count; i++) {
         int16_t prev = buf[i - 1];
         int16_t curr = buf[i];
 
-        // Simple rising edge: cross from below to at-or-above level
+        // Rising edge: cross from below to at-or-above level
         if (prev < level && curr >= level) {
             return (ssize_t)i;
         }
     }
 
-    return -1;  // No trigger found
+    return -1;
+}
+
+// Find falling edge trigger point
+static ssize_t find_falling_edge_trigger(const int16_t *buf, size_t count,
+                                          int16_t level, size_t min_index) {
+    size_t start = (min_index > 1) ? min_index : 1;
+
+    for (size_t i = start; i < count; i++) {
+        int16_t prev = buf[i - 1];
+        int16_t curr = buf[i];
+
+        // Falling edge: cross from above to at-or-below level
+        if (prev > level && curr <= level) {
+            return (ssize_t)i;
+        }
+    }
+
+    return -1;
+}
+
+// Find trigger point in buffer, starting search from a minimum index
+// Dispatches to appropriate trigger function based on trigger mode
+ssize_t find_trigger_point_from(const int16_t *buf, size_t count,
+                                 const channel_trigger_t *trig, size_t min_index) {
+    if (!trig->enabled || count < 2) return -1;
+
+    switch (trig->trigger_mode) {
+        case TRIGGER_MODE_RISING:
+            return find_rising_edge_trigger(buf, count, trig->level, min_index);
+
+        case TRIGGER_MODE_FALLING:
+            return find_falling_edge_trigger(buf, count, trig->level, min_index);
+
+        case TRIGGER_MODE_CVBS_HSYNC:
+            return find_cvbs_hsync_trigger(buf, count, min_index);
+
+        default:
+            return find_rising_edge_trigger(buf, count, trig->level, min_index);
+    }
 }
 
 ssize_t find_trigger_point(const int16_t *buf, size_t count,
