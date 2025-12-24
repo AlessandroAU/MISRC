@@ -7,6 +7,9 @@
 #include "gui_oscilloscope.h"
 #include "gui_ui.h"
 #include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 //-----------------------------------------------------------------------------
 // Grid Settings
@@ -26,6 +29,11 @@ static gui_app_t *s_osc_app = NULL;
 static Rectangle s_osc_bounds[2] = {0};
 static bool s_osc_bounds_valid[2] = {false, false};
 static int s_dragging_channel = -1;  // Which channel is being dragged (-1 = none)
+
+// Cleanup oscilloscope resources (currently none, but kept for API compatibility)
+void gui_oscilloscope_cleanup(void) {
+    // No resources to clean up currently
+}
 
 //-----------------------------------------------------------------------------
 // Internal Helper Functions
@@ -121,7 +129,7 @@ void render_oscilloscope_channel(gui_app_t *app, float x, float y, float width, 
     float center_y = y + height / 2.0f;
     float scale = (height / 2.0f) * app->settings.amplitude_scale;
 
-    // Draw trigger level line if enabled for this channel
+    // Draw trigger level line and position marker if enabled for this channel
     channel_trigger_t *trig = (channel == 0) ? &app->trigger_a : &app->trigger_b;
     if (trig->enabled) {
         // Convert trigger level (-2048 to +2047) to normalized (-1 to +1)
@@ -148,6 +156,19 @@ void render_oscilloscope_channel(gui_app_t *app, float x, float y, float width, 
         Vector2 arrow_top = { x + 2 + arrow_size, level_y - arrow_size/2 };
         Vector2 arrow_bot = { x + 2 + arrow_size, level_y + arrow_size/2 };
         DrawTriangle(arrow_tip, arrow_bot, arrow_top, trig_color);
+
+        // Draw vertical trigger position marker at actual trigger position (if triggered)
+        if (trig->trigger_display_pos >= 0 && trig->trigger_display_pos < (int)width) {
+            float trigger_x = x + (float)trig->trigger_display_pos;
+
+            Color marker_color = { channel_color.r, channel_color.g, channel_color.b, 80 };
+            DrawLineEx((Vector2){trigger_x, y}, (Vector2){trigger_x, y + height}, 1.0f, marker_color);
+
+            // Draw small "T" marker at the trigger intersection
+            Color t_marker_color = { channel_color.r, channel_color.g, channel_color.b, 200 };
+            DrawLineEx((Vector2){trigger_x - 4, level_y - 8}, (Vector2){trigger_x + 4, level_y - 8}, 2.0f, t_marker_color);
+            DrawLineEx((Vector2){trigger_x, level_y - 8}, (Vector2){trigger_x, level_y - 2}, 2.0f, t_marker_color);
+        }
     }
 
     int display_width = (int)width;
@@ -156,7 +177,7 @@ void render_oscilloscope_channel(gui_app_t *app, float x, float y, float width, 
     }
 
     // Get per-channel display buffer and sample count
-    waveform_minmax_t *samples;
+    waveform_sample_t *samples;
     size_t samples_available;
     if (channel == 0) {
         samples = app->display_samples_a;
@@ -175,17 +196,37 @@ void render_oscilloscope_channel(gui_app_t *app, float x, float y, float width, 
 
     int samples_to_draw = (samples_available < (size_t)display_width) ? (int)samples_available : display_width;
 
-    // Draw waveform as connected lines
+    // Semi-transparent color for peak envelope
+    Color envelope_color = { channel_color.r, channel_color.g, channel_color.b, 60 };
+
+    // First pass: draw peak envelope as filled area
+    for (int px = 0; px < samples_to_draw; px++) {
+        waveform_sample_t *sample = &samples[px];
+        float px_x = x + px;
+
+        float min_y = center_y - sample->min_val * scale;
+        float max_y = center_y - sample->max_val * scale;
+
+        // Clamp to channel bounds
+        if (min_y < y) min_y = y;
+        if (min_y > y + height) min_y = y + height;
+        if (max_y < y) max_y = y;
+        if (max_y > y + height) max_y = y + height;
+
+        // Draw vertical line from min to max (envelope)
+        if (max_y < min_y) {
+            DrawLineV((Vector2){px_x, max_y}, (Vector2){px_x, min_y}, envelope_color);
+        }
+    }
+
+    // Second pass: draw resampled waveform as connected line
     float prev_py = center_y;
 
     for (int px = 0; px < samples_to_draw; px++) {
-        waveform_minmax_t *sample = &samples[px];
+        waveform_sample_t *sample = &samples[px];
         float px_x = x + px;
 
-        // Use average of min/max for smoother line
-        float val = (sample->min_val + sample->max_val) * 0.5f;
-
-        float py = center_y - val * scale;
+        float py = center_y - sample->value * scale;
 
         // Clamp to channel bounds
         if (py < y) py = y;
@@ -299,42 +340,14 @@ ssize_t find_trigger_point(const int16_t *buf, size_t count,
                            const channel_trigger_t *trig) {
     if (!trig->enabled || count < 2) return -1;
 
-    int16_t upper = trig->level + (int16_t)trig->hysteresis;
-    int16_t lower = trig->level - (int16_t)trig->hysteresis;
-
-    // Track if we've crossed the level (for hysteresis state machine)
-    bool armed = false;
+    int16_t level = trig->level;
 
     for (size_t i = 1; i < count; i++) {
         int16_t prev = buf[i - 1];
         int16_t curr = buf[i];
 
-        // Check edge conditions based on trigger type
-        bool edge_detected = false;
-
-        if (trig->edge == TRIGGER_EDGE_RISING || trig->edge == TRIGGER_EDGE_BOTH) {
-            // For rising edge: arm when below lower threshold
-            if (prev < lower) {
-                armed = true;
-            }
-            // Trigger when armed and crossing above upper threshold
-            if (armed && prev < upper && curr >= upper) {
-                edge_detected = true;
-            }
-        }
-
-        if (!edge_detected && (trig->edge == TRIGGER_EDGE_FALLING || trig->edge == TRIGGER_EDGE_BOTH)) {
-            // For falling edge: arm when above upper threshold
-            if (prev > upper) {
-                armed = true;
-            }
-            // Trigger when armed and crossing below lower threshold
-            if (armed && prev > lower && curr <= lower) {
-                edge_detected = true;
-            }
-        }
-
-        if (edge_detected) {
+        // Simple rising edge: cross from below to at-or-above level
+        if (prev < level && curr >= level) {
             return (ssize_t)i;
         }
     }
@@ -343,12 +356,15 @@ ssize_t find_trigger_point(const int16_t *buf, size_t count,
 }
 
 //-----------------------------------------------------------------------------
-// Decimation and Display Buffer Processing
+// Decimation and Display Buffer Processing (with libsoxr resampling)
 //-----------------------------------------------------------------------------
 
-// Decimate a single channel from source buffer to its display buffer
-static size_t decimate_to_buffer(waveform_minmax_t *dest, const int16_t *buf,
-                                  size_t num_samples, size_t start_idx, size_t decimation) {
+// Resample and decimate a single channel from source buffer to its display buffer
+// Calculates waveform value and min/max for peak envelope display
+static size_t resample_to_buffer(waveform_sample_t *dest, const int16_t *buf,
+                                  size_t num_samples, size_t start_idx, size_t decimation,
+                                  int channel) {
+    (void)channel;  // Reserved for future use
     const float scale = 1.0f / 2048.0f;
     const size_t target_samples = DISPLAY_BUFFER_SIZE;
 
@@ -358,13 +374,15 @@ static size_t decimate_to_buffer(waveform_minmax_t *dest, const int16_t *buf,
     // Calculate display count based on available samples and decimation
     size_t display_count = available / decimation;
     if (display_count > target_samples) display_count = target_samples;
+    if (display_count == 0) return 0;
 
+    // Process each display pixel
     for (size_t i = 0; i < display_count; i++) {
         size_t src_start = start_idx + i * decimation;
         size_t src_end = src_start + decimation;
         if (src_end > num_samples) src_end = num_samples;
 
-        // Find min/max within this decimation window
+        // Find min/max within this decimation window for peak envelope
         int16_t min_val = buf[src_start];
         int16_t max_val = buf[src_start];
 
@@ -375,14 +393,18 @@ static size_t decimate_to_buffer(waveform_minmax_t *dest, const int16_t *buf,
 
         dest[i].min_val = (float)min_val * scale;
         dest[i].max_val = (float)max_val * scale;
+
+        // Use first sample of decimation window for waveform value
+        // This ensures exact alignment: trigger at sample N appears at pixel N/decimation
+        dest[i].value = (float)buf[src_start] * scale;
     }
 
     return display_count;
 }
 
 bool process_channel_display(gui_app_t *app, const int16_t *buf, size_t num_samples,
-                             waveform_minmax_t *display_buf, size_t *display_count,
-                             const channel_trigger_t *trig) {
+                             waveform_sample_t *display_buf, size_t *display_count,
+                             channel_trigger_t *trig, int channel) {
     (void)app;  // Unused parameter
 
     // Get decimation factor from per-channel zoom level
@@ -394,77 +416,41 @@ bool process_channel_display(gui_app_t *app, const int16_t *buf, size_t num_samp
     // How many raw samples we need for the full display at this zoom
     size_t display_window = DISPLAY_BUFFER_SIZE * decimation;
 
-    // Find first trigger point in the buffer
-    ssize_t trig_pos = find_trigger_point(buf, num_samples, trig);
+    // Trigger point should appear at 10% across the display
+    const size_t TRIGGER_DISPLAY_POS = DISPLAY_BUFFER_SIZE / 40;  // ~205 pixels = 10%
+    size_t pre_trigger_raw_samples = TRIGGER_DISPLAY_POS * decimation;
+    size_t post_trigger_raw_samples = display_window - pre_trigger_raw_samples;
 
-    // Calculate start position
-    size_t start_pos = 0;
-    bool triggered = (trig_pos >= 0);
-
-    if (triggered) {
-        // Start display from the trigger point
-        // The trigger will appear at the left edge of the display
-        start_pos = (size_t)trig_pos;
-
-        // Apply holdoff: skip ahead by holdoff samples to find a stable trigger
-        // This helps with phase stability for periodic signals
-        if (trig->holdoff > 0 && start_pos + trig->holdoff < num_samples) {
-            // After holdoff, look for next trigger
-            ssize_t next_trig = -1;
-            size_t search_start = start_pos + trig->holdoff;
-
-            int16_t upper = trig->level + (int16_t)trig->hysteresis;
-            int16_t lower = trig->level - (int16_t)trig->hysteresis;
-            bool armed = false;
-
-            for (size_t i = search_start; i < num_samples; i++) {
-                int16_t prev = buf[i - 1];
-                int16_t curr = buf[i];
-
-                if (trig->edge == TRIGGER_EDGE_RISING || trig->edge == TRIGGER_EDGE_BOTH) {
-                    if (prev < lower) armed = true;
-                    if (armed && prev < upper && curr >= upper) {
-                        next_trig = (ssize_t)i;
-                        break;
-                    }
-                }
-                if (next_trig < 0 && (trig->edge == TRIGGER_EDGE_FALLING || trig->edge == TRIGGER_EDGE_BOTH)) {
-                    if (prev > upper) armed = true;
-                    if (armed && prev > lower && curr <= lower) {
-                        next_trig = (ssize_t)i;
-                        break;
-                    }
-                }
-            }
-
-            // Use the trigger after holdoff if found and it leaves enough samples
-            if (next_trig >= 0 && (size_t)next_trig + display_window <= num_samples) {
-                start_pos = (size_t)next_trig;
-            }
-        }
-
-        // Ensure we have enough samples after the trigger point
-        if (start_pos + display_window > num_samples) {
-            // Not enough samples after trigger - adjust back
-            if (num_samples >= display_window) {
-                start_pos = num_samples - display_window;
-            } else {
-                start_pos = 0;
-            }
-        }
-    } else {
-        // No trigger found
-        if (trig->enabled && trig->mode == TRIGGER_MODE_NORMAL) {
-            // Normal mode: hold the last display, don't update
-            return false;
-        }
-        // Auto mode (or trigger disabled): show start of buffer
-        start_pos = 0;
+    // If trigger is disabled, just show the start of the buffer
+    if (!trig->enabled) {
+        trig->trigger_display_pos = -1;
+        *display_count = resample_to_buffer(display_buf, buf, num_samples, 0, decimation, channel);
+        return true;
     }
 
-    // Decimate and write to display buffer
-    *display_count = decimate_to_buffer(display_buf, buf, num_samples, start_pos, decimation);
-    return true;
+    // Find trigger point in the buffer
+    ssize_t trig_pos = find_trigger_point(buf, num_samples, trig);
+
+    if (trig_pos < 0) {
+        // No trigger found - hold previous display (don't update)
+        return false;
+    }
+
+    // Trigger found - check if we can place it at exactly 25%
+    bool have_pre = ((size_t)trig_pos >= pre_trigger_raw_samples);
+    bool have_post = ((size_t)trig_pos + post_trigger_raw_samples <= num_samples);
+
+    if (have_pre && have_post) {
+        // We can place trigger at exactly 25% - update display
+        size_t start_pos = (size_t)trig_pos - pre_trigger_raw_samples;
+        trig->trigger_display_pos = (int)TRIGGER_DISPLAY_POS;
+        *display_count = resample_to_buffer(display_buf, buf, num_samples, start_pos, decimation, channel);
+        return true;
+    }
+
+    // Cannot place trigger at 25% due to boundary conditions
+    // Hold previous display to prevent jumping
+    return false;
 }
 
 void gui_oscilloscope_update_display(gui_app_t *app, const int16_t *buf_a,
@@ -472,14 +458,14 @@ void gui_oscilloscope_update_display(gui_app_t *app, const int16_t *buf_a,
     // Process channel A
     size_t count_a = app->display_samples_available_a;
     if (process_channel_display(app, buf_a, num_samples,
-                                app->display_samples_a, &count_a, &app->trigger_a)) {
+                                app->display_samples_a, &count_a, &app->trigger_a, 0)) {
         app->display_samples_available_a = count_a;
     }
 
     // Process channel B
     size_t count_b = app->display_samples_available_b;
     if (process_channel_display(app, buf_b, num_samples,
-                                app->display_samples_b, &count_b, &app->trigger_b)) {
+                                app->display_samples_b, &count_b, &app->trigger_b, 1)) {
         app->display_samples_available_b = count_b;
     }
 }

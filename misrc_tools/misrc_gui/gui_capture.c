@@ -9,6 +9,7 @@
 #include "gui_render.h"
 #include "gui_record.h"
 #include "gui_extract.h"
+#include "gui_oscilloscope.h"
 
 #include <hsdaoh.h>
 #include <hsdaoh_raw.h>
@@ -250,21 +251,15 @@ void gui_app_init(gui_app_t *app) {
 
     // Initialize trigger state for channel A
     app->trigger_a.enabled = false;
-    app->trigger_a.edge = TRIGGER_EDGE_RISING;
-    app->trigger_a.mode = TRIGGER_MODE_AUTO;
     app->trigger_a.level = 0;
-    app->trigger_a.hysteresis = 20;
     app->trigger_a.zoom_level = 0;
-    app->trigger_a.holdoff = TRIGGER_HOLDOFF_DEFAULT;
+    app->trigger_a.trigger_display_pos = -1;
 
     // Initialize trigger state for channel B
     app->trigger_b.enabled = false;
-    app->trigger_b.edge = TRIGGER_EDGE_RISING;
-    app->trigger_b.mode = TRIGGER_MODE_AUTO;
     app->trigger_b.level = 0;
-    app->trigger_b.hysteresis = 20;
     app->trigger_b.zoom_level = 0;
-    app->trigger_b.holdoff = TRIGGER_HOLDOFF_DEFAULT;
+    app->trigger_b.trigger_display_pos = -1;
 
     // Initialize capture ringbuffer
     if (!s_rb_initialized) {
@@ -295,6 +290,9 @@ void gui_app_cleanup(gui_app_t *app) {
 
     // Cleanup extraction subsystem
     gui_extract_cleanup();
+
+    // Cleanup oscilloscope resources (resamplers)
+    gui_oscilloscope_cleanup();
 }
 
 // Enumerate available capture devices
