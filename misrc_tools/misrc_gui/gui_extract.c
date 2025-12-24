@@ -10,6 +10,7 @@
 #include "gui_extract.h"
 #include "gui_app.h"
 #include "gui_oscilloscope.h"
+#include "gui_cvbs.h"
 #include "../extract.h"
 #include "../ringbuffer.h"
 
@@ -136,6 +137,20 @@ static int extraction_thread(void *ctx) {
         atomic_fetch_add(&s_extract_app->total_samples, BUFFER_READ_SIZE);
         atomic_fetch_add(&s_extract_app->samples_a, BUFFER_READ_SIZE);
         atomic_fetch_add(&s_extract_app->samples_b, BUFFER_READ_SIZE);
+
+        // Feed CVBS decoders if in CVBS decode mode
+        if (s_extract_app->trigger_a.scope_mode == SCOPE_MODE_CVBS_DECODE &&
+            s_extract_app->cvbs_decoder_a) {
+            // Update decoder format from UI
+            gui_cvbs_set_format(s_extract_app->cvbs_decoder_a, s_extract_app->trigger_a.cvbs_format);
+            gui_cvbs_process_buffer(s_extract_app->cvbs_decoder_a, s_buf_a, BUFFER_READ_SIZE);
+        }
+        if (s_extract_app->trigger_b.scope_mode == SCOPE_MODE_CVBS_DECODE &&
+            s_extract_app->cvbs_decoder_b) {
+            // Update decoder format from UI
+            gui_cvbs_set_format(s_extract_app->cvbs_decoder_b, s_extract_app->trigger_b.cvbs_format);
+            gui_cvbs_process_buffer(s_extract_app->cvbs_decoder_b, s_buf_b, BUFFER_READ_SIZE);
+        }
 
         // Conditionally write to record ringbuffers
         if (atomic_load(&s_recording_enabled)) {

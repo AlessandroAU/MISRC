@@ -7,6 +7,7 @@
 #include "gui_ui.h"
 #include "gui_render.h"
 #include "gui_dropdown.h"
+#include "gui_cvbs.h"
 #include <clay.h>
 #include <stdio.h>
 #include <string.h>
@@ -15,6 +16,7 @@
 #define DROPDOWN_DEVICE       "Device"
 #define DROPDOWN_SCOPE_MODE   "ScopeMode"
 #define DROPDOWN_TRIGGER_MODE "TriggerMode"
+#define DROPDOWN_CVBS_FORMAT  "CVBSFormat"
 
 // Color conversions
 static inline Clay_Color to_clay_color(Color c) {
@@ -433,7 +435,13 @@ static void render_channel_stats(gui_app_t *app, int channel) {
                 CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
 
             // Mode dropdown button
-            const char *mode_name = (trig->scope_mode == SCOPE_MODE_PHOSPHOR) ? "Phosphor" : "Line";
+            const char *mode_name;
+            switch (trig->scope_mode) {
+                case SCOPE_MODE_LINE:        mode_name = "Line"; break;
+                case SCOPE_MODE_PHOSPHOR:    mode_name = "Phosphor"; break;
+                case SCOPE_MODE_CVBS_DECODE: mode_name = "CVBS"; break;
+                default:                     mode_name = "Phosphor"; break;
+            }
             bool scope_dropdown_open = gui_dropdown_is_open(DROPDOWN_SCOPE_MODE, channel);
             CLAY(CLAY_IDI("ScopeModeBtn", channel), {
                 .layout = {
@@ -487,6 +495,89 @@ static void render_channel_stats(gui_app_t *app, int channel) {
                 }) {
                     CLAY_TEXT(CLAY_STRING("Phosphor"),
                         CLAY_TEXT_CONFIG({ .fontSize = 11, .textColor = to_clay_color(COLOR_TEXT) }));
+                }
+
+                // CVBS Decode mode option
+                Color cvbs_decode_color = (trig->scope_mode == SCOPE_MODE_CVBS_DECODE) ? COLOR_BUTTON_ACTIVE : COLOR_BUTTON;
+                CLAY(CLAY_IDI("ScopeModeOptCVBS", channel), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(20) },
+                        .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER }
+                    },
+                    .backgroundColor = to_clay_color(cvbs_decode_color)
+                }) {
+                    CLAY_TEXT(CLAY_STRING("CVBS"),
+                        CLAY_TEXT_CONFIG({ .fontSize = 11, .textColor = to_clay_color(COLOR_TEXT) }));
+                }
+            }
+        }
+
+        // CVBS Format row (only visible in CVBS mode)
+        if (trig->scope_mode == SCOPE_MODE_CVBS_DECODE) {
+            CLAY(CLAY_IDI("CVBSFormatRow", channel), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0) },
+                    .layoutDirection = CLAY_LEFT_TO_RIGHT,
+                    .childAlignment = { .y = CLAY_ALIGN_Y_CENTER },
+                    .childGap = 4
+                }
+            }) {
+                CLAY_TEXT(CLAY_STRING("Format:"),
+                    CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
+
+                const char *format_name = (trig->cvbs_format == CVBS_SELECT_PAL) ? "PAL" : "NTSC";
+                bool format_dropdown_open = gui_dropdown_is_open(DROPDOWN_CVBS_FORMAT, channel);
+                CLAY(CLAY_IDI("CVBSFormatBtn", channel), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_FIXED(50), CLAY_SIZING_FIXED(18) },
+                        .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER }
+                    },
+                    .backgroundColor = to_clay_color(format_dropdown_open ? COLOR_BUTTON_HOVER : COLOR_BUTTON),
+                    .cornerRadius = CLAY_CORNER_RADIUS(3)
+                }) {
+                    CLAY_TEXT(make_string(format_name),
+                        CLAY_TEXT_CONFIG({ .fontSize = 11, .textColor = to_clay_color(COLOR_TEXT) }));
+                }
+            }
+
+            // CVBS format dropdown options
+            if (gui_dropdown_is_open(DROPDOWN_CVBS_FORMAT, channel)) {
+                CLAY(CLAY_IDI("CVBSFormatOpts", channel), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_FIXED(50), CLAY_SIZING_FIT(0) },
+                        .layoutDirection = CLAY_TOP_TO_BOTTOM
+                    },
+                    .floating = {
+                        .attachTo = CLAY_ATTACH_TO_ELEMENT_WITH_ID,
+                        .parentId = CLAY_IDI("CVBSFormatBtn", channel).id,
+                        .attachPoints = { .element = CLAY_ATTACH_POINT_LEFT_TOP, .parent = CLAY_ATTACH_POINT_LEFT_BOTTOM }
+                    },
+                    .backgroundColor = to_clay_color(COLOR_PANEL_BG),
+                    .cornerRadius = CLAY_CORNER_RADIUS(3)
+                }) {
+                    Color pal_color = (trig->cvbs_format == CVBS_SELECT_PAL) ? COLOR_BUTTON_ACTIVE : COLOR_BUTTON;
+                    CLAY(CLAY_IDI("CVBSFormatOptPAL", channel), {
+                        .layout = {
+                            .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(20) },
+                            .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER }
+                        },
+                        .backgroundColor = to_clay_color(pal_color)
+                    }) {
+                        CLAY_TEXT(CLAY_STRING("PAL"),
+                            CLAY_TEXT_CONFIG({ .fontSize = 11, .textColor = to_clay_color(COLOR_TEXT) }));
+                    }
+
+                    Color ntsc_color = (trig->cvbs_format == CVBS_SELECT_NTSC) ? COLOR_BUTTON_ACTIVE : COLOR_BUTTON;
+                    CLAY(CLAY_IDI("CVBSFormatOptNTSC", channel), {
+                        .layout = {
+                            .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(20) },
+                            .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER }
+                        },
+                        .backgroundColor = to_clay_color(ntsc_color)
+                    }) {
+                        CLAY_TEXT(CLAY_STRING("NTSC"),
+                            CLAY_TEXT_CONFIG({ .fontSize = 11, .textColor = to_clay_color(COLOR_TEXT) }));
+                    }
                 }
             }
         }
@@ -866,7 +957,30 @@ void gui_handle_interactions(gui_app_t *app) {
                     gui_dropdown_close_all();
                     dropdown_clicked = true;
                 }
+                if (Clay_PointerOver(CLAY_IDI("ScopeModeOptCVBS", ch))) {
+                    trig->scope_mode = SCOPE_MODE_CVBS_DECODE;
+                    gui_dropdown_close_all();
+                    dropdown_clicked = true;
+                }
             }
+
+            // Per-channel CVBS format dropdown
+            if (Clay_PointerOver(CLAY_IDI("CVBSFormatBtn", ch))) {
+                gui_dropdown_toggle(DROPDOWN_CVBS_FORMAT, ch);
+                dropdown_clicked = true;
+            } else if (gui_dropdown_is_open(DROPDOWN_CVBS_FORMAT, ch)) {
+                if (Clay_PointerOver(CLAY_IDI("CVBSFormatOptPAL", ch))) {
+                    trig->cvbs_format = CVBS_SELECT_PAL;
+                    gui_dropdown_close_all();
+                    dropdown_clicked = true;
+                }
+                if (Clay_PointerOver(CLAY_IDI("CVBSFormatOptNTSC", ch))) {
+                    trig->cvbs_format = CVBS_SELECT_NTSC;
+                    gui_dropdown_close_all();
+                    dropdown_clicked = true;
+                }
+            }
+
         }
 
         // Close all dropdowns if clicked elsewhere

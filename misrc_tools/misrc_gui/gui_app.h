@@ -9,6 +9,14 @@
 // Forward declarations
 typedef struct hsdaoh_dev hsdaoh_dev_t;
 typedef struct sc_handle sc_handle_t;
+typedef struct cvbs_decoder cvbs_decoder_t;
+
+// CVBS video format selection (manual UI selection)
+typedef enum {
+    CVBS_SELECT_PAL,    // PAL: 625 lines, 576 active, 64µs/line
+    CVBS_SELECT_NTSC,   // NTSC: 525 lines, 480 active, 63.5µs/line
+    CVBS_SELECT_COUNT
+} cvbs_format_select_t;
 
 // Display buffer size (samples per channel for oscilloscope)
 #define DISPLAY_BUFFER_SIZE 4096
@@ -34,9 +42,10 @@ typedef struct vu_meter_state {
 
 // Oscilloscope display modes (per-channel)
 typedef enum {
-    SCOPE_MODE_LINE,      // Basic line waveform (fast, simple)
-    SCOPE_MODE_PHOSPHOR,  // Digital phosphor with heatmap persistence
-    SCOPE_MODE_COUNT      // Number of modes (for cycling)
+    SCOPE_MODE_LINE,        // Basic line waveform (fast, simple)
+    SCOPE_MODE_PHOSPHOR,    // Digital phosphor with heatmap persistence
+    SCOPE_MODE_CVBS_DECODE, // CVBS video decoder (video frame + line waveform)
+    SCOPE_MODE_COUNT        // Number of modes (for cycling)
 } scope_display_mode_t;
 
 // Trigger modes (per-channel)
@@ -56,6 +65,7 @@ typedef struct {
     atomic_int display_width;  // Actual pixel width of oscilloscope display (updated by renderer, read by extraction thread)
     scope_display_mode_t scope_mode;   // Display mode for this channel (line or phosphor)
     trigger_mode_t trigger_mode;       // Trigger mode (rising edge, falling edge, CVBS)
+    cvbs_format_select_t cvbs_format;  // Manual CVBS format selection (PAL/NTSC)
 } channel_trigger_t;
 
 // Zoom limits
@@ -183,6 +193,10 @@ typedef struct gui_app {
     int phosphor_height;          // Current phosphor buffer height
     bool phosphor_textures_valid; // True if textures are initialized
     bool phosphor_use_shader;     // True if using GPU shader path
+
+    // CVBS video decoders (per channel)
+    cvbs_decoder_t *cvbs_decoder_a;
+    cvbs_decoder_t *cvbs_decoder_b;
 
 } gui_app_t;
 

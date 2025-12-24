@@ -7,6 +7,7 @@
 #include "gui_oscilloscope.h"
 #include "gui_phosphor.h"
 #include "gui_trigger.h"
+#include "gui_cvbs.h"
 #include "gui_ui.h"
 #include <math.h>
 #include <stdio.h>
@@ -146,6 +147,31 @@ void render_oscilloscope_channel(gui_app_t *app, float x, float y, float width, 
         if (new_display_width < 100) new_display_width = 100;  // Minimum reasonable width
         if (new_display_width > DISPLAY_BUFFER_SIZE) new_display_width = DISPLAY_BUFFER_SIZE;
         atomic_store(&trig->display_width, new_display_width);
+
+        // Handle CVBS decode mode - split vertical layout
+        if (trig->scope_mode == SCOPE_MODE_CVBS_DECODE) {
+            cvbs_decoder_t *decoder = (channel == 0) ? app->cvbs_decoder_a : app->cvbs_decoder_b;
+            if (decoder) {
+                // Decay phosphor each frame
+                gui_cvbs_decay_phosphor(decoder);
+
+                // Split layout: video left (50%), phosphor waveform right (50%)
+                float video_width = width * 0.5f;
+                float wave_width = width - video_width - 4;  // 4px gap
+
+                // Draw video frame on left
+                gui_cvbs_render_frame(decoder, x, y, video_width, height);
+
+                // Draw phosphor waveform on right (all lines overlaid)
+                gui_cvbs_render_phosphor(decoder, x + video_width + 4, y,
+                                         wave_width, height, channel_color);
+
+                // Draw channel label
+                int label_width = measure_text_with_font(label, FONT_SIZE_OSC_LABEL);
+                draw_text_with_font(label, x + width - label_width - 8, y + 4, FONT_SIZE_OSC_LABEL, channel_color);
+            }
+            return;  // Don't render normal oscilloscope in CVBS mode
+        }
     }
 
     // Draw channel grid

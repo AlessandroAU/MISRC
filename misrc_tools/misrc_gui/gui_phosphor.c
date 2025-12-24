@@ -516,3 +516,78 @@ void gui_phosphor_render(gui_app_t *app, int channel, float x, float y) {
         DrawTexture(*texture, (int)x, (int)y, WHITE);
     }
 }
+
+//-----------------------------------------------------------------------------
+// Shared Rendering for External Modules
+//-----------------------------------------------------------------------------
+
+bool gui_phosphor_shader_available(void) {
+    return init_phosphor_shader();
+}
+
+bool gui_phosphor_init_external_texture(Texture2D *texture, int width, int height) {
+    if (!texture || width <= 0 || height <= 0) return false;
+
+    // Try to initialize shader if not already done
+    bool use_shader = init_phosphor_shader();
+
+    if (use_shader) {
+        // Create R32F texture for shader path
+        // Allocate temporary float buffer for initial texture creation
+        float *temp_data = (float *)calloc((size_t)width * height, sizeof(float));
+        if (!temp_data) return false;
+
+        Image img = {
+            .data = temp_data,
+            .width = width,
+            .height = height,
+            .mipmaps = 1,
+            .format = PIXELFORMAT_UNCOMPRESSED_R32
+        };
+
+        *texture = LoadTextureFromImage(img);
+        free(temp_data);
+
+        SetTextureFilter(*texture, TEXTURE_FILTER_BILINEAR);
+        return true;
+    }
+
+    return false;
+}
+
+void gui_phosphor_render_buffer(float *intensity_buffer, Texture2D *texture,
+                                int width, int height,
+                                float x, float y, float draw_width, float draw_height) {
+    if (!intensity_buffer || !texture || width <= 0 || height <= 0) return;
+
+    int total_pixels = width * height;
+    const float decay_rate = PHOSPHOR_DECAY_RATE;
+    const float threshold = 0.005f;
+
+    if (phosphor_shader_loaded) {
+        // GPU shader path: Upload intensity buffer directly
+        UpdateTexture(*texture, intensity_buffer);
+
+        // Draw with shader, scaling to destination rectangle
+        BeginShaderMode(phosphor_shader);
+        Rectangle src = {0, 0, (float)width, (float)height};
+        Rectangle dst = {x, y, draw_width, draw_height};
+        DrawTexturePro(*texture, src, dst, (Vector2){0, 0}, 0, WHITE);
+        EndShaderMode();
+
+        // Apply decay for next frame
+        for (int i = 0; i < total_pixels; i++) {
+            float intensity = intensity_buffer[i];
+            if (intensity < threshold) {
+                intensity_buffer[i] = 0.0f;
+            } else {
+                intensity_buffer[i] = intensity * decay_rate;
+            }
+        }
+    } else {
+        // CPU fallback - use LUT and draw directly
+        // Note: This path doesn't have a pixel buffer, so we can't render
+        // For external modules, shader path is required
+        TraceLog(LOG_WARNING, "PHOSPHOR: gui_phosphor_render_buffer requires GPU shader");
+    }
+}

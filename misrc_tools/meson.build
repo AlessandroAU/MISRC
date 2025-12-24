@@ -157,6 +157,7 @@ if raylib_dep.found()
     'misrc_gui/gui_phosphor.c',
     'misrc_gui/gui_dropdown.c',
     'misrc_gui/gui_trigger.c',
+    'misrc_gui/gui_cvbs.c',
     'misrc_gui/gui_capture.c',
     'misrc_gui/gui_record.c',
     'misrc_gui/gui_extract.c',

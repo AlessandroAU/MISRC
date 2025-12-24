@@ -65,4 +65,29 @@ void gui_phosphor_render(gui_app_t *app, int channel, float x, float y);
 // Exposed for potential use in legends/UI
 Color gui_phosphor_intensity_to_color(float intensity);
 
+//-----------------------------------------------------------------------------
+// Shared Shader Rendering (for external modules like CVBS)
+//-----------------------------------------------------------------------------
+
+// Render an external float intensity buffer using the phosphor shader
+// This allows other modules (like CVBS) to use the same GPU-accelerated rendering
+// Parameters:
+//   intensity_buffer: Float buffer with intensity values (0-1)
+//   texture: Texture to update and render (must be R32F format for shader path)
+//   width, height: Buffer dimensions
+//   x, y: Screen position to draw
+//   draw_width, draw_height: Destination size on screen
+// Note: Also applies decay to intensity_buffer for next frame
+void gui_phosphor_render_buffer(float *intensity_buffer, Texture2D *texture,
+                                int width, int height,
+                                float x, float y, float draw_width, float draw_height);
+
+// Initialize a texture for use with gui_phosphor_render_buffer
+// Creates R32F texture for GPU shader path
+// Returns true on success
+bool gui_phosphor_init_external_texture(Texture2D *texture, int width, int height);
+
+// Check if GPU shader path is available
+bool gui_phosphor_shader_available(void);
+
 #endif // GUI_PHOSPHOR_H

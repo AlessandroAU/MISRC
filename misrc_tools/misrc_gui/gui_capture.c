@@ -11,6 +11,7 @@
 #include "gui_extract.h"
 #include "gui_oscilloscope.h"
 #include "gui_phosphor.h"
+#include "gui_cvbs.h"
 
 #include <hsdaoh.h>
 #include <hsdaoh_raw.h>
@@ -258,6 +259,7 @@ void gui_app_init(gui_app_t *app) {
     atomic_store(&app->trigger_a.display_width, DISPLAY_BUFFER_SIZE);  // Will be updated by renderer
     app->trigger_a.scope_mode = SCOPE_MODE_PHOSPHOR;  // Phosphor mode by default
     app->trigger_a.trigger_mode = TRIGGER_MODE_RISING;  // Rising edge by default
+    app->trigger_a.cvbs_format = CVBS_SELECT_PAL;  // Default to PAL
 
     // Initialize trigger state for channel B
     app->trigger_b.enabled = false;
@@ -267,6 +269,7 @@ void gui_app_init(gui_app_t *app) {
     atomic_store(&app->trigger_b.display_width, DISPLAY_BUFFER_SIZE);  // Will be updated by renderer
     app->trigger_b.scope_mode = SCOPE_MODE_PHOSPHOR;  // Phosphor mode by default
     app->trigger_b.trigger_mode = TRIGGER_MODE_RISING;  // Rising edge by default
+    app->trigger_b.cvbs_format = CVBS_SELECT_PAL;  // Default to PAL
 
     // Initialize phosphor display state
     app->phosphor_a = NULL;
@@ -289,6 +292,24 @@ void gui_app_init(gui_app_t *app) {
         } else {
             s_rb_initialized = true;
             fprintf(stderr, "Capture ringbuffer initialized (%d bytes)\n", BUFFER_TOTAL_SIZE);
+        }
+    }
+
+    // Initialize CVBS decoders (one per channel)
+    app->cvbs_decoder_a = (cvbs_decoder_t *)calloc(1, sizeof(cvbs_decoder_t));
+    app->cvbs_decoder_b = (cvbs_decoder_t *)calloc(1, sizeof(cvbs_decoder_t));
+    if (app->cvbs_decoder_a) {
+        if (!gui_cvbs_init(app->cvbs_decoder_a)) {
+            fprintf(stderr, "Failed to initialize CVBS decoder A\n");
+            free(app->cvbs_decoder_a);
+            app->cvbs_decoder_a = NULL;
+        }
+    }
+    if (app->cvbs_decoder_b) {
+        if (!gui_cvbs_init(app->cvbs_decoder_b)) {
+            fprintf(stderr, "Failed to initialize CVBS decoder B\n");
+            free(app->cvbs_decoder_b);
+            app->cvbs_decoder_b = NULL;
         }
     }
 
@@ -316,6 +337,18 @@ void gui_app_cleanup(gui_app_t *app) {
 
     // Cleanup oscilloscope resources (resamplers)
     gui_oscilloscope_cleanup();
+
+    // Cleanup CVBS decoders
+    if (app->cvbs_decoder_a) {
+        gui_cvbs_cleanup(app->cvbs_decoder_a);
+        free(app->cvbs_decoder_a);
+        app->cvbs_decoder_a = NULL;
+    }
+    if (app->cvbs_decoder_b) {
+        gui_cvbs_cleanup(app->cvbs_decoder_b);
+        free(app->cvbs_decoder_b);
+        app->cvbs_decoder_b = NULL;
+    }
 }
 
 // Enumerate available capture devices
