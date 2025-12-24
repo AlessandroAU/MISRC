@@ -154,6 +154,8 @@ if raylib_dep.found()
     'misrc_gui/gui_ui.c',
     'misrc_gui/gui_render.c',
     'misrc_gui/gui_capture.c',
+    'misrc_gui/gui_record.c',
+    'misrc_gui/gui_extract.c',
     'misrc_gui/clay_renderer_raylib.c',
     'extract.c',
     'ringbuffer.c',

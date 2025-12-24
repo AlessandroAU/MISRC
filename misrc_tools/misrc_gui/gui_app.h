@@ -97,7 +97,11 @@ typedef struct gui_app {
 
     // Recording state
     double recording_start_time;
-    atomic_uint_fast64_t recording_bytes;
+    atomic_uint_fast64_t recording_bytes;        // Legacy: total raw bytes
+    atomic_uint_fast64_t recording_raw_a;        // Raw input bytes channel A
+    atomic_uint_fast64_t recording_raw_b;        // Raw input bytes channel B
+    atomic_uint_fast64_t recording_compressed_a; // Compressed output bytes channel A
+    atomic_uint_fast64_t recording_compressed_b; // Compressed output bytes channel B
 
     // GUI settings
     gui_settings_t settings;

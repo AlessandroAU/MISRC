@@ -7,6 +7,8 @@
 #include "gui_capture.h"
 #include "gui_app.h"
 #include "gui_render.h"
+#include "gui_record.h"
+#include "gui_extract.h"
 
 #include <hsdaoh.h>
 #include <hsdaoh_raw.h>
@@ -19,92 +21,13 @@
 #include <string.h>
 #include <math.h>
 
-#ifdef _WIN32
-#include <malloc.h>
-#define aligned_alloc(align, size) _aligned_malloc(size, align)
-#define aligned_free(ptr) _aligned_free(ptr)
-#else
-#define aligned_free(ptr) free(ptr)
-#endif
-
 // Buffer sizes - match reference implementation
-// Reference uses 65536*32 but we use smaller for GUI responsiveness
 #define BUFFER_READ_SIZE 65536
 #define BUFFER_TOTAL_SIZE (65536 * 1024)  // Same as reference: 64MB
-#define BUFFER_RECORD_SIZE (65536 * 1024)  // 64MB per channel for recording
 
 // Ringbuffer for raw capture data (written by callback, read by main thread)
 static ringbuffer_t s_capture_rb;
 static bool s_rb_initialized = false;
-
-// Recording ringbuffers (written by main thread, read by file writer threads)
-static ringbuffer_t s_record_rb_a;
-static ringbuffer_t s_record_rb_b;
-static bool s_record_rb_initialized = false;
-
-// Extraction output buffers (allocated from ringbuffer-aligned memory)
-static uint8_t *s_buf_aux = NULL;
-
-// Cached extraction function
-static conv_function_t s_extract_fn = NULL;
-
-// File writer thread state
-// Note: cthreads.h includes windows.h which conflicts with raylib
-// Use minimal threading primitives instead
-#ifdef _WIN32
-  #include <process.h>
-  typedef void* thrd_t;
-  typedef unsigned (__stdcall *thrd_start_t)(void*);
-  #define thrd_success 0
-  #define thrd_create(a,b,c) (((*(a)=(thrd_t)_beginthreadex(NULL,0,(thrd_start_t)b,c,0,NULL))==0)?-1:thrd_success)
-  // WaitForSingleObject and CloseHandle are already defined via raylib's windows includes
-  #ifndef INFINITE
-    #define INFINITE 0xFFFFFFFF
-  #endif
-  #ifndef WAIT_OBJECT_0
-    #define WAIT_OBJECT_0 0
-  #endif
-  static inline int thrd_join_impl(thrd_t t, int *res) {
-    extern __declspec(dllimport) unsigned long __stdcall WaitForSingleObject(void*, unsigned long);
-    extern __declspec(dllimport) int __stdcall GetExitCodeThread(void*, unsigned long*);
-    extern __declspec(dllimport) int __stdcall CloseHandle(void*);
-    unsigned long exitcode = 0;
-    if (WaitForSingleObject(t, INFINITE) != WAIT_OBJECT_0) return -1;
-    GetExitCodeThread(t, &exitcode);
-    if (res) *res = (int)exitcode;
-    CloseHandle(t);
-    return thrd_success;
-  }
-  #define thrd_join(a,b) thrd_join_impl(a,b)
-  static inline void thrd_sleep_ms(int ms) {
-    extern __declspec(dllimport) void __stdcall Sleep(unsigned long);
-    Sleep((unsigned long)ms);
-  }
-#else
-  #include <pthread.h>
-  #include <time.h>
-  typedef pthread_t thrd_t;
-  #define thrd_success 0
-  #define thrd_create(a,b,c) pthread_create(a,NULL,(void* (*)(void *))b,c)
-  #define thrd_join(a,b) pthread_join(a,b)
-  static inline void thrd_sleep_ms(int ms) {
-    struct timespec ts = { .tv_sec = ms / 1000, .tv_nsec = (ms % 1000) * 1000000 };
-    nanosleep(&ts, NULL);
-  }
-#endif
-
-static thrd_t s_writer_thread_a;
-static thrd_t s_writer_thread_b;
-static bool s_writer_threads_running = false;
-static FILE *s_file_a = NULL;
-static FILE *s_file_b = NULL;
-
-// FLAC support
-#if LIBFLAC_ENABLED == 1
-#include "FLAC/stream_encoder.h"
-static FLAC__StreamEncoder *s_encoder_a = NULL;
-static FLAC__StreamEncoder *s_encoder_b = NULL;
-#endif
 
 // Message callback for hsdaoh
 static void gui_message_callback(void *ctx, enum hsdaoh_msg_level level, const char *format, ...) {
@@ -237,16 +160,14 @@ void gui_capture_callback(void *data_info_ptr) {
     }
 }
 
-// Static extraction output buffers (page-aligned for SSE)
-static int16_t *s_buf_out_a = NULL;
-static int16_t *s_buf_out_b = NULL;
-static conv_16to32_t s_conv_16to32_fn = NULL;  // Cached 16-to-32 conversion function
-static bool s_extract_bufs_init = false;
-
 // Process captured data on main thread (called each frame)
 // Process multiple blocks to keep up with incoming data
+// Note: When recording is active, the extraction thread in gui_record.c
+// handles reading from the capture ringbuffer, so we skip processing here
+// to avoid data contention (both threads reading from the same ringbuffer)
 void gui_process_capture_data(gui_app_t *app) {
     static int call_count = 0;
+    static bool logged_init = false;
     call_count++;
 
     if (!s_rb_initialized) {
@@ -260,28 +181,25 @@ void gui_process_capture_data(gui_app_t *app) {
         return;
     }
 
-    // Get extraction function if not cached
-    if (!s_extract_fn) {
-        // Use dummy non-NULL pointers to get AB extraction
-        // Parameters: single=0, pad=0, dword=0, peak_level=0
-        s_extract_fn = get_conv_function(0, 0, 0, 0, (void*)1, (void*)1);
-        s_conv_16to32_fn = get_16to32_function();  // Cache this too
-        fprintf(stderr, "[MAIN] Extraction function: %p, conv_16to32: %p\n",
-                (void*)s_extract_fn, (void*)s_conv_16to32_fn);
+    // When recording is active, the extraction thread handles reading from the ringbuffer
+    // We skip processing here to avoid data contention
+    if (gui_record_is_active()) {
+        return;
     }
 
-    // Initialize extraction output buffers once (page-aligned for SSE)
-    if (!s_extract_bufs_init) {
-        // Allocate 32-byte aligned buffers for SSE/AVX
-        s_buf_out_a = (int16_t *)aligned_alloc(32, BUFFER_READ_SIZE * sizeof(int16_t));
-        s_buf_out_b = (int16_t *)aligned_alloc(32, BUFFER_READ_SIZE * sizeof(int16_t));
-        s_buf_aux = aligned_alloc(16, BUFFER_READ_SIZE);
-        if (!s_buf_out_a || !s_buf_out_b || !s_buf_aux) {
-            fprintf(stderr, "[MAIN] Failed to alloc extraction buffers!\n");
-            return;
+    // Initialize extraction subsystem
+    gui_extract_init();
+    extract_fn_t extract_fn = gui_extract_get_function();
+    int16_t *buf_a = gui_extract_get_buf_a();
+    int16_t *buf_b = gui_extract_get_buf_b();
+    uint8_t *buf_aux = gui_extract_get_buf_aux();
+
+    if (!extract_fn || !buf_a || !buf_b || !buf_aux) {
+        if (!logged_init) {
+            fprintf(stderr, "[MAIN] Failed to get extraction resources\n");
+            logged_init = true;
         }
-        s_extract_bufs_init = true;
-        fprintf(stderr, "[MAIN] Extraction buffers initialized\n");
+        return;
     }
 
     // Process multiple blocks per frame to keep up with incoming data
@@ -296,131 +214,17 @@ void gui_process_capture_data(gui_app_t *app) {
             break;  // No more data available
         }
 
-        // Extract samples using static buffers
+        // Extract samples
         size_t clip[2] = {0, 0};
-        uint16_t peak[2] = {0, 0};  // Not used since peak_level=0
-
-        // Extract 16-bit samples for display
-        s_extract_fn((uint32_t*)buf, BUFFER_READ_SIZE, clip, s_buf_aux, s_buf_out_a, s_buf_out_b, peak);
+        uint16_t peak[2] = {0, 0};
+        extract_fn((uint32_t*)buf, BUFFER_READ_SIZE, clip, buf_aux, buf_a, buf_b, peak);
 
         // Mark input buffer as consumed
         rb_read_finished(&s_capture_rb, read_size);
 
-        // Write to recording ringbuffers if recording
-        // For FLAC: use convert_16to32 like reference, write int32 to ringbuffer
-        // For RAW: write int16 directly
-        if (app->is_recording && s_record_rb_initialized) {
-#if LIBFLAC_ENABLED == 1
-            if (app->settings.use_flac) {
-                // FLAC needs 32-bit samples - get write pointers and convert directly into ringbuffer
-                size_t sample_bytes = BUFFER_READ_SIZE * sizeof(int32_t);
-                int32_t *write_a = (int32_t *)rb_write_ptr(&s_record_rb_a, sample_bytes);
-                int32_t *write_b = (int32_t *)rb_write_ptr(&s_record_rb_b, sample_bytes);
-                if (write_a && write_b) {
-                    // Convert 12-bit samples to 16-bit by left-shifting 4 bits
-                    // This extends the 12-bit range (-2048 to 2047) to 16-bit (-32768 to 32752)
-                    for (size_t i = 0; i < BUFFER_READ_SIZE; i++) {
-                        write_a[i] = (int32_t)s_buf_out_a[i] << 4;
-                        write_b[i] = (int32_t)s_buf_out_b[i] << 4;
-                    }
-                    rb_write_finished(&s_record_rb_a, sample_bytes);
-                    rb_write_finished(&s_record_rb_b, sample_bytes);
-                } else {
-                    static int record_drop_count = 0;
-                    record_drop_count++;
-                    if (record_drop_count <= 5 || record_drop_count % 100 == 0) {
-                        fprintf(stderr, "[RECORD] Ringbuffer full, dropped %d blocks\n", record_drop_count);
-                    }
-                }
-            } else
-#endif
-            {
-                // RAW uses 16-bit samples
-                size_t sample_bytes = BUFFER_READ_SIZE * sizeof(int16_t);
-                void *write_a = rb_write_ptr(&s_record_rb_a, sample_bytes);
-                void *write_b = rb_write_ptr(&s_record_rb_b, sample_bytes);
-                if (write_a && write_b) {
-                    memcpy(write_a, s_buf_out_a, sample_bytes);
-                    memcpy(write_b, s_buf_out_b, sample_bytes);
-                    rb_write_finished(&s_record_rb_a, sample_bytes);
-                    rb_write_finished(&s_record_rb_b, sample_bytes);
-                } else {
-                    static int record_drop_count = 0;
-                    record_drop_count++;
-                    if (record_drop_count <= 5 || record_drop_count % 100 == 0) {
-                        fprintf(stderr, "[RECORD] Ringbuffer full, dropped %d blocks\n", record_drop_count);
-                    }
-                }
-            }
-        }
-
-        // Detect positive and negative clipping separately
-        // 12-bit ADC: +2047 is positive clip, -2048 is negative clip
-        size_t clip_a_pos = 0, clip_a_neg = 0;
-        size_t clip_b_pos = 0, clip_b_neg = 0;
-        for (size_t i = 0; i < BUFFER_READ_SIZE; i++) {
-            if (s_buf_out_a[i] >= 2047) clip_a_pos++;
-            else if (s_buf_out_a[i] <= -2048) clip_a_neg++;
-            if (s_buf_out_b[i] >= 2047) clip_b_pos++;
-            else if (s_buf_out_b[i] <= -2048) clip_b_neg++;
-        }
-        atomic_fetch_add(&app->clip_count_a_pos, clip_a_pos);
-        atomic_fetch_add(&app->clip_count_a_neg, clip_a_neg);
-        atomic_fetch_add(&app->clip_count_b_pos, clip_b_pos);
-        atomic_fetch_add(&app->clip_count_b_neg, clip_b_neg);
-
-        // Calculate separate positive and negative peaks from first 1000 samples
-        // For AC signals, positive and negative excursions may differ
-        uint16_t peak_a_pos = 0, peak_a_neg = 0;
-        uint16_t peak_b_pos = 0, peak_b_neg = 0;
-        size_t peak_samples = 1000;
-        for (size_t i = 0; i < peak_samples; i++) {
-            int16_t sa = s_buf_out_a[i];
-            int16_t sb = s_buf_out_b[i];
-            // Track positive peaks (how far above zero)
-            if (sa > 0 && (uint16_t)sa > peak_a_pos) peak_a_pos = (uint16_t)sa;
-            if (sb > 0 && (uint16_t)sb > peak_b_pos) peak_b_pos = (uint16_t)sb;
-            // Track negative peaks (how far below zero, stored as positive value)
-            if (sa < 0 && (uint16_t)(-sa) > peak_a_neg) peak_a_neg = (uint16_t)(-sa);
-            if (sb < 0 && (uint16_t)(-sb) > peak_b_neg) peak_b_neg = (uint16_t)(-sb);
-        }
-        atomic_store(&app->peak_a_pos, peak_a_pos);
-        atomic_store(&app->peak_a_neg, peak_a_neg);
-        atomic_store(&app->peak_b_pos, peak_b_pos);
-        atomic_store(&app->peak_b_neg, peak_b_neg);
-
-        // Update display buffer with min/max decimation
-        // Decimate to fit display width while preserving peaks
-        const float scale = 1.0f / 2048.0f;
-        const size_t target_samples = DISPLAY_BUFFER_SIZE;  // Target display width
-        const size_t decimation = (BUFFER_READ_SIZE + target_samples - 1) / target_samples;
-        size_t display_samples = BUFFER_READ_SIZE / decimation;
-        if (display_samples > target_samples) {
-            display_samples = target_samples;
-        }
-
-        for (size_t i = 0; i < display_samples; i++) {
-            size_t start = i * decimation;
-            size_t end = start + decimation;
-            if (end > BUFFER_READ_SIZE) end = BUFFER_READ_SIZE;
-
-            // Find min/max within this decimation window
-            int16_t min_a = s_buf_out_a[start], max_a = s_buf_out_a[start];
-            int16_t min_b = s_buf_out_b[start], max_b = s_buf_out_b[start];
-            for (size_t j = start + 1; j < end; j++) {
-                if (s_buf_out_a[j] < min_a) min_a = s_buf_out_a[j];
-                if (s_buf_out_a[j] > max_a) max_a = s_buf_out_a[j];
-                if (s_buf_out_b[j] < min_b) min_b = s_buf_out_b[j];
-                if (s_buf_out_b[j] > max_b) max_b = s_buf_out_b[j];
-            }
-
-            app->display_samples[i].min_a = (float)min_a * scale;
-            app->display_samples[i].max_a = (float)max_a * scale;
-            app->display_samples[i].min_b = (float)min_b * scale;
-            app->display_samples[i].max_b = (float)max_b * scale;
-        }
-        app->display_samples_available = display_samples;
-
+        // Update stats and display using shared functions
+        gui_extract_update_stats(app, buf_a, buf_b, BUFFER_READ_SIZE);
+        gui_extract_update_display(app, buf_a, buf_b, BUFFER_READ_SIZE);
 
         atomic_fetch_add(&app->total_samples, BUFFER_READ_SIZE);
         blocks_processed++;
@@ -476,19 +280,8 @@ void gui_app_cleanup(gui_app_t *app) {
         s_rb_initialized = false;
     }
 
-    if (s_buf_aux) {
-        aligned_free(s_buf_aux);
-        s_buf_aux = NULL;
-    }
-    if (s_buf_out_a) {
-        aligned_free(s_buf_out_a);
-        s_buf_out_a = NULL;
-    }
-    if (s_buf_out_b) {
-        aligned_free(s_buf_out_b);
-        s_buf_out_b = NULL;
-    }
-    s_extract_bufs_init = false;
+    // Cleanup extraction subsystem
+    gui_extract_cleanup();
 }
 
 // Enumerate available capture devices
@@ -620,263 +413,13 @@ void gui_app_stop_capture(gui_app_t *app) {
     gui_app_set_status(app, "Capture stopped");
 }
 
-// Global app pointer for file writer threads
-static gui_app_t *s_recording_app = NULL;
-
-// File writer context
-typedef struct {
-    ringbuffer_t *rb;
-    FILE *file;
-    int channel;  // 0 = A, 1 = B
-#if LIBFLAC_ENABLED == 1
-    FLAC__StreamEncoder *encoder;
-#endif
-} writer_ctx_t;
-
-static writer_ctx_t s_ctx_a;
-static writer_ctx_t s_ctx_b;
-
-#if LIBFLAC_ENABLED == 1
-// FLAC file writer thread - matches reference misrc_capture.c pattern
-// Data in ringbuffer is already int32_t format (4 bytes per sample)
-static int flac_writer_thread(void *ctx) {
-    writer_ctx_t *wctx = (writer_ctx_t *)ctx;
-    size_t len = BUFFER_READ_SIZE * sizeof(int32_t);  // 32-bit samples
-    void *buf;
-
-    fprintf(stderr, "[FLAC] Writer thread %c started\n", wctx->channel == 0 ? 'A' : 'B');
-
-    while (!atomic_load(&do_exit) && s_recording_app && s_recording_app->is_recording) {
-        buf = rb_read_ptr(wctx->rb, len);
-        if (!buf) {
-            thrd_sleep_ms(1);
-            continue;
-        }
-
-        // Pass directly to FLAC encoder - same pattern as reference:
-        // FLAC__stream_encoder_process(encoder, (const FLAC__int32**)&buf, len>>2)
-        FLAC__bool ok = FLAC__stream_encoder_process(
-            wctx->encoder, (const FLAC__int32 **)&buf, BUFFER_READ_SIZE);
-        if (!ok) {
-            fprintf(stderr, "FLAC encoder error on channel %c\n", wctx->channel == 0 ? 'A' : 'B');
-        }
-
-        rb_read_finished(wctx->rb, len);
-
-        if (s_recording_app) {
-            atomic_fetch_add(&s_recording_app->recording_bytes, len);
-        }
-    }
-
-    fprintf(stderr, "[FLAC] Writer thread %c exiting\n", wctx->channel == 0 ? 'A' : 'B');
-    return 0;
-}
-#endif
-
-// RAW file writer thread (fallback when FLAC not available)
-static int raw_writer_thread(void *ctx) {
-    writer_ctx_t *wctx = (writer_ctx_t *)ctx;
-    size_t len = BUFFER_READ_SIZE * sizeof(int16_t);
-
-    while (!atomic_load(&do_exit) && s_recording_app && s_recording_app->is_recording) {
-        void *buf = rb_read_ptr(wctx->rb, len);
-        if (!buf) {
-            thrd_sleep_ms(1);  // 1ms
-            continue;
-        }
-
-        size_t written = fwrite(buf, 1, len, wctx->file);
-        rb_read_finished(wctx->rb, len);
-
-        if (s_recording_app) {
-            atomic_fetch_add(&s_recording_app->recording_bytes, written);
-        }
-    }
-
-    return 0;
-}
-
-// Start recording
+// Recording wrappers - delegate to gui_record module
 int gui_app_start_recording(gui_app_t *app) {
-    if (!app->is_capturing) {
-        gui_app_set_status(app, "Start capture first");
-        return -1;
-    }
-
-    if (app->is_recording) {
-        return 0;
-    }
-
-    // Initialize recording ringbuffers if needed
-    if (!s_record_rb_initialized) {
-        rb_init(&s_record_rb_a, "record_a_rb", BUFFER_RECORD_SIZE);
-        rb_init(&s_record_rb_b, "record_b_rb", BUFFER_RECORD_SIZE);
-        s_record_rb_initialized = true;
-    }
-
-    // Reset ringbuffers (no rb_reset function, so reset head/tail directly)
-    atomic_store(&s_record_rb_a.head, 0);
-    atomic_store(&s_record_rb_a.tail, 0);
-    atomic_store(&s_record_rb_b.head, 0);
-    atomic_store(&s_record_rb_b.tail, 0);
-
-    s_recording_app = app;
-    atomic_store(&app->recording_bytes, 0);
-
-#if LIBFLAC_ENABLED == 1
-    if (app->settings.use_flac) {
-        // Open FLAC files
-        s_file_a = fopen(app->settings.output_filename_a, "wb");
-        s_file_b = fopen(app->settings.output_filename_b, "wb");
-
-        if (!s_file_a || !s_file_b) {
-            gui_app_set_status(app, "Failed to open output files");
-            if (s_file_a) fclose(s_file_a);
-            if (s_file_b) fclose(s_file_b);
-            s_file_a = s_file_b = NULL;
-            return -1;
-        }
-
-        // Create FLAC encoders
-        s_encoder_a = FLAC__stream_encoder_new();
-        s_encoder_b = FLAC__stream_encoder_new();
-
-        if (!s_encoder_a || !s_encoder_b) {
-            gui_app_set_status(app, "Failed to create FLAC encoders");
-            fclose(s_file_a); fclose(s_file_b);
-            s_file_a = s_file_b = NULL;
-            return -1;
-        }
-
-        // Sample rate for FLAC - use 40kHz like reference implementation
-        // The extracted samples are at 40kHz effective rate
-        uint32_t srate = 40000;
-
-        // Configure encoders
-        for (int i = 0; i < 2; i++) {
-            FLAC__StreamEncoder *enc = (i == 0) ? s_encoder_a : s_encoder_b;
-            FILE *file = (i == 0) ? s_file_a : s_file_b;
-
-            FLAC__stream_encoder_set_verify(enc, false);
-            FLAC__stream_encoder_set_compression_level(enc, app->settings.flac_level);
-            FLAC__stream_encoder_set_channels(enc, 1);
-            FLAC__stream_encoder_set_bits_per_sample(enc, 16);
-            FLAC__stream_encoder_set_sample_rate(enc, srate);
-            FLAC__stream_encoder_set_total_samples_estimate(enc, 0);
-
-            FLAC__StreamEncoderInitStatus status =
-                FLAC__stream_encoder_init_FILE(enc, file, NULL, NULL);
-            if (status != FLAC__STREAM_ENCODER_INIT_STATUS_OK) {
-                fprintf(stderr, "FLAC encoder init failed: %d\n", status);
-                gui_app_set_status(app, "FLAC encoder init failed");
-                FLAC__stream_encoder_delete(s_encoder_a);
-                FLAC__stream_encoder_delete(s_encoder_b);
-                s_encoder_a = s_encoder_b = NULL;
-                fclose(s_file_a); fclose(s_file_b);
-                s_file_a = s_file_b = NULL;
-                return -1;
-            }
-        }
-
-        // Setup writer contexts
-        s_ctx_a.rb = &s_record_rb_a;
-        s_ctx_a.file = s_file_a;
-        s_ctx_a.channel = 0;
-        s_ctx_a.encoder = s_encoder_a;
-
-        s_ctx_b.rb = &s_record_rb_b;
-        s_ctx_b.file = s_file_b;
-        s_ctx_b.channel = 1;
-        s_ctx_b.encoder = s_encoder_b;
-
-        // Start writer threads
-        app->is_recording = true;
-        app->recording_start_time = GetTime();
-
-        thrd_create(&s_writer_thread_a, flac_writer_thread, &s_ctx_a);
-        thrd_create(&s_writer_thread_b, flac_writer_thread, &s_ctx_b);
-        s_writer_threads_running = true;
-
-        gui_app_set_status(app, "Recording (FLAC)...");
-    } else
-#endif
-    {
-        // RAW recording (fallback)
-        s_file_a = fopen(app->settings.output_filename_a, "wb");
-        s_file_b = fopen(app->settings.output_filename_b, "wb");
-
-        if (!s_file_a || !s_file_b) {
-            gui_app_set_status(app, "Failed to open output files");
-            if (s_file_a) fclose(s_file_a);
-            if (s_file_b) fclose(s_file_b);
-            s_file_a = s_file_b = NULL;
-            return -1;
-        }
-
-        s_ctx_a.rb = &s_record_rb_a;
-        s_ctx_a.file = s_file_a;
-        s_ctx_a.channel = 0;
-
-        s_ctx_b.rb = &s_record_rb_b;
-        s_ctx_b.file = s_file_b;
-        s_ctx_b.channel = 1;
-
-        app->is_recording = true;
-        app->recording_start_time = GetTime();
-
-        thrd_create(&s_writer_thread_a, raw_writer_thread, &s_ctx_a);
-        thrd_create(&s_writer_thread_b, raw_writer_thread, &s_ctx_b);
-        s_writer_threads_running = true;
-
-        gui_app_set_status(app, "Recording (RAW)...");
-    }
-
-    return 0;
+    return gui_record_start(app, &s_capture_rb);
 }
 
-// Stop recording
 void gui_app_stop_recording(gui_app_t *app) {
-    if (!app->is_recording) {
-        return;
-    }
-
-    // Signal threads to stop
-    app->is_recording = false;
-
-    // Wait for writer threads
-    if (s_writer_threads_running) {
-        thrd_join(s_writer_thread_a, NULL);
-        thrd_join(s_writer_thread_b, NULL);
-        s_writer_threads_running = false;
-    }
-
-#if LIBFLAC_ENABLED == 1
-    // Finalize FLAC encoders
-    if (s_encoder_a) {
-        FLAC__stream_encoder_finish(s_encoder_a);
-        FLAC__stream_encoder_delete(s_encoder_a);
-        s_encoder_a = NULL;
-    }
-    if (s_encoder_b) {
-        FLAC__stream_encoder_finish(s_encoder_b);
-        FLAC__stream_encoder_delete(s_encoder_b);
-        s_encoder_b = NULL;
-    }
-
-#endif
-
-    // Close files
-    if (s_file_a) {
-        fclose(s_file_a);
-        s_file_a = NULL;
-    }
-    if (s_file_b) {
-        fclose(s_file_b);
-        s_file_b = NULL;
-    }
-
-    s_recording_app = NULL;
-    gui_app_set_status(app, "Recording stopped");
+    gui_record_stop(app);
 }
 
 // Helper to update one direction of VU meter (pos or neg)

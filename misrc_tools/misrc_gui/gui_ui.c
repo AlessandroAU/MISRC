@@ -340,12 +340,36 @@ static void render_status_bar(gui_app_t *app) {
             CLAY_TEXT(make_string(temp_buf1),
                 CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATUS, .textColor = to_clay_color(COLOR_TEXT) }));
 
-            // File size
-            uint64_t bytes = atomic_load(&app->recording_bytes);
-            double mb = (double)bytes / (1024.0 * 1024.0);
-            snprintf(temp_buf2, sizeof(temp_buf2), "%.1f MB", mb);
-            CLAY_TEXT(make_string(temp_buf2),
-                CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATUS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
+            // Get per-channel stats
+            uint64_t raw_a = atomic_load(&app->recording_raw_a);
+            uint64_t raw_b = atomic_load(&app->recording_raw_b);
+            uint64_t comp_a = atomic_load(&app->recording_compressed_a);
+            uint64_t comp_b = atomic_load(&app->recording_compressed_b);
+
+            if (app->settings.use_flac && (raw_a > 0 || raw_b > 0)) {
+                // FLAC mode: show per-channel raw/compressed/ratio
+                double raw_a_mb = (double)raw_a / (1024.0 * 1024.0);
+                double raw_b_mb = (double)raw_b / (1024.0 * 1024.0);
+                double comp_a_mb = (double)comp_a / (1024.0 * 1024.0);
+                double comp_b_mb = (double)comp_b / (1024.0 * 1024.0);
+                double ratio_a = (raw_a > 0) ? (double)raw_a / (double)comp_a : 0;
+                double ratio_b = (raw_b > 0) ? (double)raw_b / (double)comp_b : 0;
+
+                snprintf(temp_buf2, sizeof(temp_buf2), "A: %.1f/%.1fMB (%.1fx)", raw_a_mb, comp_a_mb, ratio_a);
+                CLAY_TEXT(make_string(temp_buf2),
+                    CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATUS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
+
+                snprintf(temp_buf3, sizeof(temp_buf3), "B: %.1f/%.1fMB (%.1fx)", raw_b_mb, comp_b_mb, ratio_b);
+                CLAY_TEXT(make_string(temp_buf3),
+                    CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATUS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
+            } else {
+                // RAW mode or no data yet: show total bytes
+                uint64_t bytes = atomic_load(&app->recording_bytes);
+                double mb = (double)bytes / (1024.0 * 1024.0);
+                snprintf(temp_buf2, sizeof(temp_buf2), "%.1f MB", mb);
+                CLAY_TEXT(make_string(temp_buf2),
+                    CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATUS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
+            }
         } else {
             // Status message
             snprintf(temp_buf1, sizeof(temp_buf1), "%s", app->status_message);
