@@ -32,6 +32,13 @@ typedef struct vu_meter_state {
     float peak_hold_time_neg; // Time since negative peak was captured
 } vu_meter_state_t;
 
+// Oscilloscope display modes (per-channel)
+typedef enum {
+    SCOPE_MODE_LINE,      // Basic line waveform (fast, simple)
+    SCOPE_MODE_PHOSPHOR,  // Digital phosphor with heatmap persistence
+    SCOPE_MODE_COUNT      // Number of modes (for cycling)
+} scope_display_mode_t;
+
 // Per-channel trigger configuration and state
 // Simplified: rising edge only, always auto-update
 typedef struct {
@@ -40,12 +47,19 @@ typedef struct {
     float zoom_scale;          // Samples per pixel (1.0 = max zoom, higher = more zoomed out)
     int trigger_display_pos;   // Where trigger appears in display buffer (-1 if not triggered)
     atomic_int display_width;  // Actual pixel width of oscilloscope display (updated by renderer, read by extraction thread)
+    scope_display_mode_t scope_mode; // Display mode for this channel (line or phosphor)
 } channel_trigger_t;
 
 // Zoom limits
 #define ZOOM_SCALE_MIN 1.0f    // 1 sample per pixel (max zoom in)
 #define ZOOM_SCALE_MAX 128.0f  // 128 samples per pixel (max zoom out)
 #define ZOOM_SCALE_DEFAULT 32.0f
+
+// Digital phosphor display settings
+#define PHOSPHOR_MAX_WIDTH 4096   // Maximum phosphor buffer width (pixels)
+#define PHOSPHOR_MAX_HEIGHT 512   // Maximum phosphor buffer height (pixels)
+#define PHOSPHOR_DECAY_RATE 0.80f // Intensity decay per frame (0-1, higher = slower fade)
+#define PHOSPHOR_HIT_INCREMENT 0.5f // Intensity added per waveform hit (0-1)
 
 // Device info for enumeration
 typedef struct {
@@ -128,7 +142,6 @@ typedef struct gui_app {
 
     // UI state
     bool settings_panel_open;
-    bool device_dropdown_open;
     char status_message[256];
     double status_message_time;
 
@@ -147,6 +160,20 @@ typedef struct gui_app {
     // Per-channel trigger configuration (includes zoom level per channel)
     channel_trigger_t trigger_a;
     channel_trigger_t trigger_b;
+
+    // Digital phosphor buffers (intensity accumulation per pixel)
+    // Dynamically allocated based on actual display size
+    float *phosphor_a;            // Width x Height intensity buffer for channel A
+    float *phosphor_b;            // Width x Height intensity buffer for channel B
+    Color *phosphor_pixels_a;     // RGBA pixel buffer for texture upload (channel A)
+    Color *phosphor_pixels_b;     // RGBA pixel buffer for texture upload (channel B)
+    Image phosphor_image_a;       // raylib Image for channel A
+    Image phosphor_image_b;       // raylib Image for channel B
+    Texture2D phosphor_texture_a; // GPU texture for channel A
+    Texture2D phosphor_texture_b; // GPU texture for channel B
+    int phosphor_width;           // Current phosphor buffer width
+    int phosphor_height;          // Current phosphor buffer height
+    bool phosphor_textures_valid; // True if textures are initialized
 
 } gui_app_t;
 

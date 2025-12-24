@@ -10,6 +10,7 @@
 #include "gui_record.h"
 #include "gui_extract.h"
 #include "gui_oscilloscope.h"
+#include "gui_phosphor.h"
 
 #include <hsdaoh.h>
 #include <hsdaoh_raw.h>
@@ -255,6 +256,7 @@ void gui_app_init(gui_app_t *app) {
     app->trigger_a.zoom_scale = ZOOM_SCALE_DEFAULT;
     app->trigger_a.trigger_display_pos = -1;
     atomic_store(&app->trigger_a.display_width, DISPLAY_BUFFER_SIZE);  // Will be updated by renderer
+    app->trigger_a.scope_mode = SCOPE_MODE_PHOSPHOR;  // Phosphor mode by default
 
     // Initialize trigger state for channel B
     app->trigger_b.enabled = false;
@@ -262,6 +264,20 @@ void gui_app_init(gui_app_t *app) {
     app->trigger_b.zoom_scale = ZOOM_SCALE_DEFAULT;
     app->trigger_b.trigger_display_pos = -1;
     atomic_store(&app->trigger_b.display_width, DISPLAY_BUFFER_SIZE);  // Will be updated by renderer
+    app->trigger_b.scope_mode = SCOPE_MODE_PHOSPHOR;  // Phosphor mode by default
+
+    // Initialize phosphor display state
+    app->phosphor_a = NULL;
+    app->phosphor_b = NULL;
+    app->phosphor_pixels_a = NULL;
+    app->phosphor_pixels_b = NULL;
+    memset(&app->phosphor_image_a, 0, sizeof(Image));
+    memset(&app->phosphor_image_b, 0, sizeof(Image));
+    memset(&app->phosphor_texture_a, 0, sizeof(Texture2D));
+    memset(&app->phosphor_texture_b, 0, sizeof(Texture2D));
+    app->phosphor_width = 0;
+    app->phosphor_height = 0;
+    app->phosphor_textures_valid = false;
 
     // Initialize capture ringbuffer
     if (!s_rb_initialized) {
@@ -292,6 +308,9 @@ void gui_app_cleanup(gui_app_t *app) {
 
     // Cleanup extraction subsystem
     gui_extract_cleanup();
+
+    // Cleanup phosphor buffers and textures
+    gui_phosphor_cleanup(app);
 
     // Cleanup oscilloscope resources (resamplers)
     gui_oscilloscope_cleanup();

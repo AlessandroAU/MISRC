@@ -154,6 +154,8 @@ if raylib_dep.found()
     'misrc_gui/gui_ui.c',
     'misrc_gui/gui_render.c',
     'misrc_gui/gui_oscilloscope.c',
+    'misrc_gui/gui_phosphor.c',
+    'misrc_gui/gui_dropdown.c',
     'misrc_gui/gui_capture.c',
     'misrc_gui/gui_record.c',
     'misrc_gui/gui_extract.c',

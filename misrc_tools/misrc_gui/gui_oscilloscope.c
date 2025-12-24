@@ -5,6 +5,7 @@
  */
 
 #include "gui_oscilloscope.h"
+#include "gui_phosphor.h"
 #include "gui_ui.h"
 #include <math.h>
 #include <stdio.h>
@@ -30,9 +31,25 @@ static Rectangle s_osc_bounds[2] = {0};
 static bool s_osc_bounds_valid[2] = {false, false};
 static int s_dragging_channel = -1;  // Which channel is being dragged (-1 = none)
 
-// Cleanup oscilloscope resources (currently none, but kept for API compatibility)
+// Cleanup oscilloscope resources
 void gui_oscilloscope_cleanup(void) {
-    // No resources to clean up currently
+    // No static resources to clean up - phosphor cleanup is in gui_phosphor module
+}
+
+//-----------------------------------------------------------------------------
+// Legacy Phosphor Wrappers (forward to gui_phosphor module)
+//-----------------------------------------------------------------------------
+
+bool gui_oscilloscope_init_phosphor(gui_app_t *app, int width, int height) {
+    return gui_phosphor_init(app, width, height);
+}
+
+void gui_oscilloscope_clear_phosphor(gui_app_t *app) {
+    gui_phosphor_clear(app);
+}
+
+void gui_oscilloscope_decay_phosphor(gui_app_t *app) {
+    gui_phosphor_decay(app);
 }
 
 //-----------------------------------------------------------------------------
@@ -203,31 +220,50 @@ void render_oscilloscope_channel(gui_app_t *app, float x, float y, float width, 
 
     int samples_to_draw = (samples_available < (size_t)display_width) ? (int)samples_available : display_width;
 
-    // Semi-transparent color for peak envelope
-    Color envelope_color = { channel_color.r, channel_color.g, channel_color.b, 60 };
+    // Render based on per-channel display mode
+    bool is_phosphor_mode = (trig->scope_mode == SCOPE_MODE_PHOSPHOR);
 
-    // First pass: draw peak envelope as filled area
-    for (int px = 0; px < samples_to_draw; px++) {
-        waveform_sample_t *sample = &samples[px];
-        float px_x = x + px;
+    if (is_phosphor_mode) {
+        // Phosphor display (digital persistence with heatmap)
+        int buf_width = (int)width;
+        int buf_height = (int)height;
 
-        float min_y = center_y - sample->min_val * scale;
-        float max_y = center_y - sample->max_val * scale;
+        // Initialize/resize phosphor buffers if needed
+        if (buf_width > 0 && buf_height > 0) {
+            gui_phosphor_init(app, buf_width, buf_height);
+        }
 
-        // Clamp to channel bounds
-        if (min_y < y) min_y = y;
-        if (min_y > y + height) min_y = y + height;
-        if (max_y < y) max_y = y;
-        if (max_y > y + height) max_y = y + height;
+        // Update and render phosphor
+        gui_phosphor_update(app, channel, samples, samples_to_draw, app->settings.amplitude_scale);
+        gui_phosphor_render(app, channel, x, y);
+    } else {
+        // Line mode: draw peak envelope as filled area
+        Color envelope_color = { channel_color.r, channel_color.g, channel_color.b, 60 };
 
-        // Draw vertical line from min to max (envelope)
-        if (max_y < min_y) {
-            DrawLineV((Vector2){px_x, max_y}, (Vector2){px_x, min_y}, envelope_color);
+        for (int px = 0; px < samples_to_draw; px++) {
+            waveform_sample_t *sample = &samples[px];
+            float px_x = x + px;
+
+            float min_y = center_y - sample->min_val * scale;
+            float max_y = center_y - sample->max_val * scale;
+
+            // Clamp to channel bounds
+            if (min_y < y) min_y = y;
+            if (min_y > y + height) min_y = y + height;
+            if (max_y < y) max_y = y;
+            if (max_y > y + height) max_y = y + height;
+
+            // Draw vertical line from min to max (envelope)
+            if (max_y < min_y) {
+                DrawLineV((Vector2){px_x, max_y}, (Vector2){px_x, min_y}, envelope_color);
+            }
         }
     }
 
-    // Second pass: draw resampled waveform as connected line
+    // Draw resampled waveform as connected line
     float prev_py = center_y;
+    Color waveform_color = is_phosphor_mode ?
+        (Color){channel_color.r, channel_color.g, channel_color.b, 200} : channel_color;
 
     for (int px = 0; px < samples_to_draw; px++) {
         waveform_sample_t *sample = &samples[px];
@@ -240,7 +276,7 @@ void render_oscilloscope_channel(gui_app_t *app, float x, float y, float width, 
         if (py > y + height) py = y + height;
 
         if (px > 0) {
-            DrawLineV((Vector2){px_x - 1, prev_py}, (Vector2){px_x, py}, channel_color);
+            DrawLineEx((Vector2){px_x - 1, prev_py}, (Vector2){px_x, py}, 1.0f, waveform_color);
         }
 
         prev_py = py;
@@ -436,7 +472,8 @@ static size_t resample_to_buffer_smooth(waveform_sample_t *dest, const int16_t *
 bool process_channel_display(gui_app_t *app, const int16_t *buf, size_t num_samples,
                              waveform_sample_t *display_buf, size_t *display_count,
                              channel_trigger_t *trig, int channel) {
-    (void)app;  // Unused parameter
+    (void)app;      // Unused parameter
+    (void)channel;  // Unused parameter (kept for API compatibility)
 
     // Get display width (set by renderer, defaults to DISPLAY_BUFFER_SIZE)
     // Use atomic_load for thread safety since renderer runs on main thread
@@ -492,22 +529,9 @@ bool process_channel_display(gui_app_t *app, const int16_t *buf, size_t num_samp
     size_t min_trig_pos = (size_t)pre_trigger_raw_samples;
     size_t max_trig_pos = num_samples - (size_t)post_trigger_raw_samples;
 
-    // Debug: log trigger search results periodically
-    static int s_trig_log_counter[2] = {0, 0};
-    bool should_log = (++s_trig_log_counter[channel] >= 500);
-    if (should_log) {
-        s_trig_log_counter[channel] = 0;
-        fprintf(stderr, "[TRIG] Ch%c: level=%d, search_range=[%zu-%zu], num_samples=%zu, decimation=%.2f\n",
-                channel == 0 ? 'A' : 'B', trig->level, min_trig_pos, max_trig_pos, num_samples, decimation);
-    }
-
     // Check if there's a valid search range
     if (min_trig_pos >= max_trig_pos) {
         // No valid range - display window too large for this buffer
-        if (should_log) {
-            fprintf(stderr, "[TRIG] Ch%c: NO VALID RANGE (min=%zu >= max=%zu)\n",
-                    channel == 0 ? 'A' : 'B', min_trig_pos, max_trig_pos);
-        }
         trig->trigger_display_pos = -1;
         *display_count = resample_to_buffer_smooth(display_buf, buf, num_samples, 0, decimation, display_width);
         return true;
@@ -518,9 +542,6 @@ bool process_channel_display(gui_app_t *app, const int16_t *buf, size_t num_samp
 
     if (trig_pos < 0) {
         // No trigger found in valid range - hold previous display
-        if (should_log) {
-            fprintf(stderr, "[TRIG] Ch%c: NO TRIGGER IN RANGE\n", channel == 0 ? 'A' : 'B');
-        }
         return false;
     }
 
@@ -528,10 +549,6 @@ bool process_channel_display(gui_app_t *app, const int16_t *buf, size_t num_samp
     size_t start_pos = (size_t)((float)trig_pos - pre_trigger_raw_samples);
     trig->trigger_display_pos = (int)trigger_display_pos;
     *display_count = resample_to_buffer_smooth(display_buf, buf, num_samples, start_pos, decimation, display_width);
-    if (should_log) {
-        fprintf(stderr, "[TRIG] Ch%c: SUCCESS - trig_pos=%zd, start_pos=%zu\n",
-                channel == 0 ? 'A' : 'B', trig_pos, start_pos);
-    }
     return true;
 }
 

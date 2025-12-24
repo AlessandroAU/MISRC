@@ -6,9 +6,14 @@
 
 #include "gui_ui.h"
 #include "gui_render.h"
+#include "gui_dropdown.h"
 #include <clay.h>
 #include <stdio.h>
 #include <string.h>
+
+// Dropdown identifiers
+#define DROPDOWN_DEVICE     "Device"
+#define DROPDOWN_SCOPE_MODE "ScopeMode"
 
 // Color conversions
 static inline Clay_Color to_clay_color(Color c) {
@@ -75,7 +80,6 @@ static CustomLayoutElement s_osc_b_element;
 static CustomLayoutElement s_vu_a_element;
 static CustomLayoutElement s_vu_b_element;
 
-
 // Render the toolbar
 static void render_toolbar(gui_app_t *app) {
     CLAY(CLAY_ID("Toolbar"), {
@@ -102,7 +106,8 @@ static void render_toolbar(gui_app_t *app) {
             CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_NORMAL, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
 
         // Device dropdown button
-        Color dropdown_color = app->device_dropdown_open ? COLOR_BUTTON_ACTIVE : COLOR_BUTTON;
+        bool device_dropdown_open = gui_dropdown_is_open(DROPDOWN_DEVICE, 0);
+        Color dropdown_color = device_dropdown_open ? COLOR_BUTTON_ACTIVE : COLOR_BUTTON;
         CLAY(CLAY_ID("DeviceDropdown"), {
             .layout = {
                 .sizing = { CLAY_SIZING_FIXED(250), CLAY_SIZING_FIXED(32) },
@@ -326,121 +331,83 @@ static void render_channel_stats(gui_app_t *app, int channel) {
             }
         }
 
-        // Trigger level row
-        CLAY(CLAY_IDI("TrigLevel", channel), {
-            .layout = {
-                .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0) },
-                .layoutDirection = CLAY_LEFT_TO_RIGHT,
-                .childAlignment = { .y = CLAY_ALIGN_Y_CENTER },
-                .childGap = 2
-            }
-        }) {
-            CLAY_TEXT(CLAY_STRING("Level:"),
-                CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
-
-            // Decrease button
-            CLAY(CLAY_IDI("TrigDec", channel), {
-                .layout = {
-                    .sizing = { CLAY_SIZING_FIXED(18), CLAY_SIZING_FIXED(18) },
-                    .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER }
-                },
-                .backgroundColor = to_clay_color(COLOR_BUTTON),
-                .cornerRadius = CLAY_CORNER_RADIUS(3)
-            }) {
-                CLAY_TEXT(CLAY_STRING("-"),
-                    CLAY_TEXT_CONFIG({ .fontSize = 12, .textColor = to_clay_color(COLOR_TEXT) }));
-            }
-
-            // Level value
-            CLAY(CLAY_IDI("TrigValue", channel), {
-                .layout = {
-                    .sizing = { CLAY_SIZING_FIXED(40), CLAY_SIZING_FIXED(18) },
-                    .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER }
-                },
-                .backgroundColor = to_clay_color((Color){ 25, 25, 32, 255 }),
-                .cornerRadius = CLAY_CORNER_RADIUS(3)
-            }) {
-                CLAY_TEXT(make_string(trig_level_buf),
-                    CLAY_TEXT_CONFIG({ .fontSize = 12, .textColor = to_clay_color(channel_color) }));
-            }
-
-            // Increase button
-            CLAY(CLAY_IDI("TrigInc", channel), {
-                .layout = {
-                    .sizing = { CLAY_SIZING_FIXED(18), CLAY_SIZING_FIXED(18) },
-                    .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER }
-                },
-                .backgroundColor = to_clay_color(COLOR_BUTTON),
-                .cornerRadius = CLAY_CORNER_RADIUS(3)
-            }) {
-                CLAY_TEXT(CLAY_STRING("+"),
-                    CLAY_TEXT_CONFIG({ .fontSize = 12, .textColor = to_clay_color(COLOR_TEXT) }));
-            }
-        }
-
-        // Separator line before zoom
-        CLAY(CLAY_IDI("ZoomSep", channel), {
+        // Separator line before display mode
+        CLAY(CLAY_IDI("ModeSep", channel), {
             .layout = { .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1) } },
             .backgroundColor = to_clay_color(COLOR_TEXT_DIM)
         }) {}
 
-        // Zoom row
-        CLAY(CLAY_IDI("ZoomRow", channel), {
+        // Display mode row
+        CLAY(CLAY_IDI("ModeRow", channel), {
             .layout = {
                 .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0) },
                 .layoutDirection = CLAY_LEFT_TO_RIGHT,
                 .childAlignment = { .y = CLAY_ALIGN_Y_CENTER },
-                .childGap = 2
+                .childGap = 4
             }
         }) {
-            CLAY_TEXT(CLAY_STRING("Zoom:"),
+            CLAY_TEXT(CLAY_STRING("Display:"),
                 CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
 
-            // Zoom out button
-            bool can_zoom_out = trig->zoom_scale < ZOOM_SCALE_MAX;
-            CLAY(CLAY_IDI("ZoomDec", channel), {
+            // Mode dropdown button
+            const char *mode_name = (trig->scope_mode == SCOPE_MODE_PHOSPHOR) ? "Phosphor" : "Line";
+            bool scope_dropdown_open = gui_dropdown_is_open(DROPDOWN_SCOPE_MODE, channel);
+            CLAY(CLAY_IDI("ScopeModeBtn", channel), {
                 .layout = {
-                    .sizing = { CLAY_SIZING_FIXED(18), CLAY_SIZING_FIXED(18) },
+                    .sizing = { CLAY_SIZING_FIXED(70), CLAY_SIZING_FIXED(18) },
                     .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER }
                 },
-                .backgroundColor = to_clay_color(can_zoom_out ? COLOR_BUTTON : (Color){ 50, 50, 55, 255 }),
+                .backgroundColor = to_clay_color(scope_dropdown_open ? COLOR_BUTTON_HOVER : COLOR_BUTTON),
                 .cornerRadius = CLAY_CORNER_RADIUS(3)
             }) {
-                CLAY_TEXT(CLAY_STRING("-"),
-                    CLAY_TEXT_CONFIG({ .fontSize = 12, .textColor = to_clay_color(can_zoom_out ? COLOR_TEXT : COLOR_TEXT_DIM) }));
-            }
-
-            // Zoom value - format as samples per pixel (rounded)
-            static char zoom_val_buf[2][16];
-            int zoom_int = (int)(trig->zoom_scale + 0.5f);
-            if (zoom_int < 1) zoom_int = 1;
-            snprintf(zoom_val_buf[channel], sizeof(zoom_val_buf[channel]), "%dx", zoom_int);
-            CLAY(CLAY_IDI("ZoomValue", channel), {
-                .layout = {
-                    .sizing = { CLAY_SIZING_FIXED(36), CLAY_SIZING_FIXED(18) },
-                    .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER }
-                },
-                .backgroundColor = to_clay_color((Color){ 25, 25, 32, 255 }),
-                .cornerRadius = CLAY_CORNER_RADIUS(3)
-            }) {
-                CLAY_TEXT(make_string(zoom_val_buf[channel]),
-                    CLAY_TEXT_CONFIG({ .fontSize = 12, .textColor = to_clay_color(channel_color) }));
-            }
-
-            // Zoom in button
-            bool can_zoom_in = trig->zoom_scale > ZOOM_SCALE_MIN;
-            CLAY(CLAY_IDI("ZoomInc", channel), {
-                .layout = {
-                    .sizing = { CLAY_SIZING_FIXED(18), CLAY_SIZING_FIXED(18) },
-                    .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER }
-                },
-                .backgroundColor = to_clay_color(can_zoom_in ? COLOR_BUTTON : (Color){ 50, 50, 55, 255 }),
-                .cornerRadius = CLAY_CORNER_RADIUS(3)
-            }) {
-                CLAY_TEXT(CLAY_STRING("+"),
-                    CLAY_TEXT_CONFIG({ .fontSize = 12, .textColor = to_clay_color(can_zoom_in ? COLOR_TEXT : COLOR_TEXT_DIM) }));
+                CLAY_TEXT(make_string(mode_name),
+                    CLAY_TEXT_CONFIG({ .fontSize = 11, .textColor = to_clay_color(COLOR_TEXT) }));
             }
         }
+
+        // Per-channel scope mode dropdown options (floating, visible when open)
+        if (gui_dropdown_is_open(DROPDOWN_SCOPE_MODE, channel)) {
+            CLAY(CLAY_IDI("ScopeModeOpts", channel), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_FIXED(70), CLAY_SIZING_FIT(0) },
+                    .layoutDirection = CLAY_TOP_TO_BOTTOM
+                },
+                .floating = {
+                    .attachTo = CLAY_ATTACH_TO_ELEMENT_WITH_ID,
+                    .parentId = CLAY_IDI("ScopeModeBtn", channel).id,
+                    .attachPoints = { .element = CLAY_ATTACH_POINT_LEFT_TOP, .parent = CLAY_ATTACH_POINT_LEFT_BOTTOM }
+                },
+                .backgroundColor = to_clay_color(COLOR_PANEL_BG),
+                .cornerRadius = CLAY_CORNER_RADIUS(3)
+            }) {
+                // Line mode option
+                Color line_color = (trig->scope_mode == SCOPE_MODE_LINE) ? COLOR_BUTTON_ACTIVE : COLOR_BUTTON;
+                CLAY(CLAY_IDI("ScopeModeOptLine", channel), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(20) },
+                        .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER }
+                    },
+                    .backgroundColor = to_clay_color(line_color)
+                }) {
+                    CLAY_TEXT(CLAY_STRING("Line"),
+                        CLAY_TEXT_CONFIG({ .fontSize = 11, .textColor = to_clay_color(COLOR_TEXT) }));
+                }
+
+                // Phosphor mode option
+                Color phosphor_color = (trig->scope_mode == SCOPE_MODE_PHOSPHOR) ? COLOR_BUTTON_ACTIVE : COLOR_BUTTON;
+                CLAY(CLAY_IDI("ScopeModeOptPhos", channel), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(20) },
+                        .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER }
+                    },
+                    .backgroundColor = to_clay_color(phosphor_color)
+                }) {
+                    CLAY_TEXT(CLAY_STRING("Phosphor"),
+                        CLAY_TEXT_CONFIG({ .fontSize = 11, .textColor = to_clay_color(COLOR_TEXT) }));
+                }
+            }
+        }
+
     }
 }
 
@@ -679,7 +646,7 @@ void gui_render_layout(gui_app_t *app) {
     }
 
     // Device dropdown overlay (if open)
-    if (app->device_dropdown_open && app->device_count > 0) {
+    if (gui_dropdown_is_open(DROPDOWN_DEVICE, 0) && app->device_count > 0) {
         CLAY(CLAY_ID("DeviceDropdownOverlay"), {
             .layout = {
                 .sizing = { CLAY_SIZING_FIXED(250), CLAY_SIZING_FIT(0) },
@@ -748,57 +715,54 @@ void gui_handle_interactions(gui_app_t *app) {
             }
         }
 
+        // Track if any dropdown element was clicked
+        bool dropdown_clicked = false;
+
         // Check device dropdown
         if (Clay_PointerOver(CLAY_ID("DeviceDropdown"))) {
-            app->device_dropdown_open = !app->device_dropdown_open;
-        } else if (app->device_dropdown_open) {
+            gui_dropdown_toggle(DROPDOWN_DEVICE, 0);
+            dropdown_clicked = true;
+        } else if (gui_dropdown_is_open(DROPDOWN_DEVICE, 0)) {
             // Check device options
-            bool clicked_option = false;
             for (int i = 0; i < app->device_count; i++) {
                 if (Clay_PointerOver(CLAY_IDI("DeviceOption", i))) {
                     app->selected_device = i;
-                    app->device_dropdown_open = false;
-                    clicked_option = true;
+                    gui_dropdown_close_all();
+                    dropdown_clicked = true;
                     break;
                 }
             }
-            if (!clicked_option) {
-                app->device_dropdown_open = false;
-            }
         }
 
-        // Trigger controls for both channels (using indexed IDs from stats panel)
+        // Per-channel controls
         for (int ch = 0; ch < 2; ch++) {
             channel_trigger_t *trig = (ch == 0) ? &app->trigger_a : &app->trigger_b;
 
             if (Clay_PointerOver(CLAY_IDI("TrigEnable", ch))) {
                 trig->enabled = !trig->enabled;
             }
-            if (Clay_PointerOver(CLAY_IDI("TrigDec", ch))) {
-                trig->level -= 205;  // ~10% step
-                if (trig->level < -2048) trig->level = -2048;
-            }
-            if (Clay_PointerOver(CLAY_IDI("TrigInc", ch))) {
-                trig->level += 205;  // ~10% step
-                if (trig->level > 2047) trig->level = 2047;
-            }
 
-            // Per-channel zoom controls (smooth zoom with 10% steps)
-            const float zoom_factor = 1.10f;
-            if (Clay_PointerOver(CLAY_IDI("ZoomDec", ch))) {
-                // Zoom out (more samples per pixel)
-                trig->zoom_scale *= zoom_factor;
-                if (trig->zoom_scale > ZOOM_SCALE_MAX) {
-                    trig->zoom_scale = ZOOM_SCALE_MAX;
+            // Per-channel scope mode dropdown
+            if (Clay_PointerOver(CLAY_IDI("ScopeModeBtn", ch))) {
+                gui_dropdown_toggle(DROPDOWN_SCOPE_MODE, ch);
+                dropdown_clicked = true;
+            } else if (gui_dropdown_is_open(DROPDOWN_SCOPE_MODE, ch)) {
+                if (Clay_PointerOver(CLAY_IDI("ScopeModeOptLine", ch))) {
+                    trig->scope_mode = SCOPE_MODE_LINE;
+                    gui_dropdown_close_all();
+                    dropdown_clicked = true;
+                }
+                if (Clay_PointerOver(CLAY_IDI("ScopeModeOptPhos", ch))) {
+                    trig->scope_mode = SCOPE_MODE_PHOSPHOR;
+                    gui_dropdown_close_all();
+                    dropdown_clicked = true;
                 }
             }
-            if (Clay_PointerOver(CLAY_IDI("ZoomInc", ch))) {
-                // Zoom in (fewer samples per pixel)
-                trig->zoom_scale /= zoom_factor;
-                if (trig->zoom_scale < ZOOM_SCALE_MIN) {
-                    trig->zoom_scale = ZOOM_SCALE_MIN;
-                }
-            }
+        }
+
+        // Close all dropdowns if clicked elsewhere
+        if (!dropdown_clicked) {
+            gui_dropdown_close_all();
         }
     }
 }

@@ -17,6 +17,8 @@
 #include "gui_ui.h"
 #include "gui_render.h"
 #include "gui_capture.h"
+#include "gui_oscilloscope.h"
+#include "gui_dropdown.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -141,8 +143,8 @@ int main(int argc, char **argv) {
         if (IsKeyPressed(KEY_ESCAPE)) {
             if (app.settings_panel_open) {
                 app.settings_panel_open = false;
-            } else if (app.device_dropdown_open) {
-                app.device_dropdown_open = false;
+            } else {
+                gui_dropdown_close_all();
             }
         }
 
@@ -218,6 +220,9 @@ int main(int argc, char **argv) {
 
         // Update VU meters
         gui_app_update_vu_meters(&app, dt);
+
+        // Apply phosphor decay (before updating display buffer)
+        gui_oscilloscope_decay_phosphor(&app);
 
         // Update display buffer from capture data
         gui_app_update_display_buffer(&app);
