@@ -230,6 +230,9 @@ int main(int argc, char **argv) {
         // Handle Clay interactions
         gui_handle_interactions(&app);
 
+        // Handle oscilloscope mouse interaction (drag to set trigger level)
+        handle_oscilloscope_interaction(&app);
+
         // Render
         BeginDrawing();
         ClearBackground(COLOR_BG);

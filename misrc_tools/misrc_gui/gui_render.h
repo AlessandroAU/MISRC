@@ -30,4 +30,8 @@ void render_vu_meter(float x, float y, float width, float height,
 // Set the app reference for custom rendering
 void set_render_app(gui_app_t *app);
 
+// Handle oscilloscope mouse interaction (drag to set trigger level)
+// Call this each frame after rendering
+void handle_oscilloscope_interaction(gui_app_t *app);
+
 #endif // GUI_RENDER_H

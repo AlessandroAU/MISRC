@@ -226,9 +226,11 @@ void gui_capture_callback(void *data_info_ptr) {
 
 // Initialize application
 void gui_app_init(gui_app_t *app) {
-    memset(app->display_samples, 0, sizeof(app->display_samples));
-    app->display_write_pos = 0;
-    app->display_samples_available = 0;
+    // Initialize per-channel display buffers
+    memset(app->display_samples_a, 0, sizeof(app->display_samples_a));
+    memset(app->display_samples_b, 0, sizeof(app->display_samples_b));
+    app->display_samples_available_a = 0;
+    app->display_samples_available_b = 0;
 
     app->vu_a.level_pos = 0;
     app->vu_a.level_neg = 0;
@@ -245,6 +247,24 @@ void gui_app_init(gui_app_t *app) {
     app->vu_b.peak_hold_time_neg = 0;
 
     strcpy(app->status_message, "Initializing...");
+
+    // Initialize trigger state for channel A
+    app->trigger_a.enabled = false;
+    app->trigger_a.edge = TRIGGER_EDGE_RISING;
+    app->trigger_a.mode = TRIGGER_MODE_AUTO;
+    app->trigger_a.level = 0;
+    app->trigger_a.hysteresis = 20;
+    app->trigger_a.zoom_level = 0;
+    app->trigger_a.holdoff = TRIGGER_HOLDOFF_DEFAULT;
+
+    // Initialize trigger state for channel B
+    app->trigger_b.enabled = false;
+    app->trigger_b.edge = TRIGGER_EDGE_RISING;
+    app->trigger_b.mode = TRIGGER_MODE_AUTO;
+    app->trigger_b.level = 0;
+    app->trigger_b.hysteresis = 20;
+    app->trigger_b.zoom_level = 0;
+    app->trigger_b.holdoff = TRIGGER_HOLDOFF_DEFAULT;
 
     // Initialize capture ringbuffer
     if (!s_rb_initialized) {
@@ -345,9 +365,9 @@ int gui_app_start_capture(gui_app_t *app) {
     atomic_store(&app->sample_rate, 0);
     atomic_store(&app->last_callback_time_ms, get_time_ms());
 
-    // Reset display buffer
-    app->display_write_pos = 0;
-    app->display_samples_available = 0;
+    // Reset display buffers (per-channel)
+    app->display_samples_available_a = 0;
+    app->display_samples_available_b = 0;
 
     // Reset callback counter and frame tracking
     s_callback_count = 0;
@@ -510,10 +530,11 @@ void gui_app_update_display_buffer(gui_app_t *app) {
 
 // Clear display buffer and reset VU meters (called when device disconnects)
 void gui_app_clear_display(gui_app_t *app) {
-    // Clear display samples
-    memset(app->display_samples, 0, sizeof(app->display_samples));
-    app->display_write_pos = 0;
-    app->display_samples_available = 0;
+    // Clear display samples (per-channel)
+    memset(app->display_samples_a, 0, sizeof(app->display_samples_a));
+    memset(app->display_samples_b, 0, sizeof(app->display_samples_b));
+    app->display_samples_available_a = 0;
+    app->display_samples_available_b = 0;
 
     // Reset VU meters
     app->vu_a.level_pos = 0;

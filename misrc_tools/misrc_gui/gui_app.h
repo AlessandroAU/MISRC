@@ -18,8 +18,7 @@ typedef struct sc_handle sc_handle_t;
 // Waveform min/max pair for accurate peak visualization
 // Values are normalized floats in range -1.0 to 1.0
 typedef struct {
-    float min_a, max_a;
-    float min_b, max_b;
+    float min_val, max_val;
 } waveform_minmax_t;
 
 // VU meter state - tracks positive and negative separately for AC signals
@@ -31,6 +30,41 @@ typedef struct vu_meter_state {
     float peak_hold_time_pos; // Time since positive peak was captured
     float peak_hold_time_neg; // Time since negative peak was captured
 } vu_meter_state_t;
+
+// Trigger edge type for oscilloscope
+typedef enum {
+    TRIGGER_EDGE_RISING = 0,
+    TRIGGER_EDGE_FALLING = 1,
+    TRIGGER_EDGE_BOTH = 2
+} trigger_edge_t;
+
+// Trigger mode
+typedef enum {
+    TRIGGER_MODE_AUTO = 0,     // Always update display, trigger stabilizes when found
+    TRIGGER_MODE_NORMAL = 1    // Only update display when trigger found, hold otherwise
+} trigger_mode_t;
+
+// Per-channel trigger configuration and state
+typedef struct {
+    bool enabled;              // Trigger enabled for this channel
+    trigger_edge_t edge;       // Edge type (rising/falling/both)
+    trigger_mode_t mode;       // Auto or Normal mode
+    int16_t level;             // Trigger level (-2048 to +2047, 12-bit range)
+    uint16_t hysteresis;       // Noise rejection window (default 20)
+    int zoom_level;            // Per-channel zoom (0 = most zoomed out)
+    uint32_t holdoff;          // Holdoff in samples (minimum between triggers)
+} channel_trigger_t;
+
+// Default holdoff values (at 40 MSPS)
+// These provide stable triggering for common audio frequencies
+#define TRIGGER_HOLDOFF_MIN     0
+#define TRIGGER_HOLDOFF_DEFAULT 1000    // ~25us at 40 MSPS
+#define TRIGGER_HOLDOFF_MAX     40000   // ~1ms at 40 MSPS
+
+// Horizontal zoom levels (samples per display pixel)
+// At 40 MSPS: zoom 0 = 32 samples/px = ~1.6ms window, zoom 5 = 1 sample/px = ~51us window
+#define ZOOM_LEVEL_COUNT 6
+static const int ZOOM_SAMPLES_PER_PIXEL[ZOOM_LEVEL_COUNT] = { 128, 64, 32, 16, 8, 4, 2, 1 };
 
 // Device info for enumeration
 typedef struct {
@@ -69,10 +103,11 @@ typedef struct gui_app {
     int device_count;
     int selected_device;
 
-    // Display buffer for waveform (circular buffer)
-    waveform_minmax_t display_samples[DISPLAY_BUFFER_SIZE];
-    size_t display_write_pos;
-    size_t display_samples_available;
+    // Per-channel display buffers for waveform
+    waveform_minmax_t display_samples_a[DISPLAY_BUFFER_SIZE];
+    waveform_minmax_t display_samples_b[DISPLAY_BUFFER_SIZE];
+    size_t display_samples_available_a;
+    size_t display_samples_available_b;
 
     // VU meter state (updated on main thread from atomic values)
     vu_meter_state_t vu_a;
@@ -127,6 +162,10 @@ typedef struct gui_app {
 
     // Fonts
     Font *fonts;
+
+    // Per-channel trigger configuration (includes zoom level per channel)
+    channel_trigger_t trigger_a;
+    channel_trigger_t trigger_b;
 
 } gui_app_t;
 

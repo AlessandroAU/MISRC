@@ -9,6 +9,7 @@
 
 #include "gui_extract.h"
 #include "gui_app.h"
+#include "gui_oscilloscope.h"
 #include "../extract.h"
 #include "../ringbuffer.h"
 
@@ -131,7 +132,7 @@ static int extraction_thread(void *ctx) {
 
         // Always update stats and display
         gui_extract_update_stats(s_extract_app, s_buf_a, s_buf_b, BUFFER_READ_SIZE);
-        gui_extract_update_display(s_extract_app, s_buf_a, s_buf_b, BUFFER_READ_SIZE);
+        gui_oscilloscope_update_display(s_extract_app, s_buf_a, s_buf_b, BUFFER_READ_SIZE);
         atomic_fetch_add(&s_extract_app->total_samples, BUFFER_READ_SIZE);
         atomic_fetch_add(&s_extract_app->samples_a, BUFFER_READ_SIZE);
         atomic_fetch_add(&s_extract_app->samples_b, BUFFER_READ_SIZE);
@@ -367,40 +368,4 @@ void gui_extract_update_stats(gui_app_t *app, const int16_t *buf_a,
     atomic_store(&app->peak_a_neg, peak_a_neg);
     atomic_store(&app->peak_b_pos, peak_b_pos);
     atomic_store(&app->peak_b_neg, peak_b_neg);
-}
-
-void gui_extract_update_display(gui_app_t *app, const int16_t *buf_a,
-                                const int16_t *buf_b, size_t num_samples) {
-    const float scale = 1.0f / 2048.0f;
-    const size_t target_samples = DISPLAY_BUFFER_SIZE;
-    const size_t decimation = (num_samples + target_samples - 1) / target_samples;
-    size_t display_samples = num_samples / decimation;
-
-    if (display_samples > target_samples) {
-        display_samples = target_samples;
-    }
-
-    for (size_t i = 0; i < display_samples; i++) {
-        size_t start = i * decimation;
-        size_t end = start + decimation;
-        if (end > num_samples) end = num_samples;
-
-        // Find min/max within this decimation window
-        int16_t min_a = buf_a[start], max_a = buf_a[start];
-        int16_t min_b = buf_b[start], max_b = buf_b[start];
-
-        for (size_t j = start + 1; j < end; j++) {
-            if (buf_a[j] < min_a) min_a = buf_a[j];
-            if (buf_a[j] > max_a) max_a = buf_a[j];
-            if (buf_b[j] < min_b) min_b = buf_b[j];
-            if (buf_b[j] > max_b) max_b = buf_b[j];
-        }
-
-        app->display_samples[i].min_a = (float)min_a * scale;
-        app->display_samples[i].max_a = (float)max_a * scale;
-        app->display_samples[i].min_b = (float)min_b * scale;
-        app->display_samples[i].max_b = (float)max_b * scale;
-    }
-
-    app->display_samples_available = display_samples;
 }

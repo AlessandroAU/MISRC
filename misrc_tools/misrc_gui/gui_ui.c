@@ -166,6 +166,7 @@ static void render_toolbar(gui_app_t *app) {
             CLAY_TEXT(CLAY_STRING("*"),
                 CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_TITLE, .textColor = to_clay_color(COLOR_TEXT) }));
         }
+
     }
 }
 
@@ -176,14 +177,20 @@ static void render_toolbar(gui_app_t *app) {
     .childGap = 4 \
 }
 
-// Render per-channel stats panel
+// Trigger level buffers
+static char trig_level_a_buf[16];
+static char trig_level_b_buf[16];
+
+// Render per-channel stats panel with trigger controls
 static void render_channel_stats(gui_app_t *app, int channel) {
-    // Get per-channel stats
+    // Get per-channel stats and trigger
     uint64_t samples;
     uint32_t clip_pos, clip_neg, errors;
     float peak_pos, peak_neg;
     Color channel_color;
     char *buf_samples, *buf_peak_pos, *buf_peak_neg, *buf_clip, *buf_errors;
+    channel_trigger_t *trig;
+    char *trig_level_buf;
 
     if (channel == 0) {
         samples = atomic_load(&app->samples_a);
@@ -198,6 +205,8 @@ static void render_channel_stats(gui_app_t *app, int channel) {
         buf_peak_neg = stat_a_peak_neg;
         buf_clip = stat_a_clip;
         buf_errors = stat_a_errors;
+        trig = &app->trigger_a;
+        trig_level_buf = trig_level_a_buf;
     } else {
         samples = atomic_load(&app->samples_b);
         clip_pos = atomic_load(&app->clip_count_b_pos);
@@ -211,6 +220,8 @@ static void render_channel_stats(gui_app_t *app, int channel) {
         buf_peak_neg = stat_b_peak_neg;
         buf_clip = stat_b_clip;
         buf_errors = stat_b_errors;
+        trig = &app->trigger_b;
+        trig_level_buf = trig_level_b_buf;
     }
 
     uint32_t clip_total = clip_pos + clip_neg;
@@ -231,11 +242,15 @@ static void render_channel_stats(gui_app_t *app, int channel) {
     snprintf(buf_clip, 16, "%u", clip_total);
     snprintf(buf_errors, 16, "%u", errors);
 
+    // Format trigger level
+    int level_percent = (int)(trig->level * 100 / 2048);
+    snprintf(trig_level_buf, 16, "%+d%%", level_percent);
+
     CLAY(CLAY_IDI("StatsPanel", channel), {
         .layout = {
-            .sizing = { CLAY_SIZING_FIXED(140), CLAY_SIZING_GROW(0) },
+            .sizing = { CLAY_SIZING_FIXED(150), CLAY_SIZING_GROW(0) },
             .layoutDirection = CLAY_TOP_TO_BOTTOM,
-            .padding = { 8, 8, 6, 6 },
+            .padding = { 6, 6, 4, 4 },
             .childGap = 2
         },
         .backgroundColor = to_clay_color((Color){ 35, 35, 42, 255 })
@@ -276,6 +291,255 @@ static void render_channel_stats(gui_app_t *app, int channel) {
                 CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
             CLAY_TEXT(make_string(buf_errors),
                 CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(errors > 0 ? COLOR_CLIP_RED : COLOR_TEXT) }));
+        }
+
+        // Separator line
+        CLAY(CLAY_IDI("StatSep", channel), {
+            .layout = { .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1) } },
+            .backgroundColor = to_clay_color(COLOR_TEXT_DIM)
+        }) {}
+
+        // Trigger section header row with enable button
+        CLAY(CLAY_IDI("TrigHeader", channel), {
+            .layout = {
+                .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0) },
+                .layoutDirection = CLAY_LEFT_TO_RIGHT,
+                .childAlignment = { .y = CLAY_ALIGN_Y_CENTER },
+                .childGap = 4
+            }
+        }) {
+            CLAY_TEXT(CLAY_STRING("Trigger:"),
+                CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
+
+            // Enable button
+            Color enable_color = trig->enabled ? channel_color : COLOR_BUTTON;
+            CLAY(CLAY_IDI("TrigEnable", channel), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_FIXED(32), CLAY_SIZING_FIXED(18) },
+                    .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER }
+                },
+                .backgroundColor = to_clay_color(enable_color),
+                .cornerRadius = CLAY_CORNER_RADIUS(3)
+            }) {
+                CLAY_TEXT(trig->enabled ? CLAY_STRING("ON") : CLAY_STRING("OFF"),
+                    CLAY_TEXT_CONFIG({ .fontSize = 12, .textColor = to_clay_color(COLOR_TEXT) }));
+            }
+
+            // Edge button
+            const char *edge_label = (trig->edge == TRIGGER_EDGE_RISING) ? "^" :
+                                     (trig->edge == TRIGGER_EDGE_FALLING) ? "v" : "~";
+            CLAY(CLAY_IDI("TrigEdge", channel), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_FIXED(18), CLAY_SIZING_FIXED(18) },
+                    .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER }
+                },
+                .backgroundColor = to_clay_color(trig->enabled ? COLOR_BUTTON_ACTIVE : COLOR_BUTTON),
+                .cornerRadius = CLAY_CORNER_RADIUS(3)
+            }) {
+                CLAY_TEXT(make_string(edge_label),
+                    CLAY_TEXT_CONFIG({ .fontSize = 12, .textColor = to_clay_color(COLOR_TEXT) }));
+            }
+        }
+
+        // Trigger level row
+        CLAY(CLAY_IDI("TrigLevel", channel), {
+            .layout = {
+                .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0) },
+                .layoutDirection = CLAY_LEFT_TO_RIGHT,
+                .childAlignment = { .y = CLAY_ALIGN_Y_CENTER },
+                .childGap = 2
+            }
+        }) {
+            CLAY_TEXT(CLAY_STRING("Level:"),
+                CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
+
+            // Decrease button
+            CLAY(CLAY_IDI("TrigDec", channel), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_FIXED(18), CLAY_SIZING_FIXED(18) },
+                    .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER }
+                },
+                .backgroundColor = to_clay_color(COLOR_BUTTON),
+                .cornerRadius = CLAY_CORNER_RADIUS(3)
+            }) {
+                CLAY_TEXT(CLAY_STRING("-"),
+                    CLAY_TEXT_CONFIG({ .fontSize = 12, .textColor = to_clay_color(COLOR_TEXT) }));
+            }
+
+            // Level value
+            CLAY(CLAY_IDI("TrigValue", channel), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_FIXED(40), CLAY_SIZING_FIXED(18) },
+                    .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER }
+                },
+                .backgroundColor = to_clay_color((Color){ 25, 25, 32, 255 }),
+                .cornerRadius = CLAY_CORNER_RADIUS(3)
+            }) {
+                CLAY_TEXT(make_string(trig_level_buf),
+                    CLAY_TEXT_CONFIG({ .fontSize = 12, .textColor = to_clay_color(channel_color) }));
+            }
+
+            // Increase button
+            CLAY(CLAY_IDI("TrigInc", channel), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_FIXED(18), CLAY_SIZING_FIXED(18) },
+                    .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER }
+                },
+                .backgroundColor = to_clay_color(COLOR_BUTTON),
+                .cornerRadius = CLAY_CORNER_RADIUS(3)
+            }) {
+                CLAY_TEXT(CLAY_STRING("+"),
+                    CLAY_TEXT_CONFIG({ .fontSize = 12, .textColor = to_clay_color(COLOR_TEXT) }));
+            }
+        }
+
+        // Trigger mode row (Auto/Normal)
+        CLAY(CLAY_IDI("TrigModeRow", channel), {
+            .layout = {
+                .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0) },
+                .layoutDirection = CLAY_LEFT_TO_RIGHT,
+                .childAlignment = { .y = CLAY_ALIGN_Y_CENTER },
+                .childGap = 4
+            }
+        }) {
+            CLAY_TEXT(CLAY_STRING("Mode:"),
+                CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
+
+            // Mode toggle button
+            const char *mode_label = (trig->mode == TRIGGER_MODE_AUTO) ? "Auto" : "Norm";
+            Color mode_color = trig->enabled ? (trig->mode == TRIGGER_MODE_NORMAL ? channel_color : COLOR_BUTTON_ACTIVE) : COLOR_BUTTON;
+            CLAY(CLAY_IDI("TrigMode", channel), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_FIXED(40), CLAY_SIZING_FIXED(18) },
+                    .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER }
+                },
+                .backgroundColor = to_clay_color(mode_color),
+                .cornerRadius = CLAY_CORNER_RADIUS(3)
+            }) {
+                CLAY_TEXT(make_string(mode_label),
+                    CLAY_TEXT_CONFIG({ .fontSize = 12, .textColor = to_clay_color(COLOR_TEXT) }));
+            }
+        }
+
+        // Holdoff row (only shown when trigger is enabled)
+        if (trig->enabled) {
+            CLAY(CLAY_IDI("HoldoffRow", channel), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0) },
+                    .layoutDirection = CLAY_LEFT_TO_RIGHT,
+                    .childAlignment = { .y = CLAY_ALIGN_Y_CENTER },
+                    .childGap = 2
+                }
+            }) {
+                CLAY_TEXT(CLAY_STRING("Hold:"),
+                    CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
+
+                // Holdoff decrease button
+                CLAY(CLAY_IDI("HoldDec", channel), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_FIXED(18), CLAY_SIZING_FIXED(18) },
+                        .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER }
+                    },
+                    .backgroundColor = to_clay_color(trig->holdoff > TRIGGER_HOLDOFF_MIN ? COLOR_BUTTON : (Color){ 50, 50, 55, 255 }),
+                    .cornerRadius = CLAY_CORNER_RADIUS(3)
+                }) {
+                    CLAY_TEXT(CLAY_STRING("-"),
+                        CLAY_TEXT_CONFIG({ .fontSize = 12, .textColor = to_clay_color(trig->holdoff > TRIGGER_HOLDOFF_MIN ? COLOR_TEXT : COLOR_TEXT_DIM) }));
+                }
+
+                // Holdoff value display (in microseconds at 40 MSPS)
+                static char holdoff_buf[2][16];
+                uint32_t holdoff_us = trig->holdoff / 40;  // Convert samples to microseconds at 40 MSPS
+                if (holdoff_us >= 1000) {
+                    snprintf(holdoff_buf[channel], sizeof(holdoff_buf[channel]), "%.1fms", holdoff_us / 1000.0f);
+                } else {
+                    snprintf(holdoff_buf[channel], sizeof(holdoff_buf[channel]), "%uus", holdoff_us);
+                }
+                CLAY(CLAY_IDI("HoldValue", channel), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_FIXED(42), CLAY_SIZING_FIXED(18) },
+                        .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER }
+                    },
+                    .backgroundColor = to_clay_color((Color){ 25, 25, 32, 255 }),
+                    .cornerRadius = CLAY_CORNER_RADIUS(3)
+                }) {
+                    CLAY_TEXT(make_string(holdoff_buf[channel]),
+                        CLAY_TEXT_CONFIG({ .fontSize = 12, .textColor = to_clay_color(channel_color) }));
+                }
+
+                // Holdoff increase button
+                CLAY(CLAY_IDI("HoldInc", channel), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_FIXED(18), CLAY_SIZING_FIXED(18) },
+                        .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER }
+                    },
+                    .backgroundColor = to_clay_color(trig->holdoff < TRIGGER_HOLDOFF_MAX ? COLOR_BUTTON : (Color){ 50, 50, 55, 255 }),
+                    .cornerRadius = CLAY_CORNER_RADIUS(3)
+                }) {
+                    CLAY_TEXT(CLAY_STRING("+"),
+                        CLAY_TEXT_CONFIG({ .fontSize = 12, .textColor = to_clay_color(trig->holdoff < TRIGGER_HOLDOFF_MAX ? COLOR_TEXT : COLOR_TEXT_DIM) }));
+                }
+            }
+        }
+
+        // Separator line before zoom
+        CLAY(CLAY_IDI("ZoomSep", channel), {
+            .layout = { .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1) } },
+            .backgroundColor = to_clay_color(COLOR_TEXT_DIM)
+        }) {}
+
+        // Zoom row
+        CLAY(CLAY_IDI("ZoomRow", channel), {
+            .layout = {
+                .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0) },
+                .layoutDirection = CLAY_LEFT_TO_RIGHT,
+                .childAlignment = { .y = CLAY_ALIGN_Y_CENTER },
+                .childGap = 2
+            }
+        }) {
+            CLAY_TEXT(CLAY_STRING("Zoom:"),
+                CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
+
+            // Zoom out button
+            CLAY(CLAY_IDI("ZoomDec", channel), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_FIXED(18), CLAY_SIZING_FIXED(18) },
+                    .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER }
+                },
+                .backgroundColor = to_clay_color(trig->zoom_level > 0 ? COLOR_BUTTON : (Color){ 50, 50, 55, 255 }),
+                .cornerRadius = CLAY_CORNER_RADIUS(3)
+            }) {
+                CLAY_TEXT(CLAY_STRING("-"),
+                    CLAY_TEXT_CONFIG({ .fontSize = 12, .textColor = to_clay_color(trig->zoom_level > 0 ? COLOR_TEXT : COLOR_TEXT_DIM) }));
+            }
+
+            // Zoom value - format as samples per pixel
+            static char zoom_val_buf[2][16];
+            snprintf(zoom_val_buf[channel], sizeof(zoom_val_buf[channel]), "%dx", ZOOM_SAMPLES_PER_PIXEL[trig->zoom_level]);
+            CLAY(CLAY_IDI("ZoomValue", channel), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_FIXED(32), CLAY_SIZING_FIXED(18) },
+                    .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER }
+                },
+                .backgroundColor = to_clay_color((Color){ 25, 25, 32, 255 }),
+                .cornerRadius = CLAY_CORNER_RADIUS(3)
+            }) {
+                CLAY_TEXT(make_string(zoom_val_buf[channel]),
+                    CLAY_TEXT_CONFIG({ .fontSize = 12, .textColor = to_clay_color(channel_color) }));
+            }
+
+            // Zoom in button
+            CLAY(CLAY_IDI("ZoomInc", channel), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_FIXED(18), CLAY_SIZING_FIXED(18) },
+                    .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER }
+                },
+                .backgroundColor = to_clay_color(trig->zoom_level < ZOOM_LEVEL_COUNT - 1 ? COLOR_BUTTON : (Color){ 50, 50, 55, 255 }),
+                .cornerRadius = CLAY_CORNER_RADIUS(3)
+            }) {
+                CLAY_TEXT(CLAY_STRING("+"),
+                    CLAY_TEXT_CONFIG({ .fontSize = 12, .textColor = to_clay_color(trig->zoom_level < ZOOM_LEVEL_COUNT - 1 ? COLOR_TEXT : COLOR_TEXT_DIM) }));
+            }
         }
     }
 }
@@ -507,7 +771,7 @@ void gui_render_layout(gui_app_t *app) {
         // Toolbar
         render_toolbar(app);
 
-        // Main content area - channels panel now includes per-channel stats
+        // Main content area - channels panel now includes per-channel stats with trigger controls
         render_channels_panel(app);
 
         // Status bar
@@ -600,6 +864,60 @@ void gui_handle_interactions(gui_app_t *app) {
             }
             if (!clicked_option) {
                 app->device_dropdown_open = false;
+            }
+        }
+
+        // Trigger controls for both channels (using indexed IDs from stats panel)
+        for (int ch = 0; ch < 2; ch++) {
+            channel_trigger_t *trig = (ch == 0) ? &app->trigger_a : &app->trigger_b;
+
+            if (Clay_PointerOver(CLAY_IDI("TrigEnable", ch))) {
+                trig->enabled = !trig->enabled;
+            }
+            if (Clay_PointerOver(CLAY_IDI("TrigEdge", ch))) {
+                // Cycle through edge types: Rising -> Falling -> Both -> Rising
+                trig->edge = (trig->edge + 1) % 3;
+            }
+            if (Clay_PointerOver(CLAY_IDI("TrigDec", ch))) {
+                trig->level -= 205;  // ~10% step
+                if (trig->level < -2048) trig->level = -2048;
+            }
+            if (Clay_PointerOver(CLAY_IDI("TrigInc", ch))) {
+                trig->level += 205;  // ~10% step
+                if (trig->level > 2047) trig->level = 2047;
+            }
+            if (Clay_PointerOver(CLAY_IDI("TrigMode", ch))) {
+                // Toggle between Auto and Normal mode
+                trig->mode = (trig->mode == TRIGGER_MODE_AUTO) ? TRIGGER_MODE_NORMAL : TRIGGER_MODE_AUTO;
+            }
+
+            // Holdoff controls (shown only when trigger enabled, but handle clicks always)
+            if (Clay_PointerOver(CLAY_IDI("HoldDec", ch))) {
+                // Decrease holdoff by ~500 samples (~12.5us at 40 MSPS)
+                if (trig->holdoff >= 500) {
+                    trig->holdoff -= 500;
+                } else {
+                    trig->holdoff = TRIGGER_HOLDOFF_MIN;
+                }
+            }
+            if (Clay_PointerOver(CLAY_IDI("HoldInc", ch))) {
+                // Increase holdoff by ~500 samples (~12.5us at 40 MSPS)
+                trig->holdoff += 500;
+                if (trig->holdoff > TRIGGER_HOLDOFF_MAX) {
+                    trig->holdoff = TRIGGER_HOLDOFF_MAX;
+                }
+            }
+
+            // Per-channel zoom controls
+            if (Clay_PointerOver(CLAY_IDI("ZoomDec", ch))) {
+                if (trig->zoom_level > 0) {
+                    trig->zoom_level--;
+                }
+            }
+            if (Clay_PointerOver(CLAY_IDI("ZoomInc", ch))) {
+                if (trig->zoom_level < ZOOM_LEVEL_COUNT - 1) {
+                    trig->zoom_level++;
+                }
             }
         }
     }

@@ -1,18 +1,15 @@
 /*
  * MISRC GUI - Custom Rendering
  *
- * Oscilloscope waveform and VU meter rendering
+ * VU meter rendering and custom element callbacks
  */
 
 #include "gui_render.h"
+#include "gui_oscilloscope.h"
 #include "gui_ui.h"
 #include "raylib.h"
 #include <math.h>
 #include <stdio.h>
-
-// Grid settings
-#define GRID_DIVISIONS_X 10
-#define GRID_DIVISIONS_Y 4  // Per channel
 
 // Forward declaration of app pointer storage (for font access)
 static gui_app_t *g_render_app = NULL;
@@ -35,104 +32,6 @@ static int measure_text_with_font(const char *text, int fontSize) {
         return (int)size.x;
     }
     return MeasureText(text, fontSize);
-}
-
-// Draw grid for a single channel with amplitude scale ticks
-static void draw_channel_grid(float x, float y, float width, float height,
-                               const char *label, Color channel_color, bool show_grid) {
-    // Background slightly darker than main bg
-    DrawRectangle((int)x, (int)y, (int)width, (int)height, (Color){25, 25, 30, 255});
-
-    float center_y = y + height / 2;
-
-    if (show_grid) {
-        // Vertical grid lines (time divisions)
-        for (int i = 1; i < GRID_DIVISIONS_X; i++) {
-            float gx = x + (width * i / GRID_DIVISIONS_X);
-            DrawLineV((Vector2){gx, y}, (Vector2){gx, y + height}, COLOR_GRID);
-        }
-
-        // Horizontal grid lines (amplitude divisions)
-        for (int i = 1; i < GRID_DIVISIONS_Y; i++) {
-            float gy = y + (height * i / GRID_DIVISIONS_Y);
-            DrawLineV((Vector2){x, gy}, (Vector2){x + width, gy}, COLOR_GRID);
-        }
-    }
-
-    // Center line (0V reference) - always show
-    DrawLineEx((Vector2){x, center_y}, (Vector2){x + width, center_y}, 1.0f, COLOR_GRID_MAJOR);
-
-    // Border
-    DrawRectangleLinesEx((Rectangle){x, y, width, height}, 1, COLOR_GRID_MAJOR);
-
-    // Amplitude scale ticks on left side
-    const char *tick_labels[] = { "+1", "+0.5", "0", "-0.5", "-1" };
-    float tick_positions[] = { 0.0f, 0.25f, 0.5f, 0.75f, 1.0f };
-    for (int i = 0; i < 5; i++) {
-        float tick_y = y + height * tick_positions[i];
-        // Tick mark
-        DrawLineEx((Vector2){x, tick_y}, (Vector2){x + 4, tick_y}, 1.0f, COLOR_GRID_MAJOR);
-        // Label (offset to not overlap with border)
-        draw_text_with_font(tick_labels[i], x + 6, tick_y - 6, FONT_SIZE_OSC_SCALE, COLOR_TEXT_DIM);
-    }
-
-    // Channel label in top-right corner
-    int label_width = measure_text_with_font(label, FONT_SIZE_OSC_LABEL);
-    draw_text_with_font(label, x + width - label_width - 8, y + 4, FONT_SIZE_OSC_LABEL, channel_color);
-}
-
-// Render a single channel's waveform
-void render_oscilloscope_channel(gui_app_t *app, float x, float y, float width, float height,
-                                  int channel, const char *label, Color channel_color) {
-    // Draw channel grid
-    draw_channel_grid(x, y, width, height, label, channel_color, app->settings.show_grid);
-
-    float center_y = y + height / 2.0f;
-    float scale = (height / 2.0f) * app->settings.amplitude_scale;
-
-    int display_width = (int)width;
-    if (display_width > DISPLAY_BUFFER_SIZE) {
-        display_width = DISPLAY_BUFFER_SIZE;
-    }
-
-    size_t samples_available = app->display_samples_available;
-
-    if (samples_available == 0) {
-        const char *text = "No Signal";
-        int text_width = measure_text_with_font(text, FONT_SIZE_OSC_MSG);
-        draw_text_with_font(text, x + width/2 - text_width/2, y + height/2 - 12, FONT_SIZE_OSC_MSG, COLOR_TEXT_DIM);
-        return;
-    }
-
-    int samples_to_draw = (samples_available < (size_t)display_width) ? (int)samples_available : display_width;
-
-    // Draw waveform as connected lines
-    float prev_py = center_y;
-
-    for (int px = 0; px < samples_to_draw; px++) {
-        waveform_minmax_t *sample = &app->display_samples[px];
-        float px_x = x + px;
-
-        // Use average of min/max for smoother line
-        float val;
-        if (channel == 0) {
-            val = (sample->min_a + sample->max_a) * 0.5f;
-        } else {
-            val = (sample->min_b + sample->max_b) * 0.5f;
-        }
-
-        float py = center_y - val * scale;
-
-        // Clamp to channel bounds
-        if (py < y) py = y;
-        if (py > y + height) py = y + height;
-
-        if (px > 0) {
-            DrawLineV((Vector2){px_x - 1, prev_py}, (Vector2){px_x, py}, channel_color);
-        }
-
-        prev_py = py;
-    }
 }
 
 // Helper to draw one direction of the meter bar with gradient
