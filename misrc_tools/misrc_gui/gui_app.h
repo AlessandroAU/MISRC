@@ -173,15 +173,16 @@ typedef struct gui_app {
     // Dynamically allocated based on actual display size
     float *phosphor_a;            // Width x Height intensity buffer for channel A
     float *phosphor_b;            // Width x Height intensity buffer for channel B
-    Color *phosphor_pixels_a;     // RGBA pixel buffer for texture upload (channel A)
-    Color *phosphor_pixels_b;     // RGBA pixel buffer for texture upload (channel B)
+    Color *phosphor_pixels_a;     // RGBA pixel buffer for CPU fallback (channel A)
+    Color *phosphor_pixels_b;     // RGBA pixel buffer for CPU fallback (channel B)
     Image phosphor_image_a;       // raylib Image for channel A
     Image phosphor_image_b;       // raylib Image for channel B
-    Texture2D phosphor_texture_a; // GPU texture for channel A
-    Texture2D phosphor_texture_b; // GPU texture for channel B
+    Texture2D phosphor_texture_a; // GPU texture for channel A (RGBA for CPU, R32F for shader)
+    Texture2D phosphor_texture_b; // GPU texture for channel B (RGBA for CPU, R32F for shader)
     int phosphor_width;           // Current phosphor buffer width
     int phosphor_height;          // Current phosphor buffer height
     bool phosphor_textures_valid; // True if textures are initialized
+    bool phosphor_use_shader;     // True if using GPU shader path
 
 } gui_app_t;
 
