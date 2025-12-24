@@ -32,10 +32,12 @@
 #define FONT_SIZE_DROPDOWN    16    // Dropdown menu items
 #define FONT_SIZE_STATUS      18    // Status bar text
 #define FONT_SIZE_OSC_LABEL   20    // Oscilloscope channel labels "CH A", "CH B"
-#define FONT_SIZE_OSC_SCALE   12    // Oscilloscope scale ticks "+1", "0", "-1"
-#define FONT_SIZE_OSC_MSG     24    // Oscilloscope messages like "No Signal"
-#define FONT_SIZE_VU_SCALE    12    // VU meter scale ticks
+#define FONT_SIZE_OSC_SCALE   14    // Oscilloscope scale ticks "+1", "0", "-1"
+#define FONT_SIZE_OSC_MSG     26    // Oscilloscope messages like "No Signal"
+#define FONT_SIZE_VU_SCALE    14    // VU meter scale ticks
 #define FONT_SIZE_VU_CLIP     12    // VU meter clip indicators "+CLIP", "-CLIP"
+#define FONT_SIZE_STATS_LABEL 18    // Per-channel stats panel channel label
+#define FONT_SIZE_STATS       16    // Per-channel stats panel text
 
 // UI Layout functions
 void gui_render_layout(gui_app_t *app);

@@ -86,8 +86,12 @@ typedef struct gui_app {
 
     // Statistics (atomic, updated by capture thread)
     atomic_uint_fast64_t total_samples;
+    atomic_uint_fast64_t samples_a;         // Per-channel sample count
+    atomic_uint_fast64_t samples_b;
     atomic_uint_fast32_t frame_count;
     atomic_uint_fast32_t error_count;
+    atomic_uint_fast32_t error_count_a;     // Per-channel error counts
+    atomic_uint_fast32_t error_count_b;
     atomic_uint_fast32_t clip_count_a_pos;  // Positive clipping (sample >= 2047)
     atomic_uint_fast32_t clip_count_a_neg;  // Negative clipping (sample <= -2048)
     atomic_uint_fast32_t clip_count_b_pos;

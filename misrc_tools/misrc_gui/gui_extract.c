@@ -133,6 +133,8 @@ static int extraction_thread(void *ctx) {
         gui_extract_update_stats(s_extract_app, s_buf_a, s_buf_b, BUFFER_READ_SIZE);
         gui_extract_update_display(s_extract_app, s_buf_a, s_buf_b, BUFFER_READ_SIZE);
         atomic_fetch_add(&s_extract_app->total_samples, BUFFER_READ_SIZE);
+        atomic_fetch_add(&s_extract_app->samples_a, BUFFER_READ_SIZE);
+        atomic_fetch_add(&s_extract_app->samples_b, BUFFER_READ_SIZE);
 
         // Conditionally write to record ringbuffers
         if (atomic_load(&s_recording_enabled)) {

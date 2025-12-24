@@ -21,7 +21,20 @@ static char temp_buf2[64];
 static char temp_buf3[64];
 static char temp_buf4[64];
 static char temp_buf5[64];
+static char temp_buf6[64];
 static char device_dropdown_buf[64];
+
+// Per-channel stat buffers (separate for A and B to avoid overwrite)
+static char stat_a_samples[32];
+static char stat_a_peak_pos[16];
+static char stat_a_peak_neg[16];
+static char stat_a_clip[16];
+static char stat_a_errors[16];
+static char stat_b_samples[32];
+static char stat_b_peak_pos[16];
+static char stat_b_peak_neg[16];
+static char stat_b_clip[16];
+static char stat_b_errors[16];
 
 static Clay_String make_string(const char *str) {
     return (Clay_String){ .isStaticallyAllocated = false, .length = (int32_t)strlen(str), .chars = str };
@@ -76,7 +89,7 @@ static void render_toolbar(gui_app_t *app) {
         .backgroundColor = to_clay_color(COLOR_TOOLBAR_BG)
     }) {
         // Title
-        CLAY_TEXT(CLAY_STRING("MISRC Capture"),
+        CLAY_TEXT(CLAY_STRING("MISRC Capture (Beta)"),
             CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_TITLE, .textColor = to_clay_color(COLOR_TEXT) }));
 
         // Spacer
@@ -156,7 +169,118 @@ static void render_toolbar(gui_app_t *app) {
     }
 }
 
-// Render the channels panel - each channel has VU meter + waveform grouped together
+// Helper macro for stat row layout
+#define STAT_ROW_LAYOUT { \
+    .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0) }, \
+    .layoutDirection = CLAY_LEFT_TO_RIGHT, \
+    .childGap = 4 \
+}
+
+// Render per-channel stats panel
+static void render_channel_stats(gui_app_t *app, int channel) {
+    // Get per-channel stats
+    uint64_t samples;
+    uint32_t clip_pos, clip_neg, errors;
+    float peak_pos, peak_neg;
+    Color channel_color;
+    char *buf_samples, *buf_peak_pos, *buf_peak_neg, *buf_clip, *buf_errors;
+
+    if (channel == 0) {
+        samples = atomic_load(&app->samples_a);
+        clip_pos = atomic_load(&app->clip_count_a_pos);
+        clip_neg = atomic_load(&app->clip_count_a_neg);
+        errors = atomic_load(&app->error_count_a);
+        peak_pos = app->vu_a.peak_pos;
+        peak_neg = app->vu_a.peak_neg;
+        channel_color = COLOR_CHANNEL_A;
+        buf_samples = stat_a_samples;
+        buf_peak_pos = stat_a_peak_pos;
+        buf_peak_neg = stat_a_peak_neg;
+        buf_clip = stat_a_clip;
+        buf_errors = stat_a_errors;
+    } else {
+        samples = atomic_load(&app->samples_b);
+        clip_pos = atomic_load(&app->clip_count_b_pos);
+        clip_neg = atomic_load(&app->clip_count_b_neg);
+        errors = atomic_load(&app->error_count_b);
+        peak_pos = app->vu_b.peak_pos;
+        peak_neg = app->vu_b.peak_neg;
+        channel_color = COLOR_CHANNEL_B;
+        buf_samples = stat_b_samples;
+        buf_peak_pos = stat_b_peak_pos;
+        buf_peak_neg = stat_b_peak_neg;
+        buf_clip = stat_b_clip;
+        buf_errors = stat_b_errors;
+    }
+
+    uint32_t clip_total = clip_pos + clip_neg;
+
+    // Format stats
+    if (samples >= 1000000000ULL) {
+        snprintf(buf_samples, 32, "%.2fG", (double)samples / 1000000000.0);
+    } else if (samples >= 1000000ULL) {
+        snprintf(buf_samples, 32, "%.2fM", (double)samples / 1000000.0);
+    } else if (samples >= 1000ULL) {
+        snprintf(buf_samples, 32, "%.1fK", (double)samples / 1000.0);
+    } else {
+        snprintf(buf_samples, 32, "%llu", (unsigned long long)samples);
+    }
+
+    snprintf(buf_peak_pos, 16, "+%.0f%%", peak_pos * 100.0f);
+    snprintf(buf_peak_neg, 16, "-%.0f%%", peak_neg * 100.0f);
+    snprintf(buf_clip, 16, "%u", clip_total);
+    snprintf(buf_errors, 16, "%u", errors);
+
+    CLAY(CLAY_IDI("StatsPanel", channel), {
+        .layout = {
+            .sizing = { CLAY_SIZING_FIXED(140), CLAY_SIZING_GROW(0) },
+            .layoutDirection = CLAY_TOP_TO_BOTTOM,
+            .padding = { 8, 8, 6, 6 },
+            .childGap = 2
+        },
+        .backgroundColor = to_clay_color((Color){ 35, 35, 42, 255 })
+    }) {
+        // Channel label
+        CLAY_TEXT(channel == 0 ? CLAY_STRING("Channel A") : CLAY_STRING("Channel B"),
+            CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS_LABEL, .textColor = to_clay_color(channel_color) }));
+
+        // Samples row
+        CLAY(CLAY_IDI("StatSamples", channel), { .layout = STAT_ROW_LAYOUT }) {
+            CLAY_TEXT(CLAY_STRING("Samples:"),
+                CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
+            CLAY_TEXT(make_string(buf_samples),
+                CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(COLOR_TEXT) }));
+        }
+
+        // Peak row (shows both + and -)
+        CLAY(CLAY_IDI("StatPeak", channel), { .layout = STAT_ROW_LAYOUT }) {
+            CLAY_TEXT(CLAY_STRING("Peak:"),
+                CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
+            CLAY_TEXT(make_string(buf_peak_pos),
+                CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(peak_pos > 0.95f ? COLOR_CLIP_RED : COLOR_TEXT) }));
+            CLAY_TEXT(make_string(buf_peak_neg),
+                CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(peak_neg > 0.95f ? COLOR_CLIP_RED : COLOR_TEXT) }));
+        }
+
+        // Clip row
+        CLAY(CLAY_IDI("StatClip", channel), { .layout = STAT_ROW_LAYOUT }) {
+            CLAY_TEXT(CLAY_STRING("Clip:"),
+                CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
+            CLAY_TEXT(make_string(buf_clip),
+                CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(clip_total > 0 ? COLOR_CLIP_RED : COLOR_TEXT) }));
+        }
+
+        // Errors row
+        CLAY(CLAY_IDI("StatErrors", channel), { .layout = STAT_ROW_LAYOUT }) {
+            CLAY_TEXT(CLAY_STRING("Errors:"),
+                CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
+            CLAY_TEXT(make_string(buf_errors),
+                CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(errors > 0 ? COLOR_CLIP_RED : COLOR_TEXT) }));
+        }
+    }
+}
+
+// Render the channels panel - each channel has VU meter + waveform + stats grouped together
 static void render_channels_panel(gui_app_t *app) {
     // Setup custom element data for this frame
     s_vu_a_element.type = CUSTOM_LAYOUT_ELEMENT_TYPE_VU_METER;
@@ -190,7 +314,7 @@ static void render_channels_panel(gui_app_t *app) {
         },
         .backgroundColor = to_clay_color(COLOR_PANEL_BG)
     }) {
-        // Channel A row: VU meter + waveform
+        // Channel A row: VU meter + waveform + stats
         CLAY(CLAY_ID("ChannelARow"), {
             .layout = {
                 .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0) },
@@ -209,9 +333,12 @@ static void render_channels_panel(gui_app_t *app) {
                 .layout = { .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0) } },
                 .custom = { .customData = &s_osc_a_element }
             }) {}
+
+            // Stats panel A
+            render_channel_stats(app, 0);
         }
 
-        // Channel B row: VU meter + waveform
+        // Channel B row: VU meter + waveform + stats
         CLAY(CLAY_ID("ChannelBRow"), {
             .layout = {
                 .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0) },
@@ -230,120 +357,9 @@ static void render_channels_panel(gui_app_t *app) {
                 .layout = { .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0) } },
                 .custom = { .customData = &s_osc_b_element }
             }) {}
-        }
-    }
-}
 
-// Render statistics panel
-static void render_stats_panel(gui_app_t *app) {
-    CLAY(CLAY_ID("StatsPanel"), {
-        .layout = {
-            .sizing = { CLAY_SIZING_FIXED(180), CLAY_SIZING_GROW(0) },
-            .layoutDirection = CLAY_TOP_TO_BOTTOM,
-            .padding = { 12, 12, 12, 12 },
-            .childGap = 8
-        },
-        .backgroundColor = to_clay_color(COLOR_PANEL_BG)
-    }) {
-        // Title
-        CLAY_TEXT(CLAY_STRING("Statistics"),
-            CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_HEADING, .textColor = to_clay_color(COLOR_TEXT) }));
-
-        // Sync status
-        bool synced = atomic_load(&app->stream_synced);
-        Color sync_color = synced ? COLOR_SYNC_GREEN : COLOR_SYNC_RED;
-        CLAY(CLAY_ID("SyncRow"), {
-            .layout = {
-                .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0) },
-                .layoutDirection = CLAY_LEFT_TO_RIGHT,
-                .childGap = 8
-            }
-        }) {
-            CLAY_TEXT(CLAY_STRING("Sync:"),
-                CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_NORMAL, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
-            CLAY_TEXT(synced ? CLAY_STRING("OK") : CLAY_STRING("--"),
-                CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_NORMAL, .textColor = to_clay_color(sync_color) }));
-        }
-
-        // Frame count
-        uint32_t frames = atomic_load(&app->frame_count);
-        snprintf(temp_buf1, sizeof(temp_buf1), "%u", frames);
-        CLAY(CLAY_ID("FramesRow"), {
-            .layout = {
-                .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0) },
-                .layoutDirection = CLAY_LEFT_TO_RIGHT,
-                .childGap = 8
-            }
-        }) {
-            CLAY_TEXT(CLAY_STRING("Frames:"),
-                CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_NORMAL, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
-            CLAY_TEXT(make_string(temp_buf1),
-                CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_NORMAL, .textColor = to_clay_color(COLOR_TEXT) }));
-        }
-
-        // Sample count
-        uint64_t samples = atomic_load(&app->total_samples);
-        snprintf(temp_buf2, sizeof(temp_buf2), "%llu", (unsigned long long)samples);
-        CLAY(CLAY_ID("SamplesRow"), {
-            .layout = {
-                .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0) },
-                .layoutDirection = CLAY_LEFT_TO_RIGHT,
-                .childGap = 8
-            }
-        }) {
-            CLAY_TEXT(CLAY_STRING("Samples:"),
-                CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_NORMAL, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
-            CLAY_TEXT(make_string(temp_buf2),
-                CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_NORMAL, .textColor = to_clay_color(COLOR_TEXT) }));
-        }
-
-        // Error count
-        uint32_t errors = atomic_load(&app->error_count);
-        Color error_color = errors > 0 ? COLOR_CLIP_RED : COLOR_TEXT;
-        snprintf(temp_buf3, sizeof(temp_buf3), "%u", errors);
-        CLAY(CLAY_ID("ErrorsRow"), {
-            .layout = {
-                .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0) },
-                .layoutDirection = CLAY_LEFT_TO_RIGHT,
-                .childGap = 8
-            }
-        }) {
-            CLAY_TEXT(CLAY_STRING("Errors:"),
-                CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_NORMAL, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
-            CLAY_TEXT(make_string(temp_buf3),
-                CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_NORMAL, .textColor = to_clay_color(error_color) }));
-        }
-
-        // Clip counts (combine pos + neg for display)
-        uint32_t clip_a = atomic_load(&app->clip_count_a_pos) + atomic_load(&app->clip_count_a_neg);
-        uint32_t clip_b = atomic_load(&app->clip_count_b_pos) + atomic_load(&app->clip_count_b_neg);
-
-        snprintf(temp_buf4, sizeof(temp_buf4), "%u", clip_a);
-        CLAY(CLAY_ID("ClipARow"), {
-            .layout = {
-                .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0) },
-                .layoutDirection = CLAY_LEFT_TO_RIGHT,
-                .childGap = 8
-            }
-        }) {
-            CLAY_TEXT(CLAY_STRING("Clip A:"),
-                CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_NORMAL, .textColor = to_clay_color(COLOR_CHANNEL_A) }));
-            CLAY_TEXT(make_string(temp_buf4),
-                CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_NORMAL, .textColor = to_clay_color(clip_a > 0 ? COLOR_CLIP_RED : COLOR_TEXT) }));
-        }
-
-        snprintf(temp_buf5, sizeof(temp_buf5), "%u", clip_b);
-        CLAY(CLAY_ID("ClipBRow"), {
-            .layout = {
-                .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0) },
-                .layoutDirection = CLAY_LEFT_TO_RIGHT,
-                .childGap = 8
-            }
-        }) {
-            CLAY_TEXT(CLAY_STRING("Clip B:"),
-                CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_NORMAL, .textColor = to_clay_color(COLOR_CHANNEL_B) }));
-            CLAY_TEXT(make_string(temp_buf5),
-                CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_NORMAL, .textColor = to_clay_color(clip_b > 0 ? COLOR_CLIP_RED : COLOR_TEXT) }));
+            // Stats panel B
+            render_channel_stats(app, 1);
         }
     }
 }
@@ -360,6 +376,56 @@ static void render_status_bar(gui_app_t *app) {
         },
         .backgroundColor = to_clay_color(COLOR_TOOLBAR_BG)
     }) {
+        // Sync status indicator
+        bool synced = atomic_load(&app->stream_synced);
+        Color sync_color = synced ? COLOR_SYNC_GREEN : COLOR_SYNC_RED;
+        CLAY(CLAY_ID("SyncStatus"), {
+            .layout = {
+                .sizing = { CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0) },
+                .layoutDirection = CLAY_LEFT_TO_RIGHT,
+                .childGap = 4
+            }
+        }) {
+            CLAY_TEXT(CLAY_STRING("Sync:"),
+                CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATUS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
+            CLAY_TEXT(synced ? CLAY_STRING("OK") : CLAY_STRING("--"),
+                CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATUS, .textColor = to_clay_color(sync_color) }));
+        }
+
+        // Frames count
+        uint32_t frames = atomic_load(&app->frame_count);
+        snprintf(temp_buf4, sizeof(temp_buf4), "%u", frames);
+        CLAY(CLAY_ID("FrameStatus"), {
+            .layout = {
+                .sizing = { CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0) },
+                .layoutDirection = CLAY_LEFT_TO_RIGHT,
+                .childGap = 4
+            }
+        }) {
+            CLAY_TEXT(CLAY_STRING("Frames:"),
+                CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATUS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
+            CLAY_TEXT(make_string(temp_buf4),
+                CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATUS, .textColor = to_clay_color(COLOR_TEXT) }));
+        }
+
+        // Total errors
+        uint32_t errors = atomic_load(&app->error_count);
+        if (errors > 0) {
+            snprintf(temp_buf5, sizeof(temp_buf5), "%u", errors);
+            CLAY(CLAY_ID("ErrorStatus"), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0) },
+                    .layoutDirection = CLAY_LEFT_TO_RIGHT,
+                    .childGap = 4
+                }
+            }) {
+                CLAY_TEXT(CLAY_STRING("Errors:"),
+                    CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATUS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
+                CLAY_TEXT(make_string(temp_buf5),
+                    CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATUS, .textColor = to_clay_color(COLOR_CLIP_RED) }));
+            }
+        }
+
         if (app->is_recording) {
             // Recording indicator
             CLAY(CLAY_ID("RecIndicator"), {
@@ -394,11 +460,11 @@ static void render_status_bar(gui_app_t *app) {
 
                 snprintf(temp_buf2, sizeof(temp_buf2), "A: %.1f/%.1fMB (%.1fx)", raw_a_mb, comp_a_mb, ratio_a);
                 CLAY_TEXT(make_string(temp_buf2),
-                    CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATUS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
+                    CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATUS, .textColor = to_clay_color(COLOR_CHANNEL_A) }));
 
                 snprintf(temp_buf3, sizeof(temp_buf3), "B: %.1f/%.1fMB (%.1fx)", raw_b_mb, comp_b_mb, ratio_b);
                 CLAY_TEXT(make_string(temp_buf3),
-                    CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATUS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
+                    CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATUS, .textColor = to_clay_color(COLOR_CHANNEL_B) }));
             } else {
                 // RAW mode or no data yet: show total bytes
                 uint64_t bytes = atomic_load(&app->recording_bytes);
@@ -422,8 +488,8 @@ static void render_status_bar(gui_app_t *app) {
         // Sample rate
         uint32_t srate = atomic_load(&app->sample_rate);
         if (srate > 0) {
-            snprintf(temp_buf3, sizeof(temp_buf3), "%u MSPS", srate / 1000000);
-            CLAY_TEXT(make_string(temp_buf3),
+            snprintf(temp_buf6, sizeof(temp_buf6), "%u MSPS", srate / 1000000);
+            CLAY_TEXT(make_string(temp_buf6),
                 CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATUS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
         }
     }
@@ -441,20 +507,8 @@ void gui_render_layout(gui_app_t *app) {
         // Toolbar
         render_toolbar(app);
 
-        // Main content area
-        CLAY(CLAY_ID("MainArea"), {
-            .layout = {
-                .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0) },
-                .layoutDirection = CLAY_LEFT_TO_RIGHT,
-                .childGap = 2
-            }
-        }) {
-            // Channels panel (VU meters + waveforms grouped by channel)
-            render_channels_panel(app);
-
-            // Statistics panel
-            render_stats_panel(app);
-        }
+        // Main content area - channels panel now includes per-channel stats
+        render_channels_panel(app);
 
         // Status bar
         render_status_bar(app);

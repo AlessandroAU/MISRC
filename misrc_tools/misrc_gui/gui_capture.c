@@ -331,8 +331,12 @@ int gui_app_start_capture(gui_app_t *app) {
 
     // Reset statistics
     atomic_store(&app->total_samples, 0);
+    atomic_store(&app->samples_a, 0);
+    atomic_store(&app->samples_b, 0);
     atomic_store(&app->frame_count, 0);
     atomic_store(&app->error_count, 0);
+    atomic_store(&app->error_count_a, 0);
+    atomic_store(&app->error_count_b, 0);
     atomic_store(&app->clip_count_a_pos, 0);
     atomic_store(&app->clip_count_a_neg, 0);
     atomic_store(&app->clip_count_b_pos, 0);
@@ -425,6 +429,10 @@ void gui_app_stop_capture(gui_app_t *app) {
     }
 
     atomic_store(&app->stream_synced, false);
+
+    // Clear display to show "No Signal"
+    gui_app_clear_display(app);
+
     gui_app_set_status(app, "Capture stopped");
 }
 
