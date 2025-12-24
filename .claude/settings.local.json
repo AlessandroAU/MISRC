@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir /s /b \"c:\\\\git\\\\MISRC\\\\*.c\")",
+      "Bash(dir /s /b \"c:\\\\git\\\\MISRC\\\\*.h\")",
+      "Bash(powershell -Command:*)",
+      "Bash(.buildrebuild-windows.bat)",
+      "Bash(WORKSPACE='/c/git/MISRC/build/workspace')",
+      "Bash(export PKG_CONFIG_PATH=\"$WORKSPACE/lib/pkgconfig\")",
+      "Bash(export PATH=\"$WORKSPACE/bin:$PATH\")",
+      "Bash(ninja:*)",
+      "Bash(nm:*)",
+      "Bash(meson setup:*)",
+      "Bash(./build/rebuild-windows.bat)",
+      "Bash(taskkill:*)"
+    ]
+  }
+}

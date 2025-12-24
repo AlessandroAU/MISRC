@@ -1,14 +1,20 @@
 /*
  * MISRC GUI - Sample Extraction and Display Processing
  *
- * Shared functions for extracting samples and updating display buffers.
+ * Continuous extraction thread that runs from capture start to capture stop.
+ * - Always reads from capture ringbuffer
+ * - Always updates display buffers for GUI
+ * - When recording enabled, also writes to record ringbuffers
  */
 
 #include "gui_extract.h"
 #include "gui_app.h"
 #include "../extract.h"
+#include "../ringbuffer.h"
 
+#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <stdatomic.h>
 
 #ifdef _WIN32
@@ -19,8 +25,54 @@
 #define aligned_free(ptr) free(ptr)
 #endif
 
-// Buffer size for extraction
+// Threading primitives (avoid windows.h conflicts with raylib)
+#ifdef _WIN32
+  #include <process.h>
+  typedef void* thrd_t;
+  typedef unsigned (__stdcall *thrd_start_t)(void*);
+  #define thrd_success 0
+  #define thrd_create(a,b,c) (((*(a)=(thrd_t)_beginthreadex(NULL,0,(thrd_start_t)b,c,0,NULL))==0)?-1:thrd_success)
+  #ifndef INFINITE
+    #define INFINITE 0xFFFFFFFF
+  #endif
+  #ifndef WAIT_OBJECT_0
+    #define WAIT_OBJECT_0 0
+  #endif
+  static inline int thrd_join_impl(thrd_t t, int *res) {
+    extern __declspec(dllimport) unsigned long __stdcall WaitForSingleObject(void*, unsigned long);
+    extern __declspec(dllimport) int __stdcall GetExitCodeThread(void*, unsigned long*);
+    extern __declspec(dllimport) int __stdcall CloseHandle(void*);
+    unsigned long exitcode = 0;
+    if (WaitForSingleObject(t, INFINITE) != WAIT_OBJECT_0) return -1;
+    GetExitCodeThread(t, &exitcode);
+    if (res) *res = (int)exitcode;
+    CloseHandle(t);
+    return thrd_success;
+  }
+  #define thrd_join(a,b) thrd_join_impl(a,b)
+  static inline void thrd_sleep_ms(int ms) {
+    extern __declspec(dllimport) void __stdcall Sleep(unsigned long);
+    Sleep((unsigned long)ms);
+  }
+#else
+  #include <pthread.h>
+  #include <time.h>
+  typedef pthread_t thrd_t;
+  #define thrd_success 0
+  #define thrd_create(a,b,c) pthread_create(a,NULL,(void* (*)(void *))b,c)
+  #define thrd_join(a,b) pthread_join(a,b)
+  static inline void thrd_sleep_ms(int ms) {
+    struct timespec ts = { .tv_sec = ms / 1000, .tv_nsec = (ms % 1000) * 1000000 };
+    nanosleep(&ts, NULL);
+  }
+#endif
+
+// External do_exit flag from ringbuffer.h
+extern atomic_int do_exit;
+
+// Buffer sizes
 #define BUFFER_READ_SIZE 65536
+#define BUFFER_RECORD_SIZE (65536 * 1024)  // 64MB per channel
 
 // Extraction buffers (page-aligned for SSE/AVX)
 static int16_t *s_buf_a = NULL;
@@ -28,6 +80,111 @@ static int16_t *s_buf_b = NULL;
 static uint8_t *s_buf_aux = NULL;
 static conv_function_t s_extract_fn = NULL;
 static bool s_initialized = false;
+
+// Recording ringbuffers (extracted samples -> file writers)
+static ringbuffer_t s_record_rb_a;
+static ringbuffer_t s_record_rb_b;
+static bool s_record_rb_initialized = false;
+
+// Extraction thread state
+static thrd_t s_extract_thread;
+static bool s_extract_thread_running = false;
+static ringbuffer_t *s_capture_rb = NULL;
+static gui_app_t *s_extract_app = NULL;
+
+// Recording state (atomic for thread-safe access)
+static atomic_bool s_recording_enabled = false;
+static atomic_bool s_use_flac = false;
+
+// Extraction thread - runs continuously from capture start to stop
+// Always updates display/stats, conditionally writes to record ringbuffers
+static int extraction_thread(void *ctx) {
+    (void)ctx;
+    size_t read_size = BUFFER_READ_SIZE * 4;  // 4 bytes per sample pair
+    size_t clip[2] = {0, 0};
+    uint16_t peak[2] = {0, 0};
+
+    fprintf(stderr, "[EXTRACT] Continuous extraction thread started\n");
+
+    while (1) {
+        // Check for exit
+        if (atomic_load(&do_exit)) {
+            break;
+        }
+
+        // Try to read from capture ringbuffer
+        void *buf = rb_read_ptr(s_capture_rb, read_size);
+        if (!buf) {
+            // No data available yet - check if we should exit
+            if (!s_extract_app || !s_extract_app->is_capturing) {
+                break;
+            }
+            thrd_sleep_ms(1);
+            continue;
+        }
+
+        // Extract samples
+        s_extract_fn((uint32_t*)buf, BUFFER_READ_SIZE, clip, s_buf_aux, s_buf_a, s_buf_b, peak);
+
+        // Mark capture buffer as consumed
+        rb_read_finished(s_capture_rb, read_size);
+
+        // Always update stats and display
+        gui_extract_update_stats(s_extract_app, s_buf_a, s_buf_b, BUFFER_READ_SIZE);
+        gui_extract_update_display(s_extract_app, s_buf_a, s_buf_b, BUFFER_READ_SIZE);
+        atomic_fetch_add(&s_extract_app->total_samples, BUFFER_READ_SIZE);
+
+        // Conditionally write to record ringbuffers
+        if (atomic_load(&s_recording_enabled)) {
+            if (atomic_load(&s_use_flac)) {
+                // FLAC needs 32-bit samples with 12-bit to 16-bit extension
+                size_t sample_bytes = BUFFER_READ_SIZE * sizeof(int32_t);
+
+                // Wait for space in record ringbuffers - never drop recording data
+                int32_t *write_a;
+                int32_t *write_b;
+                while ((write_a = (int32_t *)rb_write_ptr(&s_record_rb_a, sample_bytes)) == NULL ||
+                       (write_b = (int32_t *)rb_write_ptr(&s_record_rb_b, sample_bytes)) == NULL) {
+                    if (atomic_load(&do_exit)) {
+                        goto exit_thread;
+                    }
+                    thrd_sleep_ms(1);
+                }
+
+                // Convert 12-bit samples to 16-bit by left-shifting 4 bits
+                for (size_t i = 0; i < BUFFER_READ_SIZE; i++) {
+                    write_a[i] = (int32_t)s_buf_a[i] << 4;
+                    write_b[i] = (int32_t)s_buf_b[i] << 4;
+                }
+                rb_write_finished(&s_record_rb_a, sample_bytes);
+                rb_write_finished(&s_record_rb_b, sample_bytes);
+            } else {
+                // RAW uses 16-bit samples directly
+                size_t sample_bytes = BUFFER_READ_SIZE * sizeof(int16_t);
+
+                // Wait for space in record ringbuffers - never drop recording data
+                void *write_a;
+                void *write_b;
+                while ((write_a = rb_write_ptr(&s_record_rb_a, sample_bytes)) == NULL ||
+                       (write_b = rb_write_ptr(&s_record_rb_b, sample_bytes)) == NULL) {
+                    if (atomic_load(&do_exit)) {
+                        goto exit_thread;
+                    }
+                    thrd_sleep_ms(1);
+                }
+
+                memcpy(write_a, s_buf_a, sample_bytes);
+                memcpy(write_b, s_buf_b, sample_bytes);
+                rb_write_finished(&s_record_rb_a, sample_bytes);
+                rb_write_finished(&s_record_rb_b, sample_bytes);
+            }
+        }
+    }
+
+exit_thread:
+    fprintf(stderr, "[EXTRACT] Continuous extraction thread exiting\n");
+    return 0;
+}
 
 void gui_extract_init(void) {
     if (s_initialized) return;
@@ -44,22 +201,110 @@ void gui_extract_init(void) {
 }
 
 void gui_extract_cleanup(void) {
-    if (!s_initialized) return;
+    // Stop extraction thread if running
+    gui_extract_stop();
 
-    if (s_buf_a) {
-        aligned_free(s_buf_a);
-        s_buf_a = NULL;
-    }
-    if (s_buf_b) {
-        aligned_free(s_buf_b);
-        s_buf_b = NULL;
-    }
-    if (s_buf_aux) {
-        aligned_free(s_buf_aux);
-        s_buf_aux = NULL;
+    // Close record ringbuffers
+    if (s_record_rb_initialized) {
+        rb_close(&s_record_rb_a);
+        rb_close(&s_record_rb_b);
+        s_record_rb_initialized = false;
     }
 
-    s_initialized = false;
+    // Free extraction buffers
+    if (s_initialized) {
+        if (s_buf_a) {
+            aligned_free(s_buf_a);
+            s_buf_a = NULL;
+        }
+        if (s_buf_b) {
+            aligned_free(s_buf_b);
+            s_buf_b = NULL;
+        }
+        if (s_buf_aux) {
+            aligned_free(s_buf_aux);
+            s_buf_aux = NULL;
+        }
+        s_initialized = false;
+    }
+}
+
+int gui_extract_start(gui_app_t *app, ringbuffer_t *capture_rb) {
+    if (s_extract_thread_running) {
+        return 0;  // Already running
+    }
+
+    // Initialize extraction if needed
+    gui_extract_init();
+
+    // Initialize record ringbuffers if needed
+    if (!s_record_rb_initialized) {
+        rb_init(&s_record_rb_a, "record_a_rb", BUFFER_RECORD_SIZE);
+        rb_init(&s_record_rb_b, "record_b_rb", BUFFER_RECORD_SIZE);
+        s_record_rb_initialized = true;
+    }
+
+    // Store context
+    s_capture_rb = capture_rb;
+    s_extract_app = app;
+    atomic_store(&s_recording_enabled, false);
+    atomic_store(&s_use_flac, false);
+
+    // Start extraction thread
+    if (thrd_create(&s_extract_thread, extraction_thread, NULL) != thrd_success) {
+        fprintf(stderr, "[EXTRACT] Failed to create extraction thread\n");
+        return -1;
+    }
+
+    s_extract_thread_running = true;
+    fprintf(stderr, "[EXTRACT] Started continuous extraction thread\n");
+    return 0;
+}
+
+void gui_extract_stop(void) {
+    if (!s_extract_thread_running) {
+        return;
+    }
+
+    // Disable recording first
+    atomic_store(&s_recording_enabled, false);
+
+    // Wait for thread to exit
+    thrd_join(s_extract_thread, NULL);
+    s_extract_thread_running = false;
+    s_extract_app = NULL;
+    s_capture_rb = NULL;
+
+    fprintf(stderr, "[EXTRACT] Stopped continuous extraction thread\n");
+}
+
+bool gui_extract_is_running(void) {
+    return s_extract_thread_running;
+}
+
+ringbuffer_t *gui_extract_get_record_rb_a(void) {
+    return &s_record_rb_a;
+}
+
+ringbuffer_t *gui_extract_get_record_rb_b(void) {
+    return &s_record_rb_b;
+}
+
+void gui_extract_set_recording(bool enabled, bool use_flac) {
+    atomic_store(&s_use_flac, use_flac);
+    atomic_store(&s_recording_enabled, enabled);
+    fprintf(stderr, "[EXTRACT] Recording %s (FLAC: %s)\n",
+            enabled ? "enabled" : "disabled",
+            use_flac ? "yes" : "no");
+}
+
+void gui_extract_reset_record_rbs(void) {
+    if (s_record_rb_initialized) {
+        atomic_store(&s_record_rb_a.head, 0);
+        atomic_store(&s_record_rb_a.tail, 0);
+        atomic_store(&s_record_rb_b.head, 0);
+        atomic_store(&s_record_rb_b.tail, 0);
+    }
 }
 
 extract_fn_t gui_extract_get_function(void) {

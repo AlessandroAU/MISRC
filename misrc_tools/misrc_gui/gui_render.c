@@ -274,14 +274,37 @@ void set_render_app(gui_app_t *app) {
     g_render_app = app;
 }
 
-// Legacy custom element callbacks - kept for API compatibility but no longer used
-// Rendering is now done directly in the main loop using render_oscilloscope_channel()
+// Custom element callback for oscilloscope (called from clay_renderer_raylib.c)
 void render_oscilloscope_custom(Clay_BoundingBox bounds, void *osc_data) {
-    (void)bounds;
-    (void)osc_data;
+    if (!osc_data || !g_render_app) return;
+
+    // osc_data points to CustomLayoutElement_Oscilloscope which has { app, channel }
+    // We extract the channel (0=A, 1=B) from the data
+    typedef struct { gui_app_t *app; int channel; } OscData;
+    OscData *data = (OscData *)osc_data;
+
+    const char *label = (data->channel == 0) ? "CH A" : "CH B";
+    Color color = (data->channel == 0) ? COLOR_CHANNEL_A : COLOR_CHANNEL_B;
+
+    render_oscilloscope_channel(data->app, bounds.x, bounds.y, bounds.width, bounds.height,
+                                data->channel, label, color);
 }
 
+// Custom element callback for VU meter (called from clay_renderer_raylib.c)
 void render_vu_meter_custom(Clay_BoundingBox bounds, void *vu_data) {
-    (void)bounds;
-    (void)vu_data;
+    if (!vu_data || !g_render_app) return;
+
+    // vu_data points to CustomLayoutElement_VUMeter which has { meter, label, is_clipping }
+    typedef struct {
+        vu_meter_state_t *meter;
+        const char *label;
+        bool is_clipping_pos;
+        bool is_clipping_neg;
+        Color channel_color;
+    } VUData;
+    VUData *data = (VUData *)vu_data;
+
+    render_vu_meter(bounds.x, bounds.y, bounds.width, bounds.height,
+                    data->meter, data->label, data->is_clipping_pos, data->is_clipping_neg,
+                    data->channel_color);
 }

@@ -103,9 +103,28 @@ int main(int argc, char **argv) {
     // Initialize application
     gui_app_init(&app);
 
+    // Set render app for custom element font access
+    set_render_app(&app);
+
     // Enumerate available devices
     gui_app_enumerate_devices(&app);
-    gui_app_set_status(&app, "Ready. Select a device and click Start.");
+
+    // Enable auto-reconnect by default
+    app.auto_reconnect_enabled = true;
+
+    // Autoconnect if a device is found
+    if (app.device_count > 0) {
+        gui_app_set_status(&app, "Connecting...");
+        if (gui_app_start_capture(&app) == 0) {
+            gui_app_set_status(&app, "Connected");
+        } else {
+            gui_app_set_status(&app, "Failed to connect. Click Connect to retry.");
+            app.reconnect_pending = true;
+            app.reconnect_attempt_time = GetTime();
+        }
+    } else {
+        gui_app_set_status(&app, "No devices found. Connect a device and restart.");
+    }
 
     // Main loop
     while (!WindowShouldClose() && !atomic_load(&do_exit)) {
@@ -152,6 +171,51 @@ int main(int argc, char **argv) {
             GetMouseWheelMoveV().y * 20.0f
         }, dt);
 
+        // Auto-reconnect logic
+        if (app.auto_reconnect_enabled) {
+            double now = GetTime();
+
+            // Detect connection loss via callback timeout (no data for 2+ seconds)
+            if (app.is_capturing && gui_capture_device_timeout(&app, 2000)) {
+                // Device was disconnected unexpectedly - clean up properly
+                fprintf(stderr, "[GUI] Device timeout detected, disconnecting...\n");
+                gui_app_stop_capture(&app);
+                gui_app_clear_display(&app);
+                app.reconnect_pending = true;
+                app.reconnect_attempt_time = now;
+                app.reconnect_attempts = 0;
+                gui_app_set_status(&app, "Connection lost. Reconnecting...");
+            }
+
+            // Attempt reconnection if pending
+            if (app.reconnect_pending && !app.is_capturing) {
+                double retry_delay = (app.reconnect_attempts < 3) ? 1.0 : 3.0;  // 1s for first 3, then 3s
+                if (now - app.reconnect_attempt_time >= retry_delay) {
+                    app.reconnect_attempt_time = now;
+                    app.reconnect_attempts++;
+
+                    // Re-enumerate devices in case device was reconnected
+                    gui_app_enumerate_devices(&app);
+
+                    if (app.device_count > 0) {
+                        char status_buf[128];
+                        snprintf(status_buf, sizeof(status_buf), "Reconnecting (attempt %d)...", app.reconnect_attempts);
+                        gui_app_set_status(&app, status_buf);
+
+                        if (gui_app_start_capture(&app) == 0) {
+                            app.reconnect_pending = false;
+                            app.reconnect_attempts = 0;
+                            gui_app_set_status(&app, "Reconnected");
+                        }
+                    } else {
+                        char status_buf[128];
+                        snprintf(status_buf, sizeof(status_buf), "No device found (attempt %d)", app.reconnect_attempts);
+                        gui_app_set_status(&app, status_buf);
+                    }
+                }
+            }
+        }
+
         // Update VU meters
         gui_app_update_vu_meters(&app, dt);
 
@@ -170,41 +234,8 @@ int main(int argc, char **argv) {
         BeginDrawing();
         ClearBackground(COLOR_BG);
 
-        // Render Clay UI
+        // Render Clay UI (custom elements are handled via CLAY_RENDER_COMMAND_TYPE_CUSTOM)
         Clay_Raylib_Render(render_commands, fonts);
-
-        // Render custom elements (oscilloscope, VU meters) on top of Clay UI
-        // Channel A: VU meter + waveform
-        Clay_BoundingBox osc_a_bounds = gui_get_oscilloscope_a_bounds();
-        if (osc_a_bounds.width > 0 && osc_a_bounds.height > 0) {
-            render_oscilloscope_channel(&app, osc_a_bounds.x, osc_a_bounds.y,
-                                        osc_a_bounds.width, osc_a_bounds.height,
-                                        0, "CH A", COLOR_CHANNEL_A);
-        }
-
-        Clay_BoundingBox vu_a_bounds = gui_get_vu_meter_a_bounds();
-        if (vu_a_bounds.width > 0 && vu_a_bounds.height > 0) {
-            bool clip_a_pos = atomic_load(&app.clip_count_a_pos) > 0;
-            bool clip_a_neg = atomic_load(&app.clip_count_a_neg) > 0;
-            render_vu_meter(vu_a_bounds.x, vu_a_bounds.y, vu_a_bounds.width, vu_a_bounds.height,
-                           &app.vu_a, "CH A", clip_a_pos, clip_a_neg, COLOR_CHANNEL_A);
-        }
-
-        // Channel B: VU meter + waveform
-        Clay_BoundingBox osc_b_bounds = gui_get_oscilloscope_b_bounds();
-        if (osc_b_bounds.width > 0 && osc_b_bounds.height > 0) {
-            render_oscilloscope_channel(&app, osc_b_bounds.x, osc_b_bounds.y,
-                                        osc_b_bounds.width, osc_b_bounds.height,
-                                        1, "CH B", COLOR_CHANNEL_B);
-        }
-
-        Clay_BoundingBox vu_b_bounds = gui_get_vu_meter_b_bounds();
-        if (vu_b_bounds.width > 0 && vu_b_bounds.height > 0) {
-            bool clip_b_pos = atomic_load(&app.clip_count_b_pos) > 0;
-            bool clip_b_neg = atomic_load(&app.clip_count_b_neg) > 0;
-            render_vu_meter(vu_b_bounds.x, vu_b_bounds.y, vu_b_bounds.width, vu_b_bounds.height,
-                           &app.vu_b, "CH B", clip_b_pos, clip_b_neg, COLOR_CHANNEL_B);
-        }
 
         // Draw FPS in debug mode
         #ifdef DEBUG

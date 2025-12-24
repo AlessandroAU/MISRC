@@ -1,9 +1,10 @@
 /*
  * MISRC GUI - Sample Extraction and Display Processing
  *
- * Shared functions for extracting samples and updating display buffers.
- * Used by both the UI thread (when not recording) and the recording
- * extraction thread (when recording).
+ * Continuous extraction thread that runs from capture start to capture stop.
+ * - Always reads from capture ringbuffer
+ * - Always updates display buffers for GUI
+ * - When recording enabled, also writes to record ringbuffers
  */
 
 #ifndef GUI_EXTRACT_H
@@ -11,6 +12,8 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
+#include "../ringbuffer.h"
 
 // Forward declarations
 typedef struct gui_app gui_app_t;
@@ -20,6 +23,27 @@ void gui_extract_init(void);
 
 // Cleanup extraction subsystem
 void gui_extract_cleanup(void);
+
+// Start the extraction thread (call after capture starts)
+// Returns 0 on success, -1 on error
+int gui_extract_start(gui_app_t *app, ringbuffer_t *capture_rb);
+
+// Stop the extraction thread (call before capture stops)
+void gui_extract_stop(void);
+
+// Check if extraction thread is running
+bool gui_extract_is_running(void);
+
+// Get record ringbuffers (for writer threads)
+ringbuffer_t *gui_extract_get_record_rb_a(void);
+ringbuffer_t *gui_extract_get_record_rb_b(void);
+
+// Enable/disable recording mode
+// When enabled, extraction thread writes to record ringbuffers
+void gui_extract_set_recording(bool enabled, bool use_flac);
+
+// Reset record ringbuffers (call before starting writer threads)
+void gui_extract_reset_record_rbs(void);
 
 // Get the extraction function pointer (for direct use)
 typedef void (*extract_fn_t)(uint32_t *buf, size_t num_samples, size_t *clip,

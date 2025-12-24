@@ -12,4 +12,8 @@ void gui_capture_callback(void *data_info);
 // Set the render app pointer for custom rendering
 void set_render_app(gui_app_t *app);
 
+// Check if device has timed out (no callbacks for too long)
+// Returns true if device appears disconnected
+bool gui_capture_device_timeout(gui_app_t *app, uint32_t timeout_ms);
+
 #endif // GUI_CAPTURE_H

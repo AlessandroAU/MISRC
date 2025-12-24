@@ -46,7 +46,9 @@ typedef struct
 {
     vu_meter_state_t *meter;
     const char *label;
-    bool is_clipping;
+    bool is_clipping_pos;
+    bool is_clipping_neg;
+    Color channel_color;
 } CustomLayoutElement_VUMeter;
 
 typedef struct
@@ -171,9 +173,9 @@ void Clay_Raylib_Close()
     CloseWindow();
 }
 
-// Forward declaration for custom rendering functions
-void render_oscilloscope_custom(Clay_BoundingBox bounds, CustomLayoutElement_Oscilloscope *osc);
-void render_vu_meter_custom(Clay_BoundingBox bounds, CustomLayoutElement_VUMeter *vu);
+// Forward declaration for custom rendering functions (from gui_render.h)
+void render_oscilloscope_custom(Clay_BoundingBox bounds, void *osc_data);
+void render_vu_meter_custom(Clay_BoundingBox bounds, void *vu_data);
 
 void Clay_Raylib_Render(Clay_RenderCommandArray renderCommands, Font* fonts)
 {

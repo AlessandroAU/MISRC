@@ -112,6 +112,15 @@ typedef struct gui_app {
     char status_message[256];
     double status_message_time;
 
+    // Auto-reconnect state
+    bool auto_reconnect_enabled;
+    bool reconnect_pending;
+    double reconnect_attempt_time;
+    int reconnect_attempts;
+
+    // Device disconnect detection (timestamp of last successful callback)
+    atomic_uint_fast64_t last_callback_time_ms;
+
     // Fonts
     Font *fonts;
 
@@ -131,6 +140,9 @@ void gui_app_stop_recording(gui_app_t *app);
 // Update functions (called each frame)
 void gui_app_update_vu_meters(gui_app_t *app, float dt);
 void gui_app_update_display_buffer(gui_app_t *app);
+
+// Clear display (called when device disconnects)
+void gui_app_clear_display(gui_app_t *app);
 
 // Status messages
 void gui_app_set_status(gui_app_t *app, const char *message);

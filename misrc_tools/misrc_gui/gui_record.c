@@ -2,8 +2,9 @@
  * MISRC GUI - Recording Module
  *
  * Handles file recording with optional FLAC compression.
- * Uses a dedicated extraction thread to ensure recording is not affected
- * by UI thread blocking (e.g., window dragging).
+ * Uses writer threads to write extracted samples to files.
+ * The extraction thread (in gui_extract.c) writes to record ringbuffers
+ * when recording is enabled.
  */
 
 #include "gui_record.h"
@@ -11,21 +12,12 @@
 #include "gui_extract.h"
 
 #include "../ringbuffer.h"
-#include "../extract.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
 #include <stdatomic.h>
-
-#ifdef _WIN32
-#include <malloc.h>
-#define aligned_alloc(align, size) _aligned_malloc(size, align)
-#define aligned_free(ptr) _aligned_free(ptr)
-#else
-#define aligned_free(ptr) free(ptr)
-#endif
 
 // FLAC support
 #if LIBFLAC_ENABLED == 1
@@ -34,7 +26,6 @@
 
 // Buffer sizes
 #define BUFFER_READ_SIZE 65536
-#define BUFFER_RECORD_SIZE (65536 * 1024)  // 64MB per channel
 
 // Threading primitives (avoid windows.h conflicts with raylib)
 #ifdef _WIN32
@@ -81,16 +72,6 @@
 // External do_exit flag from ringbuffer.h
 extern atomic_int do_exit;
 
-// Recording ringbuffers (extracted samples -> file writers)
-static ringbuffer_t s_record_rb_a;
-static ringbuffer_t s_record_rb_b;
-static bool s_record_rb_initialized = false;
-
-// Extraction thread (reads from capture ringbuffer, writes to record ringbuffers)
-static thrd_t s_extract_thread;
-static bool s_extract_thread_running = false;
-static ringbuffer_t *s_capture_rb = NULL;  // Pointer to capture ringbuffer
-
 // Writer threads
 static thrd_t s_writer_thread_a;
 static thrd_t s_writer_thread_b;
@@ -119,8 +100,6 @@ typedef struct {
 
 static writer_ctx_t s_ctx_a;
 static writer_ctx_t s_ctx_b;
-
-// Note: Extraction buffers are provided by gui_extract module
 
 #if LIBFLAC_ENABLED == 1
 // FLAC write callback to track compressed output size
@@ -157,9 +136,24 @@ static int flac_writer_thread(void *ctx) {
 
     fprintf(stderr, "[FLAC] Writer thread %c started\n", wctx->channel == 0 ? 'A' : 'B');
 
-    while (!atomic_load(&do_exit) && s_recording_app && s_recording_app->is_recording) {
+    while (1) {
         buf = rb_read_ptr(wctx->rb, len);
         if (!buf) {
+            // No data available - check if we should exit
+            if (atomic_load(&do_exit) || !s_recording_app || !s_recording_app->is_recording) {
+                // Drain any remaining partial data before exiting
+                size_t remaining = wctx->rb->tail - wctx->rb->head;
+                if (remaining > 0 && remaining < len) {
+                    size_t remaining_samples = remaining / sizeof(int32_t);
+                    buf = rb_read_ptr(wctx->rb, remaining);
+                    if (buf && remaining_samples > 0) {
+                        FLAC__stream_encoder_process(
+                            wctx->encoder, (const FLAC__int32 **)&buf, remaining_samples);
+                        rb_read_finished(wctx->rb, remaining);
+                    }
+                }
+                break;
+            }
             thrd_sleep_ms(1);
             continue;
         }
@@ -194,9 +188,22 @@ static int raw_writer_thread(void *ctx) {
 
     fprintf(stderr, "[RAW] Writer thread %c started\n", wctx->channel == 0 ? 'A' : 'B');
 
-    while (!atomic_load(&do_exit) && s_recording_app && s_recording_app->is_recording) {
+    while (1) {
         void *buf = rb_read_ptr(wctx->rb, len);
         if (!buf) {
+            // No data available - check if we should exit
+            if (atomic_load(&do_exit) || !s_recording_app || !s_recording_app->is_recording) {
+                // Drain any remaining partial data before exiting
+                size_t remaining = wctx->rb->tail - wctx->rb->head;
+                if (remaining > 0 && remaining < len) {
+                    buf = rb_read_ptr(wctx->rb, remaining);
+                    if (buf) {
+                        fwrite(buf, 1, remaining, wctx->file);
+                        rb_read_finished(wctx->rb, remaining);
+                    }
+                }
+                break;
+            }
             thrd_sleep_ms(1);
             continue;
         }
@@ -218,112 +225,14 @@ static int raw_writer_thread(void *ctx) {
     return 0;
 }
 
-// Extraction thread - reads from capture ringbuffer, extracts, writes to record ringbuffers
-// This thread runs independently of the UI and won't be blocked by window dragging
-// Also updates display buffer and peak/clip values for UI
-static int extraction_thread(void *ctx) {
-    (void)ctx;
-    size_t read_size = BUFFER_READ_SIZE * 4;  // 4 bytes per sample pair
-    size_t clip[2] = {0, 0};
-    uint16_t peak[2] = {0, 0};
-
-    // Get extraction resources from shared module
-    extract_fn_t extract_fn = gui_extract_get_function();
-    int16_t *buf_a = gui_extract_get_buf_a();
-    int16_t *buf_b = gui_extract_get_buf_b();
-    uint8_t *buf_aux = gui_extract_get_buf_aux();
-
-    fprintf(stderr, "[EXTRACT] Extraction thread started\n");
-
-    while (!atomic_load(&do_exit) && s_recording_app && s_recording_app->is_recording) {
-        void *buf = rb_read_ptr(s_capture_rb, read_size);
-        if (!buf) {
-            thrd_sleep_ms(1);
-            continue;
-        }
-
-        // Extract samples
-        extract_fn((uint32_t*)buf, BUFFER_READ_SIZE, clip, buf_aux, buf_a, buf_b, peak);
-
-        // Mark capture buffer as consumed
-        rb_read_finished(s_capture_rb, read_size);
-
-        // Update stats and display using shared functions
-        gui_extract_update_stats(s_recording_app, buf_a, buf_b, BUFFER_READ_SIZE);
-        gui_extract_update_display(s_recording_app, buf_a, buf_b, BUFFER_READ_SIZE);
-
-        atomic_fetch_add(&s_recording_app->total_samples, BUFFER_READ_SIZE);
-
-#if LIBFLAC_ENABLED == 1
-        if (s_recording_app->settings.use_flac) {
-            // FLAC needs 32-bit samples with 12-bit to 16-bit extension
-            size_t sample_bytes = BUFFER_READ_SIZE * sizeof(int32_t);
-            int32_t *write_a = (int32_t *)rb_write_ptr(&s_record_rb_a, sample_bytes);
-            int32_t *write_b = (int32_t *)rb_write_ptr(&s_record_rb_b, sample_bytes);
-
-            if (write_a && write_b) {
-                // Convert 12-bit samples to 16-bit by left-shifting 4 bits
-                for (size_t i = 0; i < BUFFER_READ_SIZE; i++) {
-                    write_a[i] = (int32_t)buf_a[i] << 4;
-                    write_b[i] = (int32_t)buf_b[i] << 4;
-                }
-                rb_write_finished(&s_record_rb_a, sample_bytes);
-                rb_write_finished(&s_record_rb_b, sample_bytes);
-            } else {
-                static int record_drop_count = 0;
-                record_drop_count++;
-                if (record_drop_count <= 5 || record_drop_count % 100 == 0) {
-                    fprintf(stderr, "[EXTRACT] Record ringbuffer full, dropped %d blocks\n", record_drop_count);
-                }
-            }
-        } else
-#endif
-        {
-            // RAW uses 16-bit samples directly
-            size_t sample_bytes = BUFFER_READ_SIZE * sizeof(int16_t);
-            void *write_a = rb_write_ptr(&s_record_rb_a, sample_bytes);
-            void *write_b = rb_write_ptr(&s_record_rb_b, sample_bytes);
-
-            if (write_a && write_b) {
-                memcpy(write_a, buf_a, sample_bytes);
-                memcpy(write_b, buf_b, sample_bytes);
-                rb_write_finished(&s_record_rb_a, sample_bytes);
-                rb_write_finished(&s_record_rb_b, sample_bytes);
-            } else {
-                static int record_drop_count = 0;
-                record_drop_count++;
-                if (record_drop_count <= 5 || record_drop_count % 100 == 0) {
-                    fprintf(stderr, "[EXTRACT] Record ringbuffer full, dropped %d blocks\n", record_drop_count);
-                }
-            }
-        }
-    }
-
-    fprintf(stderr, "[EXTRACT] Extraction thread exiting\n");
-    return 0;
-}
-
 // Initialize recording subsystem
 void gui_record_init(void) {
-    if (!s_record_rb_initialized) {
-        rb_init(&s_record_rb_a, "record_a_rb", BUFFER_RECORD_SIZE);
-        rb_init(&s_record_rb_b, "record_b_rb", BUFFER_RECORD_SIZE);
-        s_record_rb_initialized = true;
-    }
-
-    // Initialize shared extraction module
-    gui_extract_init();
+    // Nothing to initialize here anymore - ringbuffers are in gui_extract
 }
 
 // Cleanup recording subsystem
 void gui_record_cleanup(void) {
-    if (s_record_rb_initialized) {
-        rb_close(&s_record_rb_a);
-        rb_close(&s_record_rb_b);
-        s_record_rb_initialized = false;
-    }
-
-    // Note: gui_extract_cleanup is called by gui_capture.c
+    // Nothing to cleanup here anymore - ringbuffers are in gui_extract
 }
 
 // Check if recording is active
@@ -332,7 +241,8 @@ bool gui_record_is_active(void) {
 }
 
 // Start recording
-int gui_record_start(gui_app_t *app, ringbuffer_t *capture_rb) {
+int gui_record_start(gui_app_t *app) {
+
     if (!app->is_capturing) {
         gui_app_set_status(app, "Start capture first");
         return -1;
@@ -342,17 +252,20 @@ int gui_record_start(gui_app_t *app, ringbuffer_t *capture_rb) {
         return 0;
     }
 
-    // Initialize subsystem
-    gui_record_init();
+    // Verify extraction thread is running
+    if (!gui_extract_is_running()) {
+        gui_app_set_status(app, "Extraction not running");
+        return -1;
+    }
 
-    // Store capture ringbuffer pointer
-    s_capture_rb = capture_rb;
+    // Get record ringbuffers from gui_extract
+    ringbuffer_t *rb_a = gui_extract_get_record_rb_a();
+    ringbuffer_t *rb_b = gui_extract_get_record_rb_b();
 
-    // Reset record ringbuffers
-    atomic_store(&s_record_rb_a.head, 0);
-    atomic_store(&s_record_rb_a.tail, 0);
-    atomic_store(&s_record_rb_b.head, 0);
-    atomic_store(&s_record_rb_b.tail, 0);
+    if (!rb_a || !rb_b) {
+        gui_app_set_status(app, "Record buffers not initialized");
+        return -1;
+    }
 
     s_recording_app = app;
     atomic_store(&app->recording_bytes, 0);
@@ -360,6 +273,9 @@ int gui_record_start(gui_app_t *app, ringbuffer_t *capture_rb) {
     atomic_store(&app->recording_raw_b, 0);
     atomic_store(&app->recording_compressed_a, 0);
     atomic_store(&app->recording_compressed_b, 0);
+
+    // Reset record ringbuffers before starting
+    gui_extract_reset_record_rbs();
 
 #if LIBFLAC_ENABLED == 1
     if (app->settings.use_flac) {
@@ -387,13 +303,13 @@ int gui_record_start(gui_app_t *app, ringbuffer_t *capture_rb) {
         }
 
         // Setup writer contexts
-        s_ctx_a.rb = &s_record_rb_a;
+        s_ctx_a.rb = rb_a;
         s_ctx_a.file = s_file_a;
         s_ctx_a.channel = 0;
         s_ctx_a.encoder = s_encoder_a;
         s_ctx_a.compressed_bytes = &app->recording_compressed_a;
 
-        s_ctx_b.rb = &s_record_rb_b;
+        s_ctx_b.rb = rb_b;
         s_ctx_b.file = s_file_b;
         s_ctx_b.channel = 1;
         s_ctx_b.encoder = s_encoder_b;
@@ -431,12 +347,12 @@ int gui_record_start(gui_app_t *app, ringbuffer_t *capture_rb) {
             }
         }
 
-        // Start threads
+        // Mark as recording and start writer threads
         app->is_recording = true;
         app->recording_start_time = GetTime();
 
-        thrd_create(&s_extract_thread, extraction_thread, NULL);
-        s_extract_thread_running = true;
+        // Enable recording in extraction thread
+        gui_extract_set_recording(true, true);
 
         thrd_create(&s_writer_thread_a, flac_writer_thread, &s_ctx_a);
         thrd_create(&s_writer_thread_b, flac_writer_thread, &s_ctx_b);
@@ -458,19 +374,20 @@ int gui_record_start(gui_app_t *app, ringbuffer_t *capture_rb) {
             return -1;
         }
 
-        s_ctx_a.rb = &s_record_rb_a;
+        s_ctx_a.rb = rb_a;
         s_ctx_a.file = s_file_a;
         s_ctx_a.channel = 0;
 
-        s_ctx_b.rb = &s_record_rb_b;
+        s_ctx_b.rb = rb_b;
         s_ctx_b.file = s_file_b;
         s_ctx_b.channel = 1;
 
+        // Mark as recording and start writer threads
         app->is_recording = true;
         app->recording_start_time = GetTime();
 
-        thrd_create(&s_extract_thread, extraction_thread, NULL);
-        s_extract_thread_running = true;
+        // Enable recording in extraction thread
+        gui_extract_set_recording(true, false);
 
         thrd_create(&s_writer_thread_a, raw_writer_thread, &s_ctx_a);
         thrd_create(&s_writer_thread_b, raw_writer_thread, &s_ctx_b);
@@ -488,16 +405,14 @@ void gui_record_stop(gui_app_t *app) {
         return;
     }
 
+    // Disable recording in extraction thread first
+    // This stops new data from being written to record ringbuffers
+    gui_extract_set_recording(false, false);
+
     // Signal threads to stop
     app->is_recording = false;
 
-    // Wait for extraction thread
-    if (s_extract_thread_running) {
-        thrd_join(s_extract_thread, NULL);
-        s_extract_thread_running = false;
-    }
-
-    // Wait for writer threads
+    // Wait for writer threads to drain and exit
     if (s_writer_threads_running) {
         thrd_join(s_writer_thread_a, NULL);
         thrd_join(s_writer_thread_b, NULL);
@@ -529,6 +444,5 @@ void gui_record_stop(gui_app_t *app) {
     }
 
     s_recording_app = NULL;
-    s_capture_rb = NULL;
     gui_app_set_status(app, "Recording stopped");
 }

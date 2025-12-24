@@ -27,26 +27,41 @@ static Clay_String make_string(const char *str) {
     return (Clay_String){ .isStaticallyAllocated = false, .length = (int32_t)strlen(str), .chars = str };
 }
 
-// Get bounding boxes from Clay after layout (call after Clay_EndLayout)
-Clay_BoundingBox gui_get_oscilloscope_a_bounds(void) {
-    Clay_ElementData data = Clay_GetElementData(CLAY_ID("OscilloscopeCanvasA"));
-    return data.found ? data.boundingBox : (Clay_BoundingBox){0};
-}
+// Custom element type enum (must match clay_renderer_raylib.c)
+typedef enum {
+    CUSTOM_LAYOUT_ELEMENT_TYPE_3D_MODEL,
+    CUSTOM_LAYOUT_ELEMENT_TYPE_OSCILLOSCOPE,
+    CUSTOM_LAYOUT_ELEMENT_TYPE_VU_METER
+} CustomLayoutElementType;
 
-Clay_BoundingBox gui_get_oscilloscope_b_bounds(void) {
-    Clay_ElementData data = Clay_GetElementData(CLAY_ID("OscilloscopeCanvasB"));
-    return data.found ? data.boundingBox : (Clay_BoundingBox){0};
-}
+// Custom element data structures (must match clay_renderer_raylib.c)
+typedef struct {
+    gui_app_t *app;
+    int channel;
+} CustomLayoutElement_Oscilloscope;
 
-Clay_BoundingBox gui_get_vu_meter_a_bounds(void) {
-    Clay_ElementData data = Clay_GetElementData(CLAY_ID("VUMeterA"));
-    return data.found ? data.boundingBox : (Clay_BoundingBox){0};
-}
+typedef struct {
+    vu_meter_state_t *meter;
+    const char *label;
+    bool is_clipping_pos;
+    bool is_clipping_neg;
+    Color channel_color;
+} CustomLayoutElement_VUMeter;
 
-Clay_BoundingBox gui_get_vu_meter_b_bounds(void) {
-    Clay_ElementData data = Clay_GetElementData(CLAY_ID("VUMeterB"));
-    return data.found ? data.boundingBox : (Clay_BoundingBox){0};
-}
+typedef struct {
+    CustomLayoutElementType type;
+    union {
+        CustomLayoutElement_Oscilloscope oscilloscope;
+        CustomLayoutElement_VUMeter vu_meter;
+    } customData;
+} CustomLayoutElement;
+
+// Static storage for custom element data (persists during render)
+static CustomLayoutElement s_osc_a_element;
+static CustomLayoutElement s_osc_b_element;
+static CustomLayoutElement s_vu_a_element;
+static CustomLayoutElement s_vu_b_element;
+
 
 // Render the toolbar
 static void render_toolbar(gui_app_t *app) {
@@ -91,24 +106,24 @@ static void render_toolbar(gui_app_t *app) {
                 CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_NORMAL, .textColor = to_clay_color(COLOR_TEXT) }));
         }
 
+        // Connect/Disconnect button (next to device dropdown)
+        Color connect_color = app->is_capturing ? COLOR_CLIP_RED : COLOR_SYNC_GREEN;
+        CLAY(CLAY_ID("ConnectButton"), {
+            .layout = {
+                .sizing = { CLAY_SIZING_FIXED(100), CLAY_SIZING_FIXED(32) },
+                .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER }
+            },
+            .backgroundColor = to_clay_color(connect_color),
+            .cornerRadius = CLAY_CORNER_RADIUS(4)
+        }) {
+            CLAY_TEXT(app->is_capturing ? CLAY_STRING("Disconnect") : CLAY_STRING("Connect"),
+                CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_NORMAL, .textColor = { 255, 255, 255, 255 } }));
+        }
+
         // Spacer
         CLAY(CLAY_ID("ToolbarSpacer2"), {
             .layout = { .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0) } }
         }) {}
-
-        // Start/Stop button
-        Color start_color = app->is_capturing ? COLOR_CLIP_RED : COLOR_SYNC_GREEN;
-        CLAY(CLAY_ID("StartButton"), {
-            .layout = {
-                .sizing = { CLAY_SIZING_FIXED(80), CLAY_SIZING_FIXED(32) },
-                .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER }
-            },
-            .backgroundColor = to_clay_color(start_color),
-            .cornerRadius = CLAY_CORNER_RADIUS(4)
-        }) {
-            CLAY_TEXT(app->is_capturing ? CLAY_STRING("Stop") : CLAY_STRING("Start"),
-                CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_NORMAL, .textColor = { 255, 255, 255, 255 } }));
-        }
 
         // Record button
         Color record_color = app->is_recording ? COLOR_CLIP_RED : COLOR_BUTTON;
@@ -143,7 +158,29 @@ static void render_toolbar(gui_app_t *app) {
 
 // Render the channels panel - each channel has VU meter + waveform grouped together
 static void render_channels_panel(gui_app_t *app) {
-    (void)app;
+    // Setup custom element data for this frame
+    s_vu_a_element.type = CUSTOM_LAYOUT_ELEMENT_TYPE_VU_METER;
+    s_vu_a_element.customData.vu_meter.meter = &app->vu_a;
+    s_vu_a_element.customData.vu_meter.label = "CH A";
+    s_vu_a_element.customData.vu_meter.is_clipping_pos = atomic_load(&app->clip_count_a_pos) > 0;
+    s_vu_a_element.customData.vu_meter.is_clipping_neg = atomic_load(&app->clip_count_a_neg) > 0;
+    s_vu_a_element.customData.vu_meter.channel_color = COLOR_CHANNEL_A;
+
+    s_osc_a_element.type = CUSTOM_LAYOUT_ELEMENT_TYPE_OSCILLOSCOPE;
+    s_osc_a_element.customData.oscilloscope.app = app;
+    s_osc_a_element.customData.oscilloscope.channel = 0;
+
+    s_vu_b_element.type = CUSTOM_LAYOUT_ELEMENT_TYPE_VU_METER;
+    s_vu_b_element.customData.vu_meter.meter = &app->vu_b;
+    s_vu_b_element.customData.vu_meter.label = "CH B";
+    s_vu_b_element.customData.vu_meter.is_clipping_pos = atomic_load(&app->clip_count_b_pos) > 0;
+    s_vu_b_element.customData.vu_meter.is_clipping_neg = atomic_load(&app->clip_count_b_neg) > 0;
+    s_vu_b_element.customData.vu_meter.channel_color = COLOR_CHANNEL_B;
+
+    s_osc_b_element.type = CUSTOM_LAYOUT_ELEMENT_TYPE_OSCILLOSCOPE;
+    s_osc_b_element.customData.oscilloscope.app = app;
+    s_osc_b_element.customData.oscilloscope.channel = 1;
+
     CLAY(CLAY_ID("ChannelsPanel"), {
         .layout = {
             .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0) },
@@ -161,16 +198,16 @@ static void render_channels_panel(gui_app_t *app) {
                 .childGap = 4
             }
         }) {
-            // VU meter A
+            // VU meter A - custom element
             CLAY(CLAY_ID("VUMeterA"), {
                 .layout = { .sizing = { CLAY_SIZING_FIXED(70), CLAY_SIZING_GROW(0) } },
-                .backgroundColor = to_clay_color(COLOR_METER_BG)
+                .custom = { .customData = &s_vu_a_element }
             }) {}
 
-            // Oscilloscope canvas A
+            // Oscilloscope canvas A - custom element
             CLAY(CLAY_ID("OscilloscopeCanvasA"), {
                 .layout = { .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0) } },
-                .backgroundColor = to_clay_color((Color){20, 20, 25, 255})
+                .custom = { .customData = &s_osc_a_element }
             }) {}
         }
 
@@ -182,16 +219,16 @@ static void render_channels_panel(gui_app_t *app) {
                 .childGap = 4
             }
         }) {
-            // VU meter B
+            // VU meter B - custom element
             CLAY(CLAY_ID("VUMeterB"), {
                 .layout = { .sizing = { CLAY_SIZING_FIXED(70), CLAY_SIZING_GROW(0) } },
-                .backgroundColor = to_clay_color(COLOR_METER_BG)
+                .custom = { .customData = &s_vu_b_element }
             }) {}
 
-            // Oscilloscope canvas B
+            // Oscilloscope canvas B - custom element
             CLAY(CLAY_ID("OscilloscopeCanvasB"), {
                 .layout = { .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0) } },
-                .backgroundColor = to_clay_color((Color){20, 20, 25, 255})
+                .custom = { .customData = &s_osc_b_element }
             }) {}
         }
     }
@@ -464,8 +501,8 @@ void gui_render_layout(gui_app_t *app) {
 void gui_handle_interactions(gui_app_t *app) {
     // Handle clicks
     if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
-        // Check start button
-        if (Clay_PointerOver(CLAY_ID("StartButton"))) {
+        // Check connect button
+        if (Clay_PointerOver(CLAY_ID("ConnectButton"))) {
             if (app->is_capturing) {
                 gui_app_stop_capture(app);
             } else {
@@ -513,3 +550,4 @@ void gui_handle_interactions(gui_app_t *app) {
         }
     }
 }
+

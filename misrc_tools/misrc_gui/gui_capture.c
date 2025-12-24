@@ -21,6 +21,23 @@
 #include <string.h>
 #include <math.h>
 
+#ifndef _WIN32
+#include <unistd.h>
+#include <sys/time.h>
+#endif
+
+// Get current time in milliseconds
+static uint64_t get_time_ms(void) {
+#ifdef _WIN32
+    extern __declspec(dllimport) unsigned long __stdcall GetTickCount(void);
+    return (uint64_t)GetTickCount();
+#else
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (uint64_t)(tv.tv_sec * 1000 + tv.tv_usec / 1000);
+#endif
+}
+
 // Buffer sizes - match reference implementation
 #define BUFFER_READ_SIZE 65536
 #define BUFFER_TOTAL_SIZE (65536 * 1024)  // Same as reference: 64MB
@@ -28,6 +45,10 @@
 // Ringbuffer for raw capture data (written by callback, read by main thread)
 static ringbuffer_t s_capture_rb;
 static bool s_rb_initialized = false;
+
+// Frame tracking state (like reference implementation)
+static uint16_t s_last_frame_cnt = 0;
+static unsigned int s_in_order_cnt = 0;
 
 // Message callback for hsdaoh
 static void gui_message_callback(void *ctx, enum hsdaoh_msg_level level, const char *format, ...) {
@@ -78,21 +99,50 @@ void gui_capture_callback(void *data_info_ptr) {
     metadata_t meta;
     hsdaoh_extract_metadata(data_info->buf, &meta, data_info->width);
 
+    bool was_synced = atomic_load(&app->stream_synced);
+
     // Validate magic number
     if (meta.magic != HSDAOH_MAGIC) {
+        if (was_synced) {
+            fprintf(stderr, "[CB] Lost sync to HDMI input stream\n");
+        }
         atomic_store(&app->stream_synced, false);
+        s_in_order_cnt = 0;
         return;
     }
 
-    // Check if this is the first synced frame
-    bool was_synced = atomic_load(&app->stream_synced);
-    if (!was_synced) {
-        if (s_callback_count <= 5) {
-            fprintf(stderr, "[CB] Stream synced!\n");
-        }
+    // Drop duplicate frames (like reference implementation)
+    if (meta.framecounter == s_last_frame_cnt) {
+        return;
     }
 
-    atomic_store(&app->stream_synced, true);
+    // Check for missed frames
+    if (meta.framecounter != ((s_last_frame_cnt + 1) & 0xffff)) {
+        s_in_order_cnt = 0;
+        if (was_synced) {
+            fprintf(stderr, "[CB] Missed frame(s), fcnt %d, expected %d\n",
+                    meta.framecounter, ((s_last_frame_cnt + 1) & 0xffff));
+        }
+    } else {
+        s_in_order_cnt++;
+    }
+
+    s_last_frame_cnt = meta.framecounter;
+
+    // Don't process until we have enough in-order frames (like reference: >4)
+    if (!was_synced && s_in_order_cnt <= 4) {
+        return;
+    }
+
+    // Now consider stream synced
+    if (!was_synced) {
+        fprintf(stderr, "[CB] Synchronized to HDMI input stream\n");
+        atomic_store(&app->stream_synced, true);
+    }
+
+    // Update last callback time for disconnect detection
+    atomic_store(&app->last_callback_time_ms, get_time_ms());
+
     atomic_fetch_add(&app->frame_count, 1);
 
     // Update sample rate from metadata
@@ -100,16 +150,24 @@ void gui_capture_callback(void *data_info_ptr) {
         atomic_store(&app->sample_rate, meta.stream_info[0].srate);
     }
 
-    // First pass: calculate total payload size
+    // First pass: calculate total payload size and validate
     size_t stream0_payload_bytes = 0;
     bool has_stream_id = (meta.flags & FLAG_STREAM_ID_PRESENT) != 0;
+    bool frame_valid = true;
 
     for (unsigned int line = 0; line < data_info->height; line++) {
         uint8_t *line_dat = data_info->buf + (data_info->width * sizeof(uint16_t) * line);
         uint16_t payload_len = ((uint16_t *)line_dat)[data_info->width - 1] & 0x0FFF;
         uint16_t stream_id = has_stream_id ? (((uint16_t *)line_dat)[data_info->width - 3] & 0x0FFF) : 0;
 
-        if (payload_len == 0 || payload_len > data_info->width - 1) {
+        // Validate payload length
+        if (payload_len > data_info->width - 1) {
+            fprintf(stderr, "[CB] Invalid payload length: %d\n", payload_len);
+            frame_valid = false;
+            break;
+        }
+
+        if (payload_len == 0) {
             continue;
         }
         if (stream_id != 0) {
@@ -118,20 +176,26 @@ void gui_capture_callback(void *data_info_ptr) {
         stream0_payload_bytes += payload_len * sizeof(uint16_t);
     }
 
-    if (stream0_payload_bytes == 0) {
+    // Don't process invalid frames
+    if (!frame_valid || stream0_payload_bytes == 0) {
         return;
     }
 
-    // Get write pointer for exact payload size
-    uint8_t *buf_out = rb_write_ptr(&s_capture_rb, stream0_payload_bytes);
-    if (!buf_out) {
-        // Ringbuffer full - skip this frame
-        static int drop_count = 0;
-        drop_count++;
-        if (drop_count <= 10 || drop_count % 100 == 0) {
-            fprintf(stderr, "[CB] Ringbuffer full, dropping frame (%d dropped)\n", drop_count);
+    // Wait for ringbuffer space (like reference implementation)
+    // This ensures we don't drop frames when the consumer is slow
+    uint8_t *buf_out;
+    while ((buf_out = rb_write_ptr(&s_capture_rb, stream0_payload_bytes)) == NULL) {
+        if (atomic_load(&do_exit)) return;
+        // Sleep briefly to allow consumer to drain buffer
+        // Use Windows Sleep directly to avoid raylib conflicts
+#ifdef _WIN32
+        {
+            extern __declspec(dllimport) void __stdcall Sleep(unsigned long);
+            Sleep(4);
         }
-        return;
+#else
+        usleep(4000);
+#endif
     }
 
     // Second pass: copy payload data to ringbuffer
@@ -157,77 +221,6 @@ void gui_capture_callback(void *data_info_ptr) {
 
     if (s_callback_count <= 3) {
         fprintf(stderr, "[CB] Wrote %zu bytes to ringbuffer\n", stream0_payload_bytes);
-    }
-}
-
-// Process captured data on main thread (called each frame)
-// Process multiple blocks to keep up with incoming data
-// Note: When recording is active, the extraction thread in gui_record.c
-// handles reading from the capture ringbuffer, so we skip processing here
-// to avoid data contention (both threads reading from the same ringbuffer)
-void gui_process_capture_data(gui_app_t *app) {
-    static int call_count = 0;
-    static bool logged_init = false;
-    call_count++;
-
-    if (!s_rb_initialized) {
-        if (call_count <= 3) fprintf(stderr, "[MAIN] gui_process_capture_data: rb not initialized\n");
-        return;
-    }
-    if (!atomic_load(&app->stream_synced)) {
-        if (call_count <= 3 || call_count % 300 == 0) {
-            fprintf(stderr, "[MAIN] gui_process_capture_data: stream not synced (call %d)\n", call_count);
-        }
-        return;
-    }
-
-    // When recording is active, the extraction thread handles reading from the ringbuffer
-    // We skip processing here to avoid data contention
-    if (gui_record_is_active()) {
-        return;
-    }
-
-    // Initialize extraction subsystem
-    gui_extract_init();
-    extract_fn_t extract_fn = gui_extract_get_function();
-    int16_t *buf_a = gui_extract_get_buf_a();
-    int16_t *buf_b = gui_extract_get_buf_b();
-    uint8_t *buf_aux = gui_extract_get_buf_aux();
-
-    if (!extract_fn || !buf_a || !buf_b || !buf_aux) {
-        if (!logged_init) {
-            fprintf(stderr, "[MAIN] Failed to get extraction resources\n");
-            logged_init = true;
-        }
-        return;
-    }
-
-    // Process multiple blocks per frame to keep up with incoming data
-    int blocks_processed = 0;
-    const int max_blocks_per_frame = 32;  // Limit to prevent frame stutter
-
-    while (blocks_processed < max_blocks_per_frame) {
-        // Try to read a block from ringbuffer
-        size_t read_size = BUFFER_READ_SIZE * 4;  // 4 bytes per sample pair (two 16-bit samples)
-        void *buf = rb_read_ptr(&s_capture_rb, read_size);
-        if (!buf) {
-            break;  // No more data available
-        }
-
-        // Extract samples
-        size_t clip[2] = {0, 0};
-        uint16_t peak[2] = {0, 0};
-        extract_fn((uint32_t*)buf, BUFFER_READ_SIZE, clip, buf_aux, buf_a, buf_b, peak);
-
-        // Mark input buffer as consumed
-        rb_read_finished(&s_capture_rb, read_size);
-
-        // Update stats and display using shared functions
-        gui_extract_update_stats(app, buf_a, buf_b, BUFFER_READ_SIZE);
-        gui_extract_update_display(app, buf_a, buf_b, BUFFER_READ_SIZE);
-
-        atomic_fetch_add(&app->total_samples, BUFFER_READ_SIZE);
-        blocks_processed++;
     }
 }
 
@@ -346,13 +339,16 @@ int gui_app_start_capture(gui_app_t *app) {
     atomic_store(&app->clip_count_b_neg, 0);
     atomic_store(&app->stream_synced, false);
     atomic_store(&app->sample_rate, 0);
+    atomic_store(&app->last_callback_time_ms, get_time_ms());
 
     // Reset display buffer
     app->display_write_pos = 0;
     app->display_samples_available = 0;
 
-    // Reset callback counter
+    // Reset callback counter and frame tracking
     s_callback_count = 0;
+    s_last_frame_cnt = 0;
+    s_in_order_cnt = 0;
 
     // Open device
     fprintf(stderr, "[GUI] Allocating device...\n");
@@ -371,7 +367,7 @@ int gui_app_start_capture(gui_app_t *app) {
     if (r < 0) {
         fprintf(stderr, "[GUI] hsdaoh_open2 failed: %d\n", r);
         gui_app_set_status(app, "Failed to open device");
-        hsdaoh_close(app->hs_dev);
+        // Note: hsdaoh_open2 frees dev on failure, so DON'T call hsdaoh_close
         app->hs_dev = NULL;
         return -1;
     }
@@ -387,6 +383,19 @@ int gui_app_start_capture(gui_app_t *app) {
     }
 
     app->is_capturing = true;
+
+    // Start the extraction thread - runs continuously from capture start
+    r = gui_extract_start(app, &s_capture_rb);
+    if (r < 0) {
+        fprintf(stderr, "[GUI] Failed to start extraction thread\n");
+        gui_app_set_status(app, "Failed to start extraction");
+        hsdaoh_stop_stream(app->hs_dev);
+        hsdaoh_close(app->hs_dev);
+        app->hs_dev = NULL;
+        app->is_capturing = false;
+        return -1;
+    }
+
     gui_app_set_status(app, "Capturing...");
 
     return 0;
@@ -402,20 +411,26 @@ void gui_app_stop_capture(gui_app_t *app) {
         gui_app_stop_recording(app);
     }
 
+    // Set is_capturing to false BEFORE stopping extraction thread
+    // The extraction thread checks this flag to know when to exit
+    app->is_capturing = false;
+
+    // Stop extraction thread before closing device
+    gui_extract_stop();
+
     if (app->hs_dev) {
         hsdaoh_stop_stream(app->hs_dev);
         hsdaoh_close(app->hs_dev);
         app->hs_dev = NULL;
     }
 
-    app->is_capturing = false;
     atomic_store(&app->stream_synced, false);
     gui_app_set_status(app, "Capture stopped");
 }
 
 // Recording wrappers - delegate to gui_record module
 int gui_app_start_recording(gui_app_t *app) {
-    return gui_record_start(app, &s_capture_rb);
+    return gui_record_start(app);
 }
 
 void gui_app_stop_recording(gui_app_t *app) {
@@ -479,9 +494,42 @@ void gui_app_update_vu_meters(gui_app_t *app, float dt) {
 }
 
 // Update display buffer (called from main thread)
+// Note: Display is now updated by the continuous extraction thread
 void gui_app_update_display_buffer(gui_app_t *app) {
-    // Process any available capture data
-    gui_process_capture_data(app);
+    (void)app;
+    // No-op: extraction thread handles display updates continuously
+}
+
+// Clear display buffer and reset VU meters (called when device disconnects)
+void gui_app_clear_display(gui_app_t *app) {
+    // Clear display samples
+    memset(app->display_samples, 0, sizeof(app->display_samples));
+    app->display_write_pos = 0;
+    app->display_samples_available = 0;
+
+    // Reset VU meters
+    app->vu_a.level_pos = 0;
+    app->vu_a.level_neg = 0;
+    app->vu_a.peak_pos = 0;
+    app->vu_a.peak_neg = 0;
+    app->vu_a.peak_hold_time_pos = 0;
+    app->vu_a.peak_hold_time_neg = 0;
+
+    app->vu_b.level_pos = 0;
+    app->vu_b.level_neg = 0;
+    app->vu_b.peak_pos = 0;
+    app->vu_b.peak_neg = 0;
+    app->vu_b.peak_hold_time_pos = 0;
+    app->vu_b.peak_hold_time_neg = 0;
+
+    // Reset peak values
+    atomic_store(&app->peak_a_pos, 0);
+    atomic_store(&app->peak_a_neg, 0);
+    atomic_store(&app->peak_b_pos, 0);
+    atomic_store(&app->peak_b_neg, 0);
+
+    // Reset stream sync status
+    atomic_store(&app->stream_synced, false);
 }
 
 // Set status message
@@ -489,4 +537,21 @@ void gui_app_set_status(gui_app_t *app, const char *message) {
     strncpy(app->status_message, message, sizeof(app->status_message) - 1);
     app->status_message[sizeof(app->status_message) - 1] = '\0';
     app->status_message_time = GetTime();
+}
+
+// Check if device has timed out (no callbacks for too long)
+bool gui_capture_device_timeout(gui_app_t *app, uint32_t timeout_ms) {
+    if (!app->is_capturing) return false;
+
+    uint64_t last_cb = atomic_load(&app->last_callback_time_ms);
+    uint64_t now = get_time_ms();
+
+    // Handle wrap-around (GetTickCount wraps every ~49 days)
+    uint64_t elapsed = now - last_cb;
+    if (now < last_cb) {
+        // Wrap-around occurred
+        elapsed = (UINT64_MAX - last_cb) + now + 1;
+    }
+
+    return elapsed > timeout_ms;
 }

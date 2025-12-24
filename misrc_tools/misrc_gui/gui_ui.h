@@ -41,12 +41,6 @@
 void gui_render_layout(gui_app_t *app);
 void gui_handle_interactions(gui_app_t *app);
 
-// Get bounding boxes for custom rendering after Clay render
-Clay_BoundingBox gui_get_oscilloscope_a_bounds(void);
-Clay_BoundingBox gui_get_oscilloscope_b_bounds(void);
-Clay_BoundingBox gui_get_vu_meter_a_bounds(void);
-Clay_BoundingBox gui_get_vu_meter_b_bounds(void);
-
 // Text measurement function (from clay_renderer_raylib.c)
 Clay_Dimensions Raylib_MeasureText(Clay_StringSlice text, Clay_TextElementConfig *config, void *userData);
 
