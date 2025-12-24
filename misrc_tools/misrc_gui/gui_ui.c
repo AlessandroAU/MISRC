@@ -449,15 +449,13 @@ void gui_handle_interactions(gui_app_t *app) {
             }
         }
 
-        // Check record button (recording not yet implemented)
+        // Check record button
         if (Clay_PointerOver(CLAY_ID("RecordButton")) && app->is_capturing) {
-            gui_app_set_status(app, "Recording not yet implemented");
-            // TODO: Enable when recording is implemented
-            // if (app->is_recording) {
-            //     gui_app_stop_recording(app);
-            // } else {
-            //     gui_app_start_recording(app);
-            // }
+            if (app->is_recording) {
+                gui_app_stop_recording(app);
+            } else {
+                gui_app_start_recording(app);
+            }
         }
 
         // Check settings button
