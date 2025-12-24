@@ -252,14 +252,16 @@ void gui_app_init(gui_app_t *app) {
     // Initialize trigger state for channel A
     app->trigger_a.enabled = false;
     app->trigger_a.level = 0;
-    app->trigger_a.zoom_level = 0;
+    app->trigger_a.zoom_scale = ZOOM_SCALE_DEFAULT;
     app->trigger_a.trigger_display_pos = -1;
+    atomic_store(&app->trigger_a.display_width, DISPLAY_BUFFER_SIZE);  // Will be updated by renderer
 
     // Initialize trigger state for channel B
     app->trigger_b.enabled = false;
     app->trigger_b.level = 0;
-    app->trigger_b.zoom_level = 0;
+    app->trigger_b.zoom_scale = ZOOM_SCALE_DEFAULT;
     app->trigger_b.trigger_display_pos = -1;
+    atomic_store(&app->trigger_b.display_width, DISPLAY_BUFFER_SIZE);  // Will be updated by renderer
 
     // Initialize capture ringbuffer
     if (!s_rb_initialized) {

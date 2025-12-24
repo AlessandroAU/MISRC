@@ -11,7 +11,7 @@ typedef struct hsdaoh_dev hsdaoh_dev_t;
 typedef struct sc_handle sc_handle_t;
 
 // Display buffer size (samples per channel for oscilloscope)
-#define DISPLAY_BUFFER_SIZE 2048
+#define DISPLAY_BUFFER_SIZE 4096
 #define MAX_DEVICES 16
 #define MAX_FILENAME_LEN 256
 
@@ -37,14 +37,15 @@ typedef struct vu_meter_state {
 typedef struct {
     bool enabled;              // Trigger enabled for this channel
     int16_t level;             // Trigger level (-2048 to +2047, 12-bit range)
-    int zoom_level;            // Per-channel zoom (0 = most zoomed out)
+    float zoom_scale;          // Samples per pixel (1.0 = max zoom, higher = more zoomed out)
     int trigger_display_pos;   // Where trigger appears in display buffer (-1 if not triggered)
+    atomic_int display_width;  // Actual pixel width of oscilloscope display (updated by renderer, read by extraction thread)
 } channel_trigger_t;
 
-// Horizontal zoom levels (samples per display pixel)
-// At 40 MSPS: zoom 0 = 128 samples/px = ~6.5ms window, zoom 7 = 1 sample/px = ~51us window
-#define ZOOM_LEVEL_COUNT 8
-static const int ZOOM_SAMPLES_PER_PIXEL[ZOOM_LEVEL_COUNT] = { 128, 64, 32, 16, 8, 4, 2, 1 };
+// Zoom limits
+#define ZOOM_SCALE_MIN 1.0f    // 1 sample per pixel (max zoom in)
+#define ZOOM_SCALE_MAX 128.0f  // 128 samples per pixel (max zoom out)
+#define ZOOM_SCALE_DEFAULT 32.0f
 
 // Device info for enumeration
 typedef struct {

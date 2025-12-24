@@ -121,6 +121,13 @@ void render_oscilloscope_channel(gui_app_t *app, float x, float y, float width, 
     if (channel >= 0 && channel < 2) {
         s_osc_bounds[channel] = (Rectangle){x, y, width, height};
         s_osc_bounds_valid[channel] = true;
+
+        // Store actual display width for the processing thread (atomic for thread safety)
+        channel_trigger_t *trig = (channel == 0) ? &app->trigger_a : &app->trigger_b;
+        int new_display_width = (int)width;
+        if (new_display_width < 100) new_display_width = 100;  // Minimum reasonable width
+        if (new_display_width > DISPLAY_BUFFER_SIZE) new_display_width = DISPLAY_BUFFER_SIZE;
+        atomic_store(&trig->display_width, new_display_width);
     }
 
     // Draw channel grid
@@ -310,15 +317,22 @@ void handle_oscilloscope_interaction(gui_app_t *app) {
         float wheel = GetMouseWheelMove();
         if (wheel != 0.0f) {
             channel_trigger_t *trig = (hover_channel == 0) ? &app->trigger_a : &app->trigger_b;
+
+            // Smooth zoom: multiply/divide by a factor for each scroll step
+            // Using 1.15 gives ~10% zoom per scroll tick
+            const float zoom_factor = 1.10f;
+
             if (wheel > 0.0f) {
                 // Scroll up = zoom in (fewer samples per pixel)
-                if (trig->zoom_level < ZOOM_LEVEL_COUNT - 1) {
-                    trig->zoom_level++;
+                trig->zoom_scale /= zoom_factor;
+                if (trig->zoom_scale < ZOOM_SCALE_MIN) {
+                    trig->zoom_scale = ZOOM_SCALE_MIN;
                 }
             } else {
                 // Scroll down = zoom out (more samples per pixel)
-                if (trig->zoom_level > 0) {
-                    trig->zoom_level--;
+                trig->zoom_scale *= zoom_factor;
+                if (trig->zoom_scale > ZOOM_SCALE_MAX) {
+                    trig->zoom_scale = ZOOM_SCALE_MAX;
                 }
             }
         }
@@ -336,13 +350,16 @@ void handle_oscilloscope_interaction(gui_app_t *app) {
 // Trigger Detection
 //-----------------------------------------------------------------------------
 
-ssize_t find_trigger_point(const int16_t *buf, size_t count,
-                           const channel_trigger_t *trig) {
+// Find trigger point in buffer, starting search from a minimum index
+// This allows skipping early triggers that don't have enough pre-trigger room
+ssize_t find_trigger_point_from(const int16_t *buf, size_t count,
+                                 const channel_trigger_t *trig, size_t min_index) {
     if (!trig->enabled || count < 2) return -1;
 
     int16_t level = trig->level;
+    size_t start = (min_index > 1) ? min_index : 1;
 
-    for (size_t i = 1; i < count; i++) {
+    for (size_t i = start; i < count; i++) {
         int16_t prev = buf[i - 1];
         int16_t curr = buf[i];
 
@@ -355,32 +372,47 @@ ssize_t find_trigger_point(const int16_t *buf, size_t count,
     return -1;  // No trigger found
 }
 
+ssize_t find_trigger_point(const int16_t *buf, size_t count,
+                           const channel_trigger_t *trig) {
+    return find_trigger_point_from(buf, count, trig, 1);
+}
+
 //-----------------------------------------------------------------------------
 // Decimation and Display Buffer Processing (with libsoxr resampling)
 //-----------------------------------------------------------------------------
 
 // Resample and decimate a single channel from source buffer to its display buffer
 // Calculates waveform value and min/max for peak envelope display
-static size_t resample_to_buffer(waveform_sample_t *dest, const int16_t *buf,
-                                  size_t num_samples, size_t start_idx, size_t decimation,
-                                  int channel) {
-    (void)channel;  // Reserved for future use
+// Uses float decimation for smooth zooming
+static size_t resample_to_buffer_smooth(waveform_sample_t *dest, const int16_t *buf,
+                                         size_t num_samples, size_t start_idx, float decimation,
+                                         size_t target_width) {
     const float scale = 1.0f / 2048.0f;
-    const size_t target_samples = DISPLAY_BUFFER_SIZE;
+
+    // Clamp target width to buffer size
+    if (target_width > DISPLAY_BUFFER_SIZE) target_width = DISPLAY_BUFFER_SIZE;
+    if (target_width == 0) target_width = DISPLAY_BUFFER_SIZE;
 
     // Calculate how many source samples we have available
     size_t available = (start_idx < num_samples) ? (num_samples - start_idx) : 0;
+    if (available == 0) return 0;
 
     // Calculate display count based on available samples and decimation
-    size_t display_count = available / decimation;
-    if (display_count > target_samples) display_count = target_samples;
+    size_t display_count = (size_t)((float)available / decimation);
+    if (display_count > target_width) display_count = target_width;
     if (display_count == 0) return 0;
 
     // Process each display pixel
     for (size_t i = 0; i < display_count; i++) {
-        size_t src_start = start_idx + i * decimation;
-        size_t src_end = src_start + decimation;
+        // Calculate source window for this pixel (floating point positions)
+        float src_start_f = (float)start_idx + (float)i * decimation;
+        float src_end_f = src_start_f + decimation;
+
+        size_t src_start = (size_t)src_start_f;
+        size_t src_end = (size_t)src_end_f;
+        if (src_end <= src_start) src_end = src_start + 1;
         if (src_end > num_samples) src_end = num_samples;
+        if (src_start >= num_samples) break;
 
         // Find min/max within this decimation window for peak envelope
         int16_t min_val = buf[src_start];
@@ -395,7 +427,6 @@ static size_t resample_to_buffer(waveform_sample_t *dest, const int16_t *buf,
         dest[i].max_val = (float)max_val * scale;
 
         // Use first sample of decimation window for waveform value
-        // This ensures exact alignment: trigger at sample N appears at pixel N/decimation
         dest[i].value = (float)buf[src_start] * scale;
     }
 
@@ -407,50 +438,101 @@ bool process_channel_display(gui_app_t *app, const int16_t *buf, size_t num_samp
                              channel_trigger_t *trig, int channel) {
     (void)app;  // Unused parameter
 
-    // Get decimation factor from per-channel zoom level
-    int zoom = trig->zoom_level;
-    if (zoom < 0) zoom = 0;
-    if (zoom >= ZOOM_LEVEL_COUNT) zoom = ZOOM_LEVEL_COUNT - 1;
-    size_t decimation = (size_t)ZOOM_SAMPLES_PER_PIXEL[zoom];
+    // Get display width (set by renderer, defaults to DISPLAY_BUFFER_SIZE)
+    // Use atomic_load for thread safety since renderer runs on main thread
+    size_t display_width = (size_t)atomic_load(&trig->display_width);
+    if (display_width == 0 || display_width > DISPLAY_BUFFER_SIZE) {
+        display_width = DISPLAY_BUFFER_SIZE;
+    }
+
+    // Get decimation factor from zoom_scale (samples per pixel)
+    float decimation = trig->zoom_scale;
+
+    // Calculate max zoom out based on available data
+    // We need: display_width * decimation <= num_samples
+    float max_decimation = (float)num_samples / (float)display_width;
+    if (max_decimation > ZOOM_SCALE_MAX) max_decimation = ZOOM_SCALE_MAX;
+
+    // Clamp decimation to valid range
+    if (decimation < ZOOM_SCALE_MIN) {
+        decimation = ZOOM_SCALE_MIN;
+        trig->zoom_scale = decimation;
+    }
+    if (decimation > max_decimation) {
+        decimation = max_decimation;
+        trig->zoom_scale = decimation;
+    }
 
     // How many raw samples we need for the full display at this zoom
-    size_t display_window = DISPLAY_BUFFER_SIZE * decimation;
-
-    // Trigger point should appear at 10% across the display
-    const size_t TRIGGER_DISPLAY_POS = DISPLAY_BUFFER_SIZE / 40;  // ~205 pixels = 10%
-    size_t pre_trigger_raw_samples = TRIGGER_DISPLAY_POS * decimation;
-    size_t post_trigger_raw_samples = display_window - pre_trigger_raw_samples;
+    float display_window = (float)display_width * decimation;
 
     // If trigger is disabled, just show the start of the buffer
     if (!trig->enabled) {
         trig->trigger_display_pos = -1;
-        *display_count = resample_to_buffer(display_buf, buf, num_samples, 0, decimation, channel);
+        *display_count = resample_to_buffer_smooth(display_buf, buf, num_samples, 0, decimation, display_width);
         return true;
     }
 
-    // Find trigger point in the buffer
-    ssize_t trig_pos = find_trigger_point(buf, num_samples, trig);
+    // When zoomed out so far that display_window >= 90% of buffer,
+    // there's no room for trigger positioning - just show from start
+    if (display_window >= (float)num_samples * 0.9f) {
+        trig->trigger_display_pos = -1;
+        *display_count = resample_to_buffer_smooth(display_buf, buf, num_samples, 0, decimation, display_width);
+        return true;
+    }
+
+    // Trigger point should appear at 10% across the display
+    size_t trigger_display_pos = display_width / 10;
+    float pre_trigger_raw_samples = (float)trigger_display_pos * decimation;
+    float post_trigger_raw_samples = display_window - pre_trigger_raw_samples;
+
+    // Calculate the valid search range for triggers
+    // Trigger must be at least pre_trigger_raw_samples into the buffer
+    // and have enough room for post_trigger_raw_samples after it
+    size_t min_trig_pos = (size_t)pre_trigger_raw_samples;
+    size_t max_trig_pos = num_samples - (size_t)post_trigger_raw_samples;
+
+    // Debug: log trigger search results periodically
+    static int s_trig_log_counter[2] = {0, 0};
+    bool should_log = (++s_trig_log_counter[channel] >= 500);
+    if (should_log) {
+        s_trig_log_counter[channel] = 0;
+        fprintf(stderr, "[TRIG] Ch%c: level=%d, search_range=[%zu-%zu], num_samples=%zu, decimation=%.2f\n",
+                channel == 0 ? 'A' : 'B', trig->level, min_trig_pos, max_trig_pos, num_samples, decimation);
+    }
+
+    // Check if there's a valid search range
+    if (min_trig_pos >= max_trig_pos) {
+        // No valid range - display window too large for this buffer
+        if (should_log) {
+            fprintf(stderr, "[TRIG] Ch%c: NO VALID RANGE (min=%zu >= max=%zu)\n",
+                    channel == 0 ? 'A' : 'B', min_trig_pos, max_trig_pos);
+        }
+        trig->trigger_display_pos = -1;
+        *display_count = resample_to_buffer_smooth(display_buf, buf, num_samples, 0, decimation, display_width);
+        return true;
+    }
+
+    // Find trigger point starting from minimum valid position
+    ssize_t trig_pos = find_trigger_point_from(buf, max_trig_pos, trig, min_trig_pos);
 
     if (trig_pos < 0) {
-        // No trigger found - hold previous display (don't update)
+        // No trigger found in valid range - hold previous display
+        if (should_log) {
+            fprintf(stderr, "[TRIG] Ch%c: NO TRIGGER IN RANGE\n", channel == 0 ? 'A' : 'B');
+        }
         return false;
     }
 
-    // Trigger found - check if we can place it at exactly 25%
-    bool have_pre = ((size_t)trig_pos >= pre_trigger_raw_samples);
-    bool have_post = ((size_t)trig_pos + post_trigger_raw_samples <= num_samples);
-
-    if (have_pre && have_post) {
-        // We can place trigger at exactly 25% - update display
-        size_t start_pos = (size_t)trig_pos - pre_trigger_raw_samples;
-        trig->trigger_display_pos = (int)TRIGGER_DISPLAY_POS;
-        *display_count = resample_to_buffer(display_buf, buf, num_samples, start_pos, decimation, channel);
-        return true;
+    // Trigger found in valid range - place it at desired position
+    size_t start_pos = (size_t)((float)trig_pos - pre_trigger_raw_samples);
+    trig->trigger_display_pos = (int)trigger_display_pos;
+    *display_count = resample_to_buffer_smooth(display_buf, buf, num_samples, start_pos, decimation, display_width);
+    if (should_log) {
+        fprintf(stderr, "[TRIG] Ch%c: SUCCESS - trig_pos=%zd, start_pos=%zu\n",
+                channel == 0 ? 'A' : 'B', trig_pos, start_pos);
     }
-
-    // Cannot place trigger at 25% due to boundary conditions
-    // Hold previous display to prevent jumping
-    return false;
+    return true;
 }
 
 void gui_oscilloscope_update_display(gui_app_t *app, const int16_t *buf_a,

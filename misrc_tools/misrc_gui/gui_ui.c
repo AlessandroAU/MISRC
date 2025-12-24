@@ -397,24 +397,27 @@ static void render_channel_stats(gui_app_t *app, int channel) {
                 CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
 
             // Zoom out button
+            bool can_zoom_out = trig->zoom_scale < ZOOM_SCALE_MAX;
             CLAY(CLAY_IDI("ZoomDec", channel), {
                 .layout = {
                     .sizing = { CLAY_SIZING_FIXED(18), CLAY_SIZING_FIXED(18) },
                     .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER }
                 },
-                .backgroundColor = to_clay_color(trig->zoom_level > 0 ? COLOR_BUTTON : (Color){ 50, 50, 55, 255 }),
+                .backgroundColor = to_clay_color(can_zoom_out ? COLOR_BUTTON : (Color){ 50, 50, 55, 255 }),
                 .cornerRadius = CLAY_CORNER_RADIUS(3)
             }) {
                 CLAY_TEXT(CLAY_STRING("-"),
-                    CLAY_TEXT_CONFIG({ .fontSize = 12, .textColor = to_clay_color(trig->zoom_level > 0 ? COLOR_TEXT : COLOR_TEXT_DIM) }));
+                    CLAY_TEXT_CONFIG({ .fontSize = 12, .textColor = to_clay_color(can_zoom_out ? COLOR_TEXT : COLOR_TEXT_DIM) }));
             }
 
-            // Zoom value - format as samples per pixel
+            // Zoom value - format as samples per pixel (rounded)
             static char zoom_val_buf[2][16];
-            snprintf(zoom_val_buf[channel], sizeof(zoom_val_buf[channel]), "%dx", ZOOM_SAMPLES_PER_PIXEL[trig->zoom_level]);
+            int zoom_int = (int)(trig->zoom_scale + 0.5f);
+            if (zoom_int < 1) zoom_int = 1;
+            snprintf(zoom_val_buf[channel], sizeof(zoom_val_buf[channel]), "%dx", zoom_int);
             CLAY(CLAY_IDI("ZoomValue", channel), {
                 .layout = {
-                    .sizing = { CLAY_SIZING_FIXED(32), CLAY_SIZING_FIXED(18) },
+                    .sizing = { CLAY_SIZING_FIXED(36), CLAY_SIZING_FIXED(18) },
                     .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER }
                 },
                 .backgroundColor = to_clay_color((Color){ 25, 25, 32, 255 }),
@@ -425,16 +428,17 @@ static void render_channel_stats(gui_app_t *app, int channel) {
             }
 
             // Zoom in button
+            bool can_zoom_in = trig->zoom_scale > ZOOM_SCALE_MIN;
             CLAY(CLAY_IDI("ZoomInc", channel), {
                 .layout = {
                     .sizing = { CLAY_SIZING_FIXED(18), CLAY_SIZING_FIXED(18) },
                     .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER }
                 },
-                .backgroundColor = to_clay_color(trig->zoom_level < ZOOM_LEVEL_COUNT - 1 ? COLOR_BUTTON : (Color){ 50, 50, 55, 255 }),
+                .backgroundColor = to_clay_color(can_zoom_in ? COLOR_BUTTON : (Color){ 50, 50, 55, 255 }),
                 .cornerRadius = CLAY_CORNER_RADIUS(3)
             }) {
                 CLAY_TEXT(CLAY_STRING("+"),
-                    CLAY_TEXT_CONFIG({ .fontSize = 12, .textColor = to_clay_color(trig->zoom_level < ZOOM_LEVEL_COUNT - 1 ? COLOR_TEXT : COLOR_TEXT_DIM) }));
+                    CLAY_TEXT_CONFIG({ .fontSize = 12, .textColor = to_clay_color(can_zoom_in ? COLOR_TEXT : COLOR_TEXT_DIM) }));
             }
         }
     }
@@ -779,15 +783,20 @@ void gui_handle_interactions(gui_app_t *app) {
                 if (trig->level > 2047) trig->level = 2047;
             }
 
-            // Per-channel zoom controls
+            // Per-channel zoom controls (smooth zoom with 10% steps)
+            const float zoom_factor = 1.10f;
             if (Clay_PointerOver(CLAY_IDI("ZoomDec", ch))) {
-                if (trig->zoom_level > 0) {
-                    trig->zoom_level--;
+                // Zoom out (more samples per pixel)
+                trig->zoom_scale *= zoom_factor;
+                if (trig->zoom_scale > ZOOM_SCALE_MAX) {
+                    trig->zoom_scale = ZOOM_SCALE_MAX;
                 }
             }
             if (Clay_PointerOver(CLAY_IDI("ZoomInc", ch))) {
-                if (trig->zoom_level < ZOOM_LEVEL_COUNT - 1) {
-                    trig->zoom_level++;
+                // Zoom in (fewer samples per pixel)
+                trig->zoom_scale /= zoom_factor;
+                if (trig->zoom_scale < ZOOM_SCALE_MIN) {
+                    trig->zoom_scale = ZOOM_SCALE_MIN;
                 }
             }
         }
