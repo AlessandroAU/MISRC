@@ -648,11 +648,33 @@ static void render_status_bar(gui_app_t *app) {
                     CLAY_TEXT(make_string(temp_buf2),
                         CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATUS, .fontId = 1, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
                 }
+
+                // Show backpressure stats if any waits/drops occurred
+                uint32_t wait_count = atomic_load(&app->rb_wait_count);
+                uint32_t drop_count = atomic_load(&app->rb_drop_count);
+                if (wait_count > 0 || drop_count > 0) {
+                    snprintf(temp_buf4, sizeof(temp_buf4), "Wait:%u Drop:%u", wait_count, drop_count);
+                    Color bp_color = (drop_count > 0) ? COLOR_CLIP_RED : COLOR_METER_YELLOW;
+                    CLAY_TEXT(make_string(temp_buf4),
+                        CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATUS, .fontId = 1, .textColor = to_clay_color(bp_color) }));
+                }
             } else {
                 // Status message
                 snprintf(temp_buf1, sizeof(temp_buf1), "%s", app->status_message);
                 CLAY_TEXT(make_string(temp_buf1),
                     CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATUS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
+
+                // Show backpressure stats during capture even when not recording
+                if (app->is_capturing) {
+                    uint32_t wait_count = atomic_load(&app->rb_wait_count);
+                    uint32_t drop_count = atomic_load(&app->rb_drop_count);
+                    if (wait_count > 0 || drop_count > 0) {
+                        snprintf(temp_buf4, sizeof(temp_buf4), "Wait:%u Drop:%u", wait_count, drop_count);
+                        Color bp_color = (drop_count > 0) ? COLOR_CLIP_RED : COLOR_METER_YELLOW;
+                        CLAY_TEXT(make_string(temp_buf4),
+                            CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATUS, .fontId = 1, .textColor = to_clay_color(bp_color) }));
+                    }
+                }
             }
         }
 

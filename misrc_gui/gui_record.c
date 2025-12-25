@@ -66,6 +66,10 @@ static gui_app_t *s_recording_app = NULL;
 static bool s_overwrite_pending = false;
 static gui_app_t *s_pending_app = NULL;
 
+// Backpressure stats at recording start (to compute delta)
+static uint32_t s_start_wait_count = 0;
+static uint32_t s_start_drop_count = 0;
+
 // File writer context
 typedef struct {
     ringbuffer_t *rb;
@@ -396,6 +400,10 @@ static int gui_record_start_confirmed(gui_app_t *app) {
         }
         s_ctx_b.writer = s_flac_writer_b;
 
+        // Capture backpressure stats at recording start
+        s_start_wait_count = atomic_load(&app->rb_wait_count);
+        s_start_drop_count = atomic_load(&app->rb_drop_count);
+
         // Mark as recording and start writer threads
         app->is_recording = true;
         app->recording_start_time = GetTime();
@@ -430,6 +438,10 @@ static int gui_record_start_confirmed(gui_app_t *app) {
         s_ctx_b.rb = rb_b;
         s_ctx_b.file = s_file_b;
         s_ctx_b.channel = 1;
+
+        // Capture backpressure stats at recording start
+        s_start_wait_count = atomic_load(&app->rb_wait_count);
+        s_start_drop_count = atomic_load(&app->rb_drop_count);
 
         // Mark as recording and start writer threads
         app->is_recording = true;
@@ -488,6 +500,26 @@ void gui_record_stop(gui_app_t *app) {
     if (s_file_b) {
         fclose(s_file_b);
         s_file_b = NULL;
+    }
+
+    // Print recording summary with backpressure stats
+    double duration = GetTime() - app->recording_start_time;
+    uint64_t raw_a = atomic_load(&app->recording_raw_a);
+    uint64_t raw_b = atomic_load(&app->recording_raw_b);
+    uint32_t end_wait = atomic_load(&app->rb_wait_count);
+    uint32_t end_drop = atomic_load(&app->rb_drop_count);
+    uint32_t rec_waits = end_wait - s_start_wait_count;
+    uint32_t rec_drops = end_drop - s_start_drop_count;
+
+    char size_a[32], size_b[32];
+    format_file_size((off_t)raw_a, size_a, sizeof(size_a));
+    format_file_size((off_t)raw_b, size_b, sizeof(size_b));
+
+    fprintf(stderr, "[REC] Recording stopped: %.1fs, A=%s, B=%s, waits=%u, drops=%u\n",
+            duration, size_a, size_b, rec_waits, rec_drops);
+
+    if (rec_drops > 0) {
+        fprintf(stderr, "[REC] WARNING: %u frames were dropped during recording due to backpressure!\n", rec_drops);
     }
 
     s_recording_app = NULL;

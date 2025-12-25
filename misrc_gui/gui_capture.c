@@ -16,6 +16,7 @@
 #include <hsdaoh_raw.h>
 #include "../misrc_common/extract.h"
 #include "../misrc_common/ringbuffer.h"
+#include "../misrc_common/rb_event.h"
 #include "../misrc_common/threading.h"
 #include "../misrc_common/frame_parser.h"
 #include "../misrc_common/capture_handler.h"
@@ -167,11 +168,42 @@ void gui_capture_callback(void *data_info_ptr) {
         return;
     }
 
-    // Wait for ringbuffer space
-    uint8_t *buf_out;
-    while ((buf_out = rb_write_ptr(&s_capture_rb, result.stream0_bytes)) == NULL) {
-        if (atomic_load(&do_exit)) return;
-        thrd_sleep_ms(4);
+    // Wait for ringbuffer space with event-based waiting
+    uint8_t *buf_out = rb_write_ptr(&s_capture_rb, result.stream0_bytes);
+    if (!buf_out) {
+        // Buffer full - wait with timeout using space event
+        rb_event_t *space_event = gui_extract_get_space_event();
+        int wait_attempts = 0;
+        const int max_wait_attempts = 10;  // 10 x 5ms = 50ms max wait
+
+        while ((buf_out = rb_write_ptr(&s_capture_rb, result.stream0_bytes)) == NULL) {
+            if (atomic_load(&do_exit)) return;
+
+            wait_attempts++;
+            if (wait_attempts == 1) {
+                // Log on first wait (backpressure occurring)
+                uint32_t wait_count = atomic_fetch_add(&app->rb_wait_count, 1) + 1;
+                if (wait_count <= 5 || (wait_count % 10) == 0) {
+                    fprintf(stderr, "[CB] Ringbuffer backpressure - waiting for space (wait #%u)\n", wait_count);
+                }
+            }
+
+            if (wait_attempts > max_wait_attempts) {
+                // Timeout - drop frame
+                atomic_fetch_add(&app->rb_drop_count, 1);
+                if (atomic_load(&app->rb_drop_count) <= 5) {
+                    fprintf(stderr, "[CB] Dropped frame due to ringbuffer backpressure\n");
+                }
+                return;
+            }
+
+            // Wait on space event with short timeout
+            if (space_event) {
+                rb_event_wait_timeout(space_event, 5);
+            } else {
+                thrd_sleep_ms(5);
+            }
+        }
     }
 
     // Copy payload data to ringbuffer (stream 0 only for GUI)
@@ -179,6 +211,12 @@ void gui_capture_callback(void *data_info_ptr) {
                         &meta, buf_out, NULL);
 
     rb_write_finished(&s_capture_rb, result.stream0_bytes);
+
+    // Signal that new data is available
+    rb_event_t *data_event = gui_extract_get_data_event();
+    if (data_event) {
+        rb_event_signal(data_event);
+    }
 
     if (s_callback_count <= 3) {
         fprintf(stderr, "[CB] Wrote %zu bytes to ringbuffer\n", result.stream0_bytes);
@@ -369,6 +407,8 @@ int gui_app_start_capture(gui_app_t *app) {
     atomic_store(&app->clip_count_a_neg, 0);
     atomic_store(&app->clip_count_b_pos, 0);
     atomic_store(&app->clip_count_b_neg, 0);
+    atomic_store(&app->rb_wait_count, 0);
+    atomic_store(&app->rb_drop_count, 0);
     atomic_store(&app->stream_synced, false);
     atomic_store(&app->sample_rate, 0);
     atomic_store(&app->last_callback_time_ms, get_time_ms());
@@ -461,6 +501,15 @@ void gui_app_stop_capture(gui_app_t *app) {
     }
 
     atomic_store(&app->stream_synced, false);
+
+    // Print capture summary with backpressure stats
+    uint32_t frames = atomic_load(&app->frame_count);
+    uint32_t missed = atomic_load(&app->missed_frame_count);
+    uint32_t errors = atomic_load(&app->error_count);
+    uint32_t waits = atomic_load(&app->rb_wait_count);
+    uint32_t drops = atomic_load(&app->rb_drop_count);
+    fprintf(stderr, "[GUI] Capture stopped: %u frames, %u missed, %u errors, %u waits, %u drops\n",
+            frames, missed, errors, waits, drops);
 
     // Clear display to show "No Signal"
     gui_app_clear_display(app);

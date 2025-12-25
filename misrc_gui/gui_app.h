@@ -138,6 +138,10 @@ typedef struct gui_app {
     atomic_bool stream_synced;
     atomic_uint_fast32_t sample_rate;
 
+    // Backpressure statistics (ringbuffer flow control)
+    atomic_uint_fast32_t rb_wait_count;     // Times callback had to wait for buffer space
+    atomic_uint_fast32_t rb_drop_count;     // Frames dropped due to full buffer (after timeout)
+
     // Recording state
     double recording_start_time;
     atomic_uint_fast64_t recording_bytes;        // Legacy: total raw bytes

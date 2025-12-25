@@ -14,6 +14,7 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include "../misrc_common/ringbuffer.h"
+#include "../misrc_common/rb_event.h"
 
 // Forward declarations
 typedef struct gui_app gui_app_t;
@@ -65,5 +66,13 @@ void gui_extract_update_stats(gui_app_t *app, const int16_t *buf_a,
 // Decimates samples to fit display width while preserving peaks
 void gui_extract_update_display(gui_app_t *app, const int16_t *buf_a,
                                 const int16_t *buf_b, size_t num_samples);
+
+// Get the "data available" event (callback signals this after writing to ringbuffer)
+// Returns NULL if extraction is not initialized
+rb_event_t *gui_extract_get_data_event(void);
+
+// Get the "space available" event (extraction signals this after consuming from ringbuffer)
+// Returns NULL if extraction is not initialized
+rb_event_t *gui_extract_get_space_event(void);
 
 #endif // GUI_EXTRACT_H

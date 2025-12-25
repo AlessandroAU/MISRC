@@ -12,6 +12,7 @@
 #include "gui_oscilloscope.h"
 #include "../misrc_common/extract.h"
 #include "../misrc_common/ringbuffer.h"
+#include "../misrc_common/rb_event.h"
 #include "../misrc_common/threading.h"
 #include "../misrc_common/buffer.h"
 
@@ -49,6 +50,11 @@ static gui_app_t *s_extract_app = NULL;
 static atomic_bool s_recording_enabled = false;
 static atomic_bool s_use_flac = false;
 
+// Event signaling for producer/consumer synchronization
+static rb_event_t s_data_event;       // Signaled when new data is available in ringbuffer
+static rb_event_t s_space_event;      // Signaled when space becomes available in ringbuffer
+static bool s_events_initialized = false;
+
 // Extraction thread - runs continuously from capture start to stop
 // Always updates display/stats, conditionally writes to record ringbuffers
 static int extraction_thread(void *ctx) {
@@ -72,7 +78,12 @@ static int extraction_thread(void *ctx) {
             if (!s_extract_app || !s_extract_app->is_capturing) {
                 break;
             }
-            thrd_sleep_ms(1);
+            // Wait on event instead of polling (with timeout for exit check)
+            if (s_events_initialized) {
+                rb_event_wait_timeout(&s_data_event, 100);
+            } else {
+                thrd_sleep_ms(1);
+            }
             continue;
         }
 
@@ -81,6 +92,11 @@ static int extraction_thread(void *ctx) {
 
         // Mark capture buffer as consumed
         rb_read_finished(s_capture_rb, read_size);
+
+        // Signal that space is now available (for callback waiting on full buffer)
+        if (s_events_initialized) {
+            rb_event_signal(&s_space_event);
+        }
 
         // Always update stats and display
         gui_extract_update_stats(s_extract_app, s_buf_a, s_buf_b, BUFFER_READ_SIZE);
@@ -152,6 +168,16 @@ void gui_extract_init(void) {
     // Get extraction function (AB mode)
     s_extract_fn = get_conv_function(0, 0, 0, 0, (void*)1, (void*)1);
 
+    // Initialize synchronization events
+    if (!s_events_initialized) {
+        if (rb_event_init(&s_data_event) == 0 && rb_event_init(&s_space_event) == 0) {
+            s_events_initialized = true;
+            fprintf(stderr, "[EXTRACT] Event signaling initialized\n");
+        } else {
+            fprintf(stderr, "[EXTRACT] Warning: Failed to initialize events, falling back to polling\n");
+        }
+    }
+
     s_initialized = true;
 }
 
@@ -164,6 +190,13 @@ void gui_extract_cleanup(void) {
         rb_close(&s_record_rb_a);
         rb_close(&s_record_rb_b);
         s_record_rb_initialized = false;
+    }
+
+    // Destroy synchronization events
+    if (s_events_initialized) {
+        rb_event_destroy(&s_data_event);
+        rb_event_destroy(&s_space_event);
+        s_events_initialized = false;
     }
 
     // Free extraction buffers
@@ -320,4 +353,14 @@ void gui_extract_update_stats(gui_app_t *app, const int16_t *buf_a,
     atomic_store(&app->peak_a_neg, peak_a_neg);
     atomic_store(&app->peak_b_pos, peak_b_pos);
     atomic_store(&app->peak_b_neg, peak_b_neg);
+}
+
+rb_event_t *gui_extract_get_data_event(void) {
+    if (!s_events_initialized) return NULL;
+    return &s_data_event;
+}
+
+rb_event_t *gui_extract_get_space_event(void) {
+    if (!s_events_initialized) return NULL;
+    return &s_space_event;
 }
