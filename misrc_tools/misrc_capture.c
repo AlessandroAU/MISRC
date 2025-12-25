@@ -106,6 +106,7 @@ static const char* const _FLAC_StreamEncoderSetNumThreadsStatusString[] = {
 
 #include "version.h"
 #include "../misrc_common/ringbuffer.h"
+#include "../misrc_common/flac_writer.h"
 #include "extract.h"
 #include "wave.h"
 
@@ -672,20 +673,23 @@ int raw_file_writer(void *ctx)
 }
 
 #if LIBFLAC_ENABLED == 1
+// Error callback for CLI FLAC writer
+static void cli_flac_error_callback(void *user_data, flac_writer_error_t error, const char *message) {
+	(void)user_data;
+	(void)error;
+	fprintf(stderr, "FLAC ERROR: %s\n", message);
+}
+
 int flac_file_writer(void *ctx)
 {
 	filewriter_ctx_t *file_ctx = ctx;
 	size_t len = BUFFER_READ_SIZE;
 	void *buf;
-	uint32_t ret;
 	uint32_t srate = 40000;
-	FLAC__bool ok = true;
-	FLAC__StreamEncoder *encoder = NULL;
-	FLAC__StreamEncoderInitStatus init_status;
-	FLAC__StreamMetadata *seektable;
+	int result;
 #if LIBSOXR_ENABLED == 1
-	uint8_t *resample_buffer;
-	uint8_t *resample_buffer_b;
+	uint8_t *resample_buffer = NULL;
+	uint8_t *resample_buffer_b = NULL;
 	soxr_t resampler = NULL;
 	soxr_error_t soxr_err;
 	if (file_ctx->resample_rate!=0.0) {
@@ -710,41 +714,20 @@ int flac_file_writer(void *ctx)
 	}
 #endif
 
-	if((encoder = FLAC__stream_encoder_new()) == NULL) {
-		fprintf(stderr, "ERROR: failed allocating FLAC encoder\n");
-		do_exit = 1;
-		return 0;
-	}
+	// Configure FLAC writer using shared library
+	flac_writer_config_t config = flac_writer_default_config();
+	config.sample_rate = srate;
+	config.bits_per_sample = file_ctx->flac_bits;
+	config.compression_level = file_ctx->flac_level;
+	config.verify = file_ctx->flac_verify;
+	config.num_threads = file_ctx->flac_threads;
+	config.enable_seektable = true;
+	config.error_cb = cli_flac_error_callback;
+	config.callback_user_data = file_ctx;
 
-	ok &= FLAC__stream_encoder_set_verify(encoder, file_ctx->flac_verify);
-	ok &= FLAC__stream_encoder_set_compression_level(encoder, file_ctx->flac_level);
-	ok &= FLAC__stream_encoder_set_channels(encoder, 1);
-	ok &= FLAC__stream_encoder_set_bits_per_sample(encoder, file_ctx->flac_bits);
-	ok &= FLAC__stream_encoder_set_sample_rate(encoder, srate);
-	ok &= FLAC__stream_encoder_set_total_samples_estimate(encoder, 0);
-
-	if(!ok) {
-		fprintf(stderr, "ERROR: failed initializing FLAC encoder\n");
-		do_exit = 1;
-		return 0;
-	}
-#if defined(FLAC_API_VERSION_CURRENT) && FLAC_API_VERSION_CURRENT >= 14
-	ret = FLAC__stream_encoder_set_num_threads(encoder, file_ctx->flac_threads);
-	if (ret != FLAC__STREAM_ENCODER_SET_NUM_THREADS_OK) {
-		fprintf(stderr, "ERROR: failed to set FLAC threads: %s\n", _FLAC_StreamEncoderSetNumThreadsStatusString[ret]);
-	}
-#endif
-	if((seektable = FLAC__metadata_object_new(FLAC__METADATA_TYPE_SEEKTABLE)) == NULL
-		|| FLAC__metadata_object_seektable_template_append_spaced_points(seektable, 1<<18, (uint64_t)1<<41) != true
-		|| FLAC__stream_encoder_set_metadata(encoder, &seektable, 1) != true) {
-		fprintf(stderr, "ERROR: could not create FLAC seektable\n");
-		do_exit = 1;
-		return 0;
-	}
-
-	init_status = FLAC__stream_encoder_init_FILE(encoder, file_ctx->f, NULL, NULL);
-	if(init_status != FLAC__STREAM_ENCODER_INIT_STATUS_OK) {
-		fprintf(stderr, "ERROR: failed initializing FLAC encoder: %s\n", FLAC__StreamEncoderInitStatusString[init_status]);
+	flac_writer_t *writer = flac_writer_create_file(file_ctx->f, &config);
+	if (!writer) {
+		fprintf(stderr, "ERROR: failed to create FLAC writer\n");
 		do_exit = 1;
 		return 0;
 	}
@@ -766,38 +749,30 @@ int flac_file_writer(void *ctx)
 			if (soxr_err != 0) {
 				fprintf(stderr, "Error while converting: %s\n", soxr_err);
 				do_exit = 1;
+				flac_writer_abort(writer);
 				return 0;
 			}
 			file_ctx->conv_func((int16_t*)resample_buffer, (int32_t*)resample_buffer_b, out_len);
-			ok = FLAC__stream_encoder_process(encoder, (const FLAC__int32**)&resample_buffer_b, out_len);
+			result = flac_writer_process(writer, (const int32_t*)resample_buffer_b, out_len);
 		} else {
-			ok = FLAC__stream_encoder_process(encoder, (const FLAC__int32**)&buf, len>>2);
+			result = flac_writer_process(writer, (const int32_t*)buf, len>>2);
 		}
 #else
-		ok = FLAC__stream_encoder_process(encoder, (const FLAC__int32**)&buf, len>>2);
+		result = flac_writer_process(writer, (const int32_t*)buf, len>>2);
 #endif
-		if(!ok) {
-			fprintf(stderr, "ERROR: (%p) FLAC encoder could not process data: %s\n", file_ctx->f, FLAC__StreamEncoderStateString[FLAC__stream_encoder_get_state(encoder)]);
+		if (result < 0) {
+			fprintf(stderr, "ERROR: (%p) FLAC encoder could not process data\n", (void*)file_ctx->f);
 			new_line = 1;
 		}
 		rb_read_finished(&file_ctx->rb, len);
 	}
-	FLAC__metadata_object_seektable_template_sort(seektable, false);
-	/* bug in libflac < 1.5, fix seektable manually */
-#if !defined(FLAC_API_VERSION_CURRENT) || FLAC_API_VERSION_CURRENT < 14
-	for(int i = seektable->data.seek_table.num_points-1; i>=0; i--) {
-		if (seektable->data.seek_table.points[i].stream_offset != 0) break;
-		seektable->data.seek_table.points[i].sample_number = 0xFFFFFFFFFFFFFFFF;
-	}
-#endif
-	ok = FLAC__stream_encoder_finish(encoder);
-	if(!ok) {
-		fprintf(stderr, "ERROR: FLAC encoder did not finish correctly: %s\n", FLAC__StreamEncoderStateString[FLAC__stream_encoder_get_state(encoder)]);
+
+	flac_writer_error_t err = flac_writer_finish(writer);
+	if (err != FLAC_WRITER_OK) {
+		fprintf(stderr, "ERROR: FLAC encoder did not finish correctly\n");
 		new_line = 1;
-		return 0;
 	}
-	FLAC__metadata_object_delete(seektable);
-	FLAC__stream_encoder_delete(encoder);
+
 #if LIBSOXR_ENABLED == 1
 	if (file_ctx->resample_rate!=0) {
 		aligned_free(resample_buffer);

@@ -12,17 +12,13 @@
 #include "gui_extract.h"
 
 #include "../misrc_common/ringbuffer.h"
+#include "../misrc_common/flac_writer.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
 #include <stdatomic.h>
-
-// FLAC support
-#if LIBFLAC_ENABLED == 1
-#include "FLAC/stream_encoder.h"
-#endif
 
 // Buffer sizes
 #define BUFFER_READ_SIZE 65536
@@ -79,11 +75,6 @@ static bool s_writer_threads_running = false;
 static FILE *s_file_a = NULL;
 static FILE *s_file_b = NULL;
 
-#if LIBFLAC_ENABLED == 1
-static FLAC__StreamEncoder *s_encoder_a = NULL;
-static FLAC__StreamEncoder *s_encoder_b = NULL;
-#endif
-
 // Global app pointer for threads
 static gui_app_t *s_recording_app = NULL;
 
@@ -93,38 +84,36 @@ typedef struct {
     FILE *file;
     int channel;  // 0 = A, 1 = B
 #if LIBFLAC_ENABLED == 1
-    FLAC__StreamEncoder *encoder;
+    flac_writer_t *writer;
     atomic_uint_fast64_t *compressed_bytes;
 #endif
+    gui_app_t *app;  // For error reporting
 } writer_ctx_t;
 
 static writer_ctx_t s_ctx_a;
 static writer_ctx_t s_ctx_b;
 
 #if LIBFLAC_ENABLED == 1
-// FLAC write callback to track compressed output size
-static FLAC__StreamEncoderWriteStatus flac_write_callback(
-    const FLAC__StreamEncoder *encoder,
-    const FLAC__byte buffer[],
-    size_t bytes,
-    uint32_t samples,
-    uint32_t current_frame,
-    void *client_data)
-{
-    (void)encoder; (void)samples; (void)current_frame;
-    writer_ctx_t *wctx = (writer_ctx_t *)client_data;
+// FLAC writers (managed by shared library)
+static flac_writer_t *s_flac_writer_a = NULL;
+static flac_writer_t *s_flac_writer_b = NULL;
 
-    size_t written = fwrite(buffer, 1, bytes, wctx->file);
-    if (written != bytes) {
-        return FLAC__STREAM_ENCODER_WRITE_STATUS_FATAL_ERROR;
+// Error callback for GUI FLAC writer
+static void gui_flac_error_callback(void *user_data, flac_writer_error_t error, const char *message) {
+    (void)error;
+    writer_ctx_t *wctx = (writer_ctx_t *)user_data;
+    if (wctx && wctx->app) {
+        gui_app_set_status(wctx->app, message);
     }
+    fprintf(stderr, "FLAC ERROR: %s\n", message);
+}
 
-    // Track compressed bytes
-    if (wctx->compressed_bytes) {
-        atomic_fetch_add(wctx->compressed_bytes, bytes);
+// Bytes written callback for compression ratio tracking
+static void gui_flac_bytes_callback(void *user_data, size_t bytes_written) {
+    writer_ctx_t *wctx = (writer_ctx_t *)user_data;
+    if (wctx && wctx->compressed_bytes) {
+        atomic_fetch_add(wctx->compressed_bytes, bytes_written);
     }
-
-    return FLAC__STREAM_ENCODER_WRITE_STATUS_OK;
 }
 
 // FLAC file writer thread
@@ -147,8 +136,7 @@ static int flac_writer_thread(void *ctx) {
                     size_t remaining_samples = remaining / sizeof(int32_t);
                     buf = rb_read_ptr(wctx->rb, remaining);
                     if (buf && remaining_samples > 0) {
-                        FLAC__stream_encoder_process(
-                            wctx->encoder, (const FLAC__int32 **)&buf, remaining_samples);
+                        flac_writer_process(wctx->writer, (const int32_t *)buf, remaining_samples);
                         rb_read_finished(wctx->rb, remaining);
                     }
                 }
@@ -158,9 +146,8 @@ static int flac_writer_thread(void *ctx) {
             continue;
         }
 
-        FLAC__bool ok = FLAC__stream_encoder_process(
-            wctx->encoder, (const FLAC__int32 **)&buf, BUFFER_READ_SIZE);
-        if (!ok) {
+        int result = flac_writer_process(wctx->writer, (const int32_t *)buf, BUFFER_READ_SIZE);
+        if (result < 0) {
             fprintf(stderr, "FLAC encoder error on channel %c\n", wctx->channel == 0 ? 'A' : 'B');
         }
 
@@ -291,61 +278,55 @@ int gui_record_start(gui_app_t *app) {
             return -1;
         }
 
-        // Create FLAC encoders
-        s_encoder_a = FLAC__stream_encoder_new();
-        s_encoder_b = FLAC__stream_encoder_new();
-
-        if (!s_encoder_a || !s_encoder_b) {
-            gui_app_set_status(app, "Failed to create FLAC encoders");
-            fclose(s_file_a); fclose(s_file_b);
-            s_file_a = s_file_b = NULL;
-            return -1;
-        }
-
         // Setup writer contexts
         s_ctx_a.rb = rb_a;
         s_ctx_a.file = s_file_a;
         s_ctx_a.channel = 0;
-        s_ctx_a.encoder = s_encoder_a;
         s_ctx_a.compressed_bytes = &app->recording_compressed_a;
+        s_ctx_a.app = app;
 
         s_ctx_b.rb = rb_b;
         s_ctx_b.file = s_file_b;
         s_ctx_b.channel = 1;
-        s_ctx_b.encoder = s_encoder_b;
         s_ctx_b.compressed_bytes = &app->recording_compressed_b;
+        s_ctx_b.app = app;
 
-        // Sample rate for FLAC - 40kHz
-        uint32_t srate = 40000;
+        // Configure FLAC writers using shared library
+        flac_writer_config_t config = flac_writer_default_config();
+        config.sample_rate = 40000;
+        config.bits_per_sample = 16;  // TODO: Make configurable for 12-bit support
+        config.compression_level = app->settings.flac_level;
+        config.verify = false;
+        config.num_threads = 0;  // Auto-detect
+        config.enable_seektable = true;
 
-        // Configure and initialize encoders
-        writer_ctx_t *contexts[2] = { &s_ctx_a, &s_ctx_b };
-        FLAC__StreamEncoder *encoders[2] = { s_encoder_a, s_encoder_b };
+        // Create writer for channel A
+        config.error_cb = gui_flac_error_callback;
+        config.bytes_cb = gui_flac_bytes_callback;
+        config.callback_user_data = &s_ctx_a;
 
-        for (int i = 0; i < 2; i++) {
-            FLAC__StreamEncoder *enc = encoders[i];
-            writer_ctx_t *wctx = contexts[i];
-
-            FLAC__stream_encoder_set_verify(enc, false);
-            FLAC__stream_encoder_set_compression_level(enc, app->settings.flac_level);
-            FLAC__stream_encoder_set_channels(enc, 1);
-            FLAC__stream_encoder_set_bits_per_sample(enc, 16);
-            FLAC__stream_encoder_set_sample_rate(enc, srate);
-            FLAC__stream_encoder_set_total_samples_estimate(enc, 0);
-
-            FLAC__StreamEncoderInitStatus status =
-                FLAC__stream_encoder_init_stream(enc, flac_write_callback, NULL, NULL, NULL, wctx);
-            if (status != FLAC__STREAM_ENCODER_INIT_STATUS_OK) {
-                fprintf(stderr, "FLAC encoder init failed: %d\n", status);
-                gui_app_set_status(app, "FLAC encoder init failed");
-                FLAC__stream_encoder_delete(s_encoder_a);
-                FLAC__stream_encoder_delete(s_encoder_b);
-                s_encoder_a = s_encoder_b = NULL;
-                fclose(s_file_a); fclose(s_file_b);
-                s_file_a = s_file_b = NULL;
-                return -1;
-            }
+        s_flac_writer_a = flac_writer_create_stream(s_file_a, &config);
+        if (!s_flac_writer_a) {
+            gui_app_set_status(app, "Failed to create FLAC encoder A");
+            fclose(s_file_a); fclose(s_file_b);
+            s_file_a = s_file_b = NULL;
+            return -1;
         }
+        s_ctx_a.writer = s_flac_writer_a;
+
+        // Create writer for channel B
+        config.callback_user_data = &s_ctx_b;
+
+        s_flac_writer_b = flac_writer_create_stream(s_file_b, &config);
+        if (!s_flac_writer_b) {
+            gui_app_set_status(app, "Failed to create FLAC encoder B");
+            flac_writer_abort(s_flac_writer_a);
+            s_flac_writer_a = NULL;
+            fclose(s_file_a); fclose(s_file_b);
+            s_file_a = s_file_b = NULL;
+            return -1;
+        }
+        s_ctx_b.writer = s_flac_writer_b;
 
         // Mark as recording and start writer threads
         app->is_recording = true;
@@ -420,16 +401,14 @@ void gui_record_stop(gui_app_t *app) {
     }
 
 #if LIBFLAC_ENABLED == 1
-    // Finalize FLAC encoders
-    if (s_encoder_a) {
-        FLAC__stream_encoder_finish(s_encoder_a);
-        FLAC__stream_encoder_delete(s_encoder_a);
-        s_encoder_a = NULL;
+    // Finalize FLAC writers (this also cleans them up)
+    if (s_flac_writer_a) {
+        flac_writer_finish(s_flac_writer_a);
+        s_flac_writer_a = NULL;
     }
-    if (s_encoder_b) {
-        FLAC__stream_encoder_finish(s_encoder_b);
-        FLAC__stream_encoder_delete(s_encoder_b);
-        s_encoder_b = NULL;
+    if (s_flac_writer_b) {
+        flac_writer_finish(s_flac_writer_b);
+        s_flac_writer_b = NULL;
     }
 #endif
 

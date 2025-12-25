@@ -31,6 +31,7 @@ sources_capture = [
   'misrc_capture.c',
   'extract.c',
   '../misrc_common/ringbuffer.c',
+  '../misrc_common/flac_writer.c',
   version_target
 ]
 
@@ -163,6 +164,7 @@ if raylib_dep.found()
     '../misrc_gui/clay_renderer_raylib.c',
     'extract.c',
     '../misrc_common/ringbuffer.c',
+    '../misrc_common/flac_writer.c',
     version_target
   ]
 
