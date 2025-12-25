@@ -12,6 +12,7 @@
 #include "gui_oscilloscope.h"
 #include "gui_phosphor_rt.h"
 #include "gui_fft.h"
+#include "gui_simulated.h"
 
 #include <hsdaoh.h>
 #include <hsdaoh_raw.h>
@@ -28,6 +29,11 @@
 #include <stdint.h>
 #include <string.h>
 #include <math.h>
+
+// Define M_PI if not available (Windows compatibility)
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 // Buffer sizes - match reference implementation
 #define BUFFER_READ_SIZE 65536
@@ -232,6 +238,10 @@ void gui_app_init(gui_app_t *app) {
     app->display_samples_available_a = 0;
     app->display_samples_available_b = 0;
 
+    // Initialize simulated device state
+    app->sim_thread = NULL;
+    atomic_store(&app->sim_running, false);
+
     app->vu_a.level_pos = 0;
     app->vu_a.level_neg = 0;
     app->vu_a.peak_pos = 0;
@@ -385,13 +395,13 @@ void gui_app_enumerate_devices(gui_app_t *app) {
         if (src->type == MISRC_DEVICE_TYPE_SIMPLE_CAPTURE) {
             snprintf(dst->name, sizeof(dst->name), "[%s] %s",
                      device_get_simple_capture_short_name(), src->name);
-            dst->is_simple_capture = true;
+            dst->type = DEVICE_TYPE_SIMPLE_CAPTURE;
             dst->index = -1;
             // Store device_id in serial field for simple_capture
             snprintf(dst->serial, sizeof(dst->serial), "%s", src->device_id);
         } else {
             snprintf(dst->name, sizeof(dst->name), "%s", src->name);
-            dst->is_simple_capture = false;
+            dst->type = DEVICE_TYPE_HSDAOH;
             dst->index = src->index;
             dst->serial[0] = '\0';
         }
@@ -400,6 +410,16 @@ void gui_app_enumerate_devices(gui_app_t *app) {
     }
 
     misrc_device_list_free(&devices);
+
+    // Always add simulated device at the end
+    if (app->device_count < MAX_DEVICES) {
+        device_info_t *dst = &app->devices[app->device_count];
+        snprintf(dst->name, sizeof(dst->name), "[Simulated] Test Signal");
+        snprintf(dst->serial, sizeof(dst->serial), "SIM001");
+        dst->type = DEVICE_TYPE_SIMULATED;
+        dst->index = -1;
+        app->device_count++;
+    }
 
     if (app->device_count == 0) {
         gui_app_set_status(app, "No capture devices found");
@@ -425,14 +445,19 @@ int gui_app_start_capture(gui_app_t *app) {
         return -1;
     }
 
+    device_info_t *dev = &app->devices[app->selected_device];
+    fprintf(stderr, "[GUI] Selected device: %s (type %d, index %d)\n", dev->name, dev->type, dev->index);
+
+    // Handle simulated device separately
+    if (dev->type == DEVICE_TYPE_SIMULATED) {
+        return gui_simulated_start(app);
+    }
+
     if (!s_rb_initialized) {
         fprintf(stderr, "[GUI] Ringbuffer not initialized\n");
         gui_app_set_status(app, "Ringbuffer not initialized");
         return -1;
     }
-
-    device_info_t *dev = &app->devices[app->selected_device];
-    fprintf(stderr, "[GUI] Selected device: %s (index %d)\n", dev->name, dev->index);
 
     // Reset statistics
     atomic_store(&app->total_samples, 0);
@@ -525,6 +550,14 @@ void gui_app_stop_capture(gui_app_t *app) {
 
     if (app->is_recording) {
         gui_app_stop_recording(app);
+    }
+
+    // Check if this is a simulated capture
+    device_info_t *dev = &app->devices[app->selected_device];
+    if (dev->type == DEVICE_TYPE_SIMULATED) {
+        gui_simulated_stop(app);
+        gui_app_clear_display(app);
+        return;
     }
 
     // Set is_capturing to false BEFORE stopping extraction thread

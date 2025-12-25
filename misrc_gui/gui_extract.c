@@ -298,6 +298,22 @@ void gui_extract_reset_record_rbs(void) {
     }
 }
 
+void gui_extract_init_record_rbs(void) {
+    if (!s_record_rb_initialized) {
+        rb_init(&s_record_rb_a, "record_a_rb", BUFFER_RECORD_SIZE);
+        rb_init(&s_record_rb_b, "record_b_rb", BUFFER_RECORD_SIZE);
+        s_record_rb_initialized = true;
+        fprintf(stderr, "[EXTRACT] Record ringbuffers initialized (for simulated capture)\n");
+    }
+}
+
+bool gui_extract_is_recording(bool *use_flac) {
+    if (use_flac) {
+        *use_flac = atomic_load(&s_use_flac);
+    }
+    return atomic_load(&s_recording_enabled);
+}
+
 extract_fn_t gui_extract_get_function(void) {
     if (!s_initialized) gui_extract_init();
     return (extract_fn_t)s_extract_fn;

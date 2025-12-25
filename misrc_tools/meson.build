@@ -178,6 +178,7 @@ if raylib_dep.found()
     '../misrc_gui/gui_capture.c',
     '../misrc_gui/gui_record.c',
     '../misrc_gui/gui_extract.c',
+    '../misrc_gui/gui_simulated.c',
     '../misrc_gui/clay_renderer_raylib.c',
     '../misrc_common/extract.c',
     '../misrc_common/ringbuffer.c',

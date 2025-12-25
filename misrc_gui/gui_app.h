@@ -87,10 +87,17 @@ typedef struct {
 #define PHOSPHOR_HIT_INCREMENT 0.5f // Intensity added per waveform hit (0-1)
 
 // Device info for enumeration
+// Device type enumeration
+typedef enum {
+    DEVICE_TYPE_HSDAOH,         // Hardware device via hsdaoh
+    DEVICE_TYPE_SIMPLE_CAPTURE, // OS video capture
+    DEVICE_TYPE_SIMULATED       // Simulated device for testing
+} device_type_t;
+
 typedef struct {
     char name[64];
     char serial[64];
-    bool is_simple_capture;   // true = OS video capture, false = hsdaoh
+    device_type_t type;
     int index;
 } device_info_t;
 
@@ -113,6 +120,10 @@ typedef struct gui_app {
     // Device handles
     hsdaoh_dev_t *hs_dev;
     sc_handle_t *sc_dev;
+
+    // Simulated device state
+    void *sim_thread;          // Simulated capture thread handle
+    atomic_bool sim_running;   // Flag to stop simulated capture
 
     // Capture state
     bool is_capturing;

@@ -22,14 +22,15 @@
 #include <string.h>
 #include <stdatomic.h>
 
-#include <sys/stat.h>
-
 #if defined(_WIN32) || defined(_WIN64)
 #include <io.h>
 #define access _access
 #define F_OK 0
-#define stat _stat
-#else
+#endif
+
+#include <sys/stat.h>
+
+#if !defined(_WIN32) && !defined(_WIN64)
 #include <unistd.h>
 #endif
 
@@ -311,10 +312,21 @@ void gui_record_check_popup(gui_app_t *app) {
 // Internal: Start recording after confirmation
 static int gui_record_start_confirmed(gui_app_t *app) {
 
-    // Verify extraction thread is running
-    if (!gui_extract_is_running()) {
+    // Check if using simulated device (doesn't use extraction thread)
+    bool is_simulated = false;
+    if (app->device_count > 0 && app->selected_device < app->device_count) {
+        is_simulated = (app->devices[app->selected_device].type == DEVICE_TYPE_SIMULATED);
+    }
+
+    // Verify extraction thread is running (or simulated capture)
+    if (!gui_extract_is_running() && !is_simulated) {
         gui_app_set_status(app, "Extraction not running");
         return RECORD_ERROR;
+    }
+
+    // For simulated capture, ensure record ringbuffers are initialized
+    if (is_simulated) {
+        gui_extract_init_record_rbs();
     }
 
     // Get record ringbuffers from gui_extract

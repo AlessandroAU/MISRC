@@ -46,6 +46,12 @@ void gui_extract_set_recording(bool enabled, bool use_flac);
 // Reset record ringbuffers (call before starting writer threads)
 void gui_extract_reset_record_rbs(void);
 
+// Initialize record ringbuffers (for simulated capture that doesn't use extraction thread)
+void gui_extract_init_record_rbs(void);
+
+// Check if recording is enabled and get FLAC mode
+bool gui_extract_is_recording(bool *use_flac);
+
 // Get the extraction function pointer (for direct use)
 typedef void (*extract_fn_t)(uint32_t *buf, size_t num_samples, size_t *clip,
                              uint8_t *aux_buf, int16_t *buf_a, int16_t *buf_b,
