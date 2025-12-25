@@ -18,8 +18,9 @@
 // Grid Settings
 //-----------------------------------------------------------------------------
 
-#define GRID_DIVISIONS_X 10
-#define GRID_DIVISIONS_Y 4  // Per channel
+#define GRID_DIVISIONS_Y 4  // Per channel (amplitude)
+#define GRID_MIN_SPACING_PX 120  // Minimum pixels between time grid lines
+#define GRID_MAX_DIVISIONS 20   // Maximum number of time divisions
 
 //-----------------------------------------------------------------------------
 // Static State
@@ -67,19 +68,143 @@ static int measure_text_with_font(const char *text, int fontSize) {
     return MeasureText(text, fontSize);
 }
 
+// Snap to 1-2-5 log scale sequence
+// Given a rough time division, find the nearest "nice" value in the sequence:
+// ...0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100...
+static double snap_to_125(double value) {
+    if (value <= 0) return 1.0;
+
+    // Find the order of magnitude (power of 10)
+    double log_val = log10(value);
+    double magnitude = pow(10.0, floor(log_val));
+    double normalized = value / magnitude;  // Will be between 1 and 10
+
+    // Snap to 1, 2, or 5 within this magnitude
+    double snapped;
+    if (normalized < 1.5) {
+        snapped = 1.0;
+    } else if (normalized < 3.5) {
+        snapped = 2.0;
+    } else if (normalized < 7.5) {
+        snapped = 5.0;
+    } else {
+        snapped = 10.0;
+    }
+
+    return snapped * magnitude;
+}
+
+// Format time value with appropriate unit (ns, us, ms, s)
+static void format_time_label(char *buf, size_t buf_size, double seconds) {
+    if (seconds >= 1.0) {
+        snprintf(buf, buf_size, "%.3gs", seconds);
+    } else if (seconds >= 0.001) {
+        snprintf(buf, buf_size, "%.3gms", seconds * 1000.0);
+    } else if (seconds >= 0.000001) {
+        snprintf(buf, buf_size, "%.3gus", seconds * 1000000.0);
+    } else {
+        snprintf(buf, buf_size, "%.3gns", seconds * 1000000000.0);
+    }
+}
+
 // Draw grid for a single channel with amplitude scale ticks
+// zoom_scale: samples per pixel, sample_rate: samples per second
+// trigger_enabled: if true, use trigger_display_pos as t=0 reference
+// trigger_display_pos: pixel position of trigger point (-1 if not triggered)
 static void draw_channel_grid(float x, float y, float width, float height,
-                               const char *label, Color channel_color, bool show_grid) {
+                               const char *label, Color channel_color, bool show_grid,
+                               float zoom_scale, uint32_t sample_rate,
+                               bool trigger_enabled, int trigger_display_pos) {
     // Background slightly darker than main bg
     DrawRectangle((int)x, (int)y, (int)width, (int)height, (Color){25, 25, 30, 255});
 
     float center_y = y + height / 2;
 
     if (show_grid) {
-        // Vertical grid lines (time divisions)
-        for (int i = 1; i < GRID_DIVISIONS_X; i++) {
-            float gx = x + (width * i / GRID_DIVISIONS_X);
-            DrawLineV((Vector2){gx, y}, (Vector2){gx, y + height}, COLOR_GRID);
+        // Time-based vertical grid lines (if we have sample rate info)
+        if (sample_rate > 0 && zoom_scale > 0) {
+            // Calculate time per pixel
+            double time_per_pixel = (double)zoom_scale / (double)sample_rate;
+
+            // Calculate rough time division to get reasonable spacing
+            double rough_division = time_per_pixel * (double)GRID_MIN_SPACING_PX;
+
+            // Snap to 1-2-5 sequence
+            double time_division = snap_to_125(rough_division);
+
+            // Calculate pixels per division
+            double pixels_per_div = time_division / time_per_pixel;
+
+            // Determine the reference point (t=0) in pixels from left edge
+            // If trigger is enabled and we have a valid position, use that as t=0
+            // Otherwise, t=0 is at the left edge
+            double t0_pixel = 0.0;
+            if (trigger_enabled && trigger_display_pos >= 0 && trigger_display_pos < (int)width) {
+                t0_pixel = (double)trigger_display_pos;
+            }
+
+            // Calculate the time offset at the left edge (will be negative if trigger is after left edge)
+            double time_at_left = -t0_pixel * time_per_pixel;
+
+            // Find the first grid line position (snap to division boundary)
+            // We want the first t such that t >= time_at_left and t is a multiple of time_division
+            double first_grid_time;
+            if (time_at_left >= 0) {
+                first_grid_time = ceil(time_at_left / time_division) * time_division;
+            } else {
+                first_grid_time = ceil(time_at_left / time_division) * time_division;
+            }
+
+            // Draw vertical grid lines at time intervals
+            char time_buf[32];
+            int division_count = 0;
+            for (double t = first_grid_time; division_count < GRID_MAX_DIVISIONS; t += time_division) {
+                // Convert time to pixel position
+                double px = (t - time_at_left) / time_per_pixel;
+                if (px >= (double)width) break;
+                if (px < 0) continue;
+
+                float gx = x + (float)px;
+
+                // Draw grid line (use major color for t=0)
+                bool is_zero = (fabs(t) < time_division * 0.01);
+                DrawLineV((Vector2){gx, y}, (Vector2){gx, y + height},
+                         is_zero ? COLOR_GRID_MAJOR : COLOR_GRID);
+
+                // Draw time label (skip if too close to edges)
+                if (gx > x + 40 && gx < x + width - 40) {
+                    if (is_zero) {
+                        // Draw "0" for the trigger point
+                        int label_w = measure_text_with_font("0", FONT_SIZE_OSC_SCALE);
+                        draw_text_with_font("0", gx - label_w / 2, y + height - 14, FONT_SIZE_OSC_SCALE, COLOR_TEXT);
+                    } else {
+                        format_time_label(time_buf, sizeof(time_buf), fabs(t));
+                        // Add sign prefix for negative times
+                        char signed_buf[36];
+                        if (t < 0) {
+                            snprintf(signed_buf, sizeof(signed_buf), "-%s", time_buf);
+                        } else {
+                            snprintf(signed_buf, sizeof(signed_buf), "+%s", time_buf);
+                        }
+                        int label_w = measure_text_with_font(signed_buf, FONT_SIZE_OSC_SCALE);
+                        draw_text_with_font(signed_buf, gx - label_w / 2, y + height - 14, FONT_SIZE_OSC_SCALE, COLOR_TEXT_DIM);
+                    }
+                }
+                division_count++;
+            }
+
+            // Show time per division in bottom-left corner (larger, more prominent)
+            format_time_label(time_buf, sizeof(time_buf), time_division);
+            char div_label[48];
+            snprintf(div_label, sizeof(div_label), "%s/div", time_buf);
+            draw_text_with_font(div_label, x + 6, y + height - 18, 18, COLOR_TEXT);
+        } else {
+            // Fallback: fixed divisions when no sample rate available
+            const int fixed_divisions = 10;
+            for (int i = 1; i < fixed_divisions; i++) {
+                float gx = x + (width * i / fixed_divisions);
+                DrawLineV((Vector2){gx, y}, (Vector2){gx, y + height}, COLOR_GRID);
+            }
         }
 
         // Horizontal grid lines (amplitude divisions)
@@ -120,27 +245,31 @@ void render_oscilloscope_channel(gui_app_t *app, float x, float y, float width, 
     // Store app pointer for font access
     s_osc_app = app;
 
+    // Get trigger state for this channel
+    channel_trigger_t *trig = (channel == 0) ? &app->trigger_a : &app->trigger_b;
+
     // Store bounds for mouse interaction
     if (channel >= 0 && channel < 2) {
         s_osc_bounds[channel] = (Rectangle){x, y, width, height};
         s_osc_bounds_valid[channel] = true;
 
         // Store actual display width for the processing thread (atomic for thread safety)
-        channel_trigger_t *trig = (channel == 0) ? &app->trigger_a : &app->trigger_b;
         int new_display_width = (int)width;
         if (new_display_width < 100) new_display_width = 100;  // Minimum reasonable width
         if (new_display_width > DISPLAY_BUFFER_SIZE) new_display_width = DISPLAY_BUFFER_SIZE;
         atomic_store(&trig->display_width, new_display_width);
     }
 
-    // Draw channel grid
-    draw_channel_grid(x, y, width, height, label, channel_color, app->settings.show_grid);
+    // Draw channel grid with time-based divisions
+    uint32_t sample_rate = atomic_load(&app->sample_rate);
+    draw_channel_grid(x, y, width, height, label, channel_color, app->settings.show_grid,
+                      trig->zoom_scale, sample_rate,
+                      trig->enabled, trig->trigger_display_pos);
 
     float center_y = y + height / 2.0f;
     float scale = (height / 2.0f) * app->settings.amplitude_scale;
 
     // Draw trigger level line and position marker if enabled for this channel
-    channel_trigger_t *trig = (channel == 0) ? &app->trigger_a : &app->trigger_b;
     if (trig->enabled) {
         // Convert trigger level (-2048 to +2047) to normalized (-1 to +1)
         float level_norm = trig->level / 2048.0f;

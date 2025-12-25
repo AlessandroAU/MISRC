@@ -49,6 +49,9 @@ int main(int argc, char **argv) {
     gui_app_t app = {0};
     app.fonts = fonts;
 
+    // Initialize sample rate early (before any capture/rendering can occur)
+    atomic_store(&app.sample_rate, DEFAULT_SAMPLE_RATE);
+
     // Initialize default settings
     app.settings.capture_a = true;
     app.settings.capture_b = true;

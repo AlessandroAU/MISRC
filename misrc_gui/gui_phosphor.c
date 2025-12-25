@@ -147,8 +147,9 @@ static const char *phosphor_opacity_fs =
     "}\n";
 
 // Simple decay shader - linear multiplicative decay per frame
-// Threshold must be high enough that bloom (which sums ~2.2x neighbors) doesn't
+// Threshold must be high enough that bloom (which sums ~2.7x neighbors) doesn't
 // amplify tiny residuals above the heatmap visibility threshold (0.02)
+// Required: threshold > 0.02 / 2.7 = 0.0074, using 0.02 for safety margin
 static const char *phosphor_decay_fs =
     GLSL_VERSION_STRING
     GLSL_PRECISION
@@ -160,7 +161,7 @@ static const char *phosphor_decay_fs =
     "void main() {\n"
     "    float intensity = " GLSL_TEXTURE "(texture0, fragTexCoord).r;\n"
     "    intensity = intensity * decayRate;\n"
-    "    if (intensity < 0.01) intensity = 0.0;\n"
+    "    if (intensity < 0.02) intensity = 0.0;\n"
     "    " GLSL_FRAG_COLOR " = vec4(intensity, 0.0, 0.0, 1.0);\n"
     "}\n";
 

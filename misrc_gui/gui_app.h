@@ -71,10 +71,13 @@ typedef struct {
 #define ZOOM_SCALE_MAX 128.0f  // 128 samples per pixel (max zoom out)
 #define ZOOM_SCALE_DEFAULT 32.0f
 
+// Default sample rate (40 MSPS per channel)
+#define DEFAULT_SAMPLE_RATE 40000000
+
 // Digital phosphor display settings
 #define PHOSPHOR_MAX_WIDTH 4096   // Maximum phosphor buffer width (pixels)
 #define PHOSPHOR_MAX_HEIGHT 512   // Maximum phosphor buffer height (pixels)
-#define PHOSPHOR_DECAY_RATE 0.80f // Intensity decay per frame (0-1, higher = slower fade)
+#define PHOSPHOR_DECAY_RATE 0.80f // Base decay multiplier per frame (0-1, higher = slower fade)
 #define PHOSPHOR_HIT_INCREMENT 0.5f // Intensity added per waveform hit (0-1)
 
 // Device info for enumeration

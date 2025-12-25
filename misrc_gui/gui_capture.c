@@ -247,6 +247,10 @@ void gui_app_init(gui_app_t *app) {
 
     strcpy(app->status_message, "Initializing...");
 
+    // Initialize sample rate to default (will be updated when device connects)
+    atomic_store(&app->sample_rate, DEFAULT_SAMPLE_RATE);
+    TraceLog(LOG_INFO, "APP INIT: sample_rate set to %u", DEFAULT_SAMPLE_RATE);
+
     // Initialize trigger state for channel A
     app->trigger_a.enabled = false;
     app->trigger_a.level = 0;
@@ -410,7 +414,7 @@ int gui_app_start_capture(gui_app_t *app) {
     atomic_store(&app->rb_wait_count, 0);
     atomic_store(&app->rb_drop_count, 0);
     atomic_store(&app->stream_synced, false);
-    atomic_store(&app->sample_rate, 0);
+    atomic_store(&app->sample_rate, DEFAULT_SAMPLE_RATE);
     atomic_store(&app->last_callback_time_ms, get_time_ms());
 
     // Reset display buffers (per-channel)
