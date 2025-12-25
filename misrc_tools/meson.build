@@ -117,6 +117,15 @@ else
   message('libsoxr not found, building without resample support')
 endif
 
+fftw3f_dep = dependency('fftw3f', required : false)
+if fftw3f_dep.found()
+  cflags += ['-DLIBFFTW_ENABLED=1']
+  message('FFTW3 (single precision) found, building with FFT support')
+else
+  cflags += ['-DLIBFFTW_ENABLED=0']
+  message('FFTW3 not found, building without FFT support')
+endif
+
 
 if host_system == 'windows' or host_system == 'cygwin'
   if meson.get_compiler('c').get_id() != 'gcc' and meson.get_compiler('c').get_id() != 'clang'
@@ -161,7 +170,8 @@ if raylib_dep.found()
     '../misrc_gui/gui_ui.c',
     '../misrc_gui/gui_render.c',
     '../misrc_gui/gui_oscilloscope.c',
-    '../misrc_gui/gui_phosphor.c',
+    '../misrc_gui/gui_phosphor_rt.c',
+    '../misrc_gui/gui_fft.c',
     '../misrc_gui/gui_dropdown.c',
     '../misrc_gui/gui_popup.c',
     '../misrc_gui/gui_trigger.c',
@@ -186,6 +196,9 @@ if raylib_dep.found()
   endif
 
   gui_deps = deps + [ raylib_dep ]
+  if fftw3f_dep.found()
+    gui_deps += [ fftw3f_dep ]
+  endif
 
   gui_cflags = cflags
 

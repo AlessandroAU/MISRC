@@ -105,6 +105,9 @@ static int extraction_thread(void *ctx) {
         atomic_fetch_add(&s_extract_app->samples_a, BUFFER_READ_SIZE);
         atomic_fetch_add(&s_extract_app->samples_b, BUFFER_READ_SIZE);
 
+        // Note: FFT is now processed from display samples in the render thread
+        // (see gui_oscilloscope.c render_oscilloscope_channel split mode)
+
         // Conditionally write to record ringbuffers
         if (atomic_load(&s_recording_enabled)) {
             if (atomic_load(&s_use_flac)) {

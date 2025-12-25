@@ -10,7 +10,8 @@
 #include "gui_record.h"
 #include "gui_extract.h"
 #include "gui_oscilloscope.h"
-#include "gui_phosphor.h"
+#include "gui_phosphor_rt.h"
+#include "gui_fft.h"
 
 #include <hsdaoh.h>
 #include <hsdaoh_raw.h>
@@ -271,14 +272,27 @@ void gui_app_init(gui_app_t *app) {
     app->trigger_b.trigger_mode = TRIGGER_MODE_RISING;  // Rising edge by default
     app->trigger_b.phosphor_color = PHOSPHOR_COLOR_HEATMAP;  // Opacity mode by default
 
-    // Initialize phosphor display state (GPU render textures)
-    memset(app->phosphor_rt_a, 0, sizeof(app->phosphor_rt_a));
-    memset(app->phosphor_rt_b, 0, sizeof(app->phosphor_rt_b));
-    app->phosphor_rt_index_a = 0;
-    app->phosphor_rt_index_b = 0;
-    app->phosphor_width = 0;
-    app->phosphor_height = 0;
-    app->phosphor_rt_valid = false;
+    // Initialize phosphor display state
+    app->phosphor_a = (phosphor_rt_t *)calloc(1, sizeof(phosphor_rt_t));
+    app->phosphor_b = (phosphor_rt_t *)calloc(1, sizeof(phosphor_rt_t));
+
+    // Set phosphor config (render textures are created lazily on first use)
+    if (app->phosphor_a) {
+        app->phosphor_a->config.decay_rate = SCOPE_DECAY_RATE;
+        app->phosphor_a->config.hit_increment = SCOPE_HIT_INCREMENT;
+        app->phosphor_a->config.bloom_intensity = SCOPE_BLOOM;
+        memcpy(app->phosphor_a->config.channel_color, PHOSPHOR_CHANNEL_COLOR_A, sizeof(float) * 3);
+    }
+    if (app->phosphor_b) {
+        app->phosphor_b->config.decay_rate = SCOPE_DECAY_RATE;
+        app->phosphor_b->config.hit_increment = SCOPE_HIT_INCREMENT;
+        app->phosphor_b->config.bloom_intensity = SCOPE_BLOOM;
+        memcpy(app->phosphor_b->config.channel_color, PHOSPHOR_CHANNEL_COLOR_B, sizeof(float) * 3);
+    }
+
+    // Initialize FFT state pointers (allocated on demand when split mode is selected)
+    app->fft_a = NULL;
+    app->fft_b = NULL;
 
     // Initialize capture ringbuffer
     if (!s_rb_initialized) {
@@ -319,9 +333,31 @@ void gui_app_cleanup(gui_app_t *app) {
     gui_extract_cleanup();
 
     // Cleanup phosphor buffers and textures
-    gui_phosphor_cleanup(app);
+    if (app->phosphor_a) {
+        phosphor_rt_cleanup(app->phosphor_a);
+        free(app->phosphor_a);
+        app->phosphor_a = NULL;
+    }
+    if (app->phosphor_b) {
+        phosphor_rt_cleanup(app->phosphor_b);
+        free(app->phosphor_b);
+        app->phosphor_b = NULL;
+    }
 
-    // Cleanup oscilloscope resources (resamplers)
+    // Cleanup FFT state
+    if (app->fft_a) {
+        gui_fft_cleanup(app->fft_a);
+        free(app->fft_a);
+        app->fft_a = NULL;
+    }
+    if (app->fft_b) {
+        gui_fft_cleanup(app->fft_b);
+        free(app->fft_b);
+        app->fft_b = NULL;
+    }
+
+    // Cleanup oscilloscope resources (static state and resamplers)
+    gui_oscilloscope_cleanup_resamplers(app);
     gui_oscilloscope_cleanup();
 }
 

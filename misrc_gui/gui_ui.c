@@ -8,10 +8,16 @@
 #include "gui_render.h"
 #include "gui_dropdown.h"
 #include "gui_popup.h"
+#include "gui_fft.h"
 #include "version.h"
 #include <clay.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+
+#ifndef MIRSC_TOOLS_VERSION
+#define MIRSC_TOOLS_VERSION "dev"
+#endif
 
 // Dropdown identifiers
 #define DROPDOWN_DEVICE       "Device"
@@ -31,18 +37,20 @@ static char temp_buf4[64];
 static char temp_buf5[64];
 static char temp_buf6[64];
 static char temp_buf7[64];
+static char temp_buf8[64];
 static char device_dropdown_buf[64];
+static char temp_title_buf[64];
 
 // Per-channel stat buffers (separate for A and B to avoid overwrite)
-static char stat_a_samples[32];
 static char stat_a_peak_pos[16];
 static char stat_a_peak_neg[16];
-static char stat_a_clip[16];
+static char stat_a_clip_pos[16];
+static char stat_a_clip_neg[16];
 static char stat_a_errors[16];
-static char stat_b_samples[32];
 static char stat_b_peak_pos[16];
 static char stat_b_peak_neg[16];
-static char stat_b_clip[16];
+static char stat_b_clip_pos[16];
+static char stat_b_clip_neg[16];
 static char stat_b_errors[16];
 
 static Clay_String make_string(const char *str) {
@@ -96,7 +104,8 @@ static void render_toolbar(gui_app_t *app) {
         .backgroundColor = to_clay_color(COLOR_TOOLBAR_BG)
     }) {
         // Title
-        CLAY_TEXT(CLAY_STRING("MISRC Capture " MIRSC_TOOLS_VERSION),
+        snprintf(temp_title_buf, sizeof(temp_title_buf), "MISRC Capture %s", MIRSC_TOOLS_VERSION);
+        CLAY_TEXT(make_string(temp_title_buf),
             CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_TITLE, .textColor = to_clay_color(COLOR_TEXT) }));
 
         // Spacer
@@ -192,62 +201,49 @@ static char trig_level_b_buf[16];
 // Render per-channel stats panel with trigger controls
 static void render_channel_stats(gui_app_t *app, int channel) {
     // Get per-channel stats and trigger
-    uint64_t samples;
     uint32_t clip_pos, clip_neg, errors;
     float peak_pos, peak_neg;
     Color channel_color;
-    char *buf_samples, *buf_peak_pos, *buf_peak_neg, *buf_clip, *buf_errors;
+    char *buf_peak_pos, *buf_peak_neg, *buf_clip_pos, *buf_clip_neg, *buf_errors;
     channel_trigger_t *trig;
     char *trig_level_buf;
 
     if (channel == 0) {
-        samples = atomic_load(&app->samples_a);
         clip_pos = atomic_load(&app->clip_count_a_pos);
         clip_neg = atomic_load(&app->clip_count_a_neg);
         errors = atomic_load(&app->error_count_a);
         peak_pos = app->vu_a.peak_pos;
         peak_neg = app->vu_a.peak_neg;
         channel_color = COLOR_CHANNEL_A;
-        buf_samples = stat_a_samples;
         buf_peak_pos = stat_a_peak_pos;
         buf_peak_neg = stat_a_peak_neg;
-        buf_clip = stat_a_clip;
+        buf_clip_pos = stat_a_clip_pos;
+        buf_clip_neg = stat_a_clip_neg;
         buf_errors = stat_a_errors;
         trig = &app->trigger_a;
         trig_level_buf = trig_level_a_buf;
     } else {
-        samples = atomic_load(&app->samples_b);
         clip_pos = atomic_load(&app->clip_count_b_pos);
         clip_neg = atomic_load(&app->clip_count_b_neg);
         errors = atomic_load(&app->error_count_b);
         peak_pos = app->vu_b.peak_pos;
         peak_neg = app->vu_b.peak_neg;
         channel_color = COLOR_CHANNEL_B;
-        buf_samples = stat_b_samples;
         buf_peak_pos = stat_b_peak_pos;
         buf_peak_neg = stat_b_peak_neg;
-        buf_clip = stat_b_clip;
+        buf_clip_pos = stat_b_clip_pos;
+        buf_clip_neg = stat_b_clip_neg;
         buf_errors = stat_b_errors;
         trig = &app->trigger_b;
         trig_level_buf = trig_level_b_buf;
     }
 
-    uint32_t clip_total = clip_pos + clip_neg;
-
-    // Format stats
-    if (samples >= 1000000000ULL) {
-        snprintf(buf_samples, 32, "%.2fG", (double)samples / 1000000000.0);
-    } else if (samples >= 1000000ULL) {
-        snprintf(buf_samples, 32, "%.2fM", (double)samples / 1000000.0);
-    } else if (samples >= 1000ULL) {
-        snprintf(buf_samples, 32, "%.1fK", (double)samples / 1000.0);
-    } else {
-        snprintf(buf_samples, 32, "%llu", (unsigned long long)samples);
-    }
+    // Format stats (peak/clip/errors)
 
     snprintf(buf_peak_pos, 16, "+%.0f%%", peak_pos * 100.0f);
     snprintf(buf_peak_neg, 16, "-%.0f%%", peak_neg * 100.0f);
-    snprintf(buf_clip, 16, "%u", clip_total);
+    snprintf(buf_clip_pos, 16, "+%u", clip_pos);
+    snprintf(buf_clip_neg, 16, "-%u", clip_neg);
     snprintf(buf_errors, 16, "%u", errors);
 
     // Format trigger level
@@ -267,13 +263,7 @@ static void render_channel_stats(gui_app_t *app, int channel) {
         // CLAY_TEXT(channel == 0 ? CLAY_STRING("Channel A") : CLAY_STRING("Channel B"),
         //     CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS_LABEL, .textColor = to_clay_color(channel_color) }));
 
-        // Samples row
-        CLAY(CLAY_IDI("StatSamples", channel), { .layout = STAT_ROW_LAYOUT }) {
-            CLAY_TEXT(CLAY_STRING("Samples:"),
-                CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
-            CLAY_TEXT(make_string(buf_samples),
-                CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(COLOR_TEXT) }));
-        }
+        // Samples row removed (shown in status bar)
 
         // Peak row (shows both + and -)
         CLAY(CLAY_IDI("StatPeak", channel), { .layout = STAT_ROW_LAYOUT }) {
@@ -285,12 +275,14 @@ static void render_channel_stats(gui_app_t *app, int channel) {
                 CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(peak_neg > 0.95f ? COLOR_CLIP_RED : COLOR_TEXT) }));
         }
 
-        // Clip row
+        // Clip row (shows both + and -)
         CLAY(CLAY_IDI("StatClip", channel), { .layout = STAT_ROW_LAYOUT }) {
             CLAY_TEXT(CLAY_STRING("Clip:"),
                 CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
-            CLAY_TEXT(make_string(buf_clip),
-                CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(clip_total > 0 ? COLOR_CLIP_RED : COLOR_TEXT) }));
+            CLAY_TEXT(make_string(buf_clip_pos),
+                CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(clip_pos > 0 ? COLOR_CLIP_RED : COLOR_TEXT) }));
+            CLAY_TEXT(make_string(buf_clip_neg),
+                CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(clip_neg > 0 ? COLOR_CLIP_RED : COLOR_TEXT) }));
         }
 
         // Errors row
@@ -435,7 +427,13 @@ static void render_channel_stats(gui_app_t *app, int channel) {
                 CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
 
             // Mode dropdown button
-            const char *mode_name = (trig->scope_mode == SCOPE_MODE_PHOSPHOR) ? "Phosphor" : "Line";
+            const char *mode_name;
+            switch (trig->scope_mode) {
+                case SCOPE_MODE_LINE:     mode_name = "Line"; break;
+                case SCOPE_MODE_PHOSPHOR: mode_name = "Phosphor"; break;
+                case SCOPE_MODE_SPLIT:    mode_name = "Split"; break;
+                default:                  mode_name = "Line"; break;
+            }
             bool scope_dropdown_open = gui_dropdown_is_open(DROPDOWN_SCOPE_MODE, channel);
             CLAY(CLAY_IDI("ScopeModeBtn", channel), {
                 .layout = {
@@ -489,6 +487,21 @@ static void render_channel_stats(gui_app_t *app, int channel) {
                 }) {
                     CLAY_TEXT(CLAY_STRING("Phosphor"),
                         CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_DROPDOWN_OPT, .textColor = to_clay_color(COLOR_TEXT) }));
+                }
+
+                // Split mode option (only show if FFT available)
+                if (gui_fft_available()) {
+                    Color split_color = (trig->scope_mode == SCOPE_MODE_SPLIT) ? COLOR_BUTTON_ACTIVE : COLOR_BUTTON;
+                    CLAY(CLAY_IDI("ScopeModeOptSplit", channel), {
+                        .layout = {
+                            .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(20) },
+                            .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER }
+                        },
+                        .backgroundColor = to_clay_color(split_color)
+                    }) {
+                        CLAY_TEXT(CLAY_STRING("Split"),
+                            CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_DROPDOWN_OPT, .textColor = to_clay_color(COLOR_TEXT) }));
+                    }
                 }
             }
         }
@@ -708,25 +721,21 @@ static void render_status_bar(gui_app_t *app) {
                     CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATUS, .textColor = to_clay_color(sync_color) }));
             }
 
-            // Frames count
-            uint32_t frames = atomic_load(&app->frame_count);
-            snprintf(temp_buf4, sizeof(temp_buf4), "%u", frames);
-            CLAY(CLAY_ID("FrameStatus"), {
-                .layout = {
-                    .sizing = { CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0) },
-                    .layoutDirection = CLAY_LEFT_TO_RIGHT,
-                    .childGap = 4
-                }
-            }) {
-                CLAY_TEXT(CLAY_STRING("Frames:"),
-                    CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATUS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
-                CLAY(CLAY_ID("FrameValue"), {
-                    .layout = { .sizing = { CLAY_SIZING_FIXED(50), CLAY_SIZING_FIT(0) } }
-                }) {
-                    CLAY_TEXT(make_string(temp_buf4),
-                        CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATUS, .fontId = 1, .textColor = to_clay_color(COLOR_TEXT) }));
+            // Sample rate (placed next to Sync status)
+            {
+                uint32_t srate = atomic_load(&app->sample_rate);
+                if (srate > 0) {
+                    snprintf(temp_buf7, sizeof(temp_buf7), "%u MSPS", srate / 1000000);
+                    CLAY(CLAY_ID("SampleRate"), {
+                        .layout = { .sizing = { CLAY_SIZING_FIXED(80), CLAY_SIZING_FIT(0) } }
+                    }) {
+                        CLAY_TEXT(make_string(temp_buf7),
+                            CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATUS, .fontId = 1, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
+                    }
                 }
             }
+
+            
 
             // Missed frames count
             uint32_t missed = atomic_load(&app->missed_frame_count);
@@ -772,15 +781,54 @@ static void render_status_bar(gui_app_t *app) {
                 }
             //}
 
-            // Sample rate
-            uint32_t srate = atomic_load(&app->sample_rate);
-            if (srate > 0) {
-                snprintf(temp_buf7, sizeof(temp_buf7), "%u MSPS", srate / 1000000);
-                CLAY(CLAY_ID("SampleRate"), {
-                    .layout = { .sizing = { CLAY_SIZING_FIXED(80), CLAY_SIZING_FIT(0) } }
+            // Unified Samples (same for both channels)
+            {
+                uint64_t samples_status = atomic_load(&app->samples_a);
+                if (samples_status >= 1000000000ULL) {
+                    snprintf(temp_buf8, sizeof(temp_buf8), "%.2fG", (double)samples_status / 1000000000.0);
+                } else if (samples_status >= 1000000ULL) {
+                    snprintf(temp_buf8, sizeof(temp_buf8), "%.2fM", (double)samples_status / 1000000.0);
+                } else if (samples_status >= 1000ULL) {
+                    snprintf(temp_buf8, sizeof(temp_buf8), "%.1fK", (double)samples_status / 1000.0);
+                } else {
+                    snprintf(temp_buf8, sizeof(temp_buf8), "%llu", (unsigned long long)samples_status);
+                }
+
+                CLAY(CLAY_ID("SamplesStatus"), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0) },
+                        .layoutDirection = CLAY_LEFT_TO_RIGHT,
+                        .childGap = 4
+                    }
                 }) {
-                    CLAY_TEXT(make_string(temp_buf7),
-                        CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATUS, .fontId = 1, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
+                    CLAY_TEXT(CLAY_STRING("Samples:"),
+                        CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATUS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
+                    CLAY(CLAY_ID("SamplesValue"), {
+                        .layout = { .sizing = { CLAY_SIZING_FIXED(60), CLAY_SIZING_FIT(0) } }
+                    }) {
+                        CLAY_TEXT(make_string(temp_buf8),
+                            CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATUS, .fontId = 1, .textColor = to_clay_color(COLOR_TEXT) }));
+                    }
+                }
+
+                // Frames count placed next to Samples
+                uint32_t frames = atomic_load(&app->frame_count);
+                snprintf(temp_buf4, sizeof(temp_buf4), "%u", frames);
+                CLAY(CLAY_ID("FrameStatus"), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0) },
+                        .layoutDirection = CLAY_LEFT_TO_RIGHT,
+                        .childGap = 4
+                    }
+                }) {
+                    CLAY_TEXT(CLAY_STRING("Frames:"),
+                        CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATUS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
+                    CLAY(CLAY_ID("FrameValue"), {
+                        .layout = { .sizing = { CLAY_SIZING_FIXED(50), CLAY_SIZING_FIT(0) } }
+                    }) {
+                        CLAY_TEXT(make_string(temp_buf4),
+                            CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATUS, .fontId = 1, .textColor = to_clay_color(COLOR_TEXT) }));
+                    }
                 }
             }
         }
@@ -949,6 +997,22 @@ void gui_handle_interactions(gui_app_t *app) {
                 }
                 if (Clay_PointerOver(CLAY_IDI("ScopeModeOptPhos", ch))) {
                     trig->scope_mode = SCOPE_MODE_PHOSPHOR;
+                    gui_dropdown_close_all();
+                    dropdown_clicked = true;
+                }
+                if (gui_fft_available() && Clay_PointerOver(CLAY_IDI("ScopeModeOptSplit", ch))) {
+                    trig->scope_mode = SCOPE_MODE_SPLIT;
+                    // Initialize FFT state for this channel if needed
+                    fft_state_t **fft_ptr = (ch == 0) ? &app->fft_a : &app->fft_b;
+                    if (*fft_ptr == NULL) {
+                        *fft_ptr = malloc(sizeof(fft_state_t));
+                        if (*fft_ptr) {
+                            if (!gui_fft_init(*fft_ptr)) {
+                                free(*fft_ptr);
+                                *fft_ptr = NULL;
+                            }
+                        }
+                    }
                     gui_dropdown_close_all();
                     dropdown_clicked = true;
                 }

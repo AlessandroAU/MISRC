@@ -12,7 +12,9 @@
       "Bash(nm:*)",
       "Bash(meson setup:*)",
       "Bash(./build/rebuild-windows.bat)",
-      "Bash(taskkill:*)"
+      "Bash(taskkill:*)",
+      "Bash(dir:*)",
+      "Bash(findstr:*)"
     ]
   }
 }

@@ -5,7 +5,8 @@
  */
 
 #include "gui_oscilloscope.h"
-#include "gui_phosphor.h"
+#include "gui_phosphor_rt.h"
+#include "gui_fft.h"
 #include "gui_trigger.h"
 #include "gui_popup.h"
 #include "gui_ui.h"
@@ -13,6 +14,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#if LIBSOXR_ENABLED
+#include <soxr.h>
+// Forward declaration for cleanup function
+static void gui_oscilloscope_cleanup_resampler(channel_trigger_t *trig);
+#endif
 
 //-----------------------------------------------------------------------------
 // Grid Settings
@@ -34,9 +41,21 @@ static Rectangle s_osc_bounds[2] = {0};
 static bool s_osc_bounds_valid[2] = {false, false};
 static int s_dragging_channel = -1;  // Which channel is being dragged (-1 = none)
 
-// Cleanup oscilloscope resources
+// Cleanup oscilloscope resources (static state)
 void gui_oscilloscope_cleanup(void) {
     // No static resources to clean up - phosphor cleanup is in gui_phosphor module
+}
+
+// Cleanup per-channel resampler resources
+void gui_oscilloscope_cleanup_resamplers(gui_app_t *app) {
+#if LIBSOXR_ENABLED
+    if (app) {
+        gui_oscilloscope_cleanup_resampler(&app->trigger_a);
+        gui_oscilloscope_cleanup_resampler(&app->trigger_b);
+    }
+#else
+    (void)app;
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -48,10 +67,20 @@ void gui_oscilloscope_set_app(gui_app_t *app) {
     s_osc_app = app;
 }
 
-// Helper to draw text using the app's font
+// Helper to draw text using the app's font (Inter - for labels)
 static void draw_text_with_font(const char *text, float x, float y, int fontSize, Color color) {
     if (s_osc_app && s_osc_app->fonts) {
         Font font = s_osc_app->fonts[0];
+        DrawTextEx(font, text, (Vector2){x, y}, (float)fontSize, 1.0f, color);
+    } else {
+        DrawText(text, (int)x, (int)y, fontSize, color);
+    }
+}
+
+// Helper to draw text using monospace font (Space Mono - for numbers)
+static void draw_text_mono(const char *text, float x, float y, int fontSize, Color color) {
+    if (s_osc_app && s_osc_app->fonts) {
+        Font font = s_osc_app->fonts[1];  // Index 1 = Space Mono
         DrawTextEx(font, text, (Vector2){x, y}, (float)fontSize, 1.0f, color);
     } else {
         DrawText(text, (int)x, (int)y, fontSize, color);
@@ -62,6 +91,16 @@ static void draw_text_with_font(const char *text, float x, float y, int fontSize
 static int measure_text_with_font(const char *text, int fontSize) {
     if (s_osc_app && s_osc_app->fonts) {
         Font font = s_osc_app->fonts[0];
+        Vector2 size = MeasureTextEx(font, text, (float)fontSize, 1.0f);
+        return (int)size.x;
+    }
+    return MeasureText(text, fontSize);
+}
+
+// Helper to measure text using monospace font
+static int measure_text_mono(const char *text, int fontSize) {
+    if (s_osc_app && s_osc_app->fonts) {
+        Font font = s_osc_app->fonts[1];  // Index 1 = Space Mono
         Vector2 size = MeasureTextEx(font, text, (float)fontSize, 1.0f);
         return (int)size.x;
     }
@@ -175,8 +214,8 @@ static void draw_channel_grid(float x, float y, float width, float height,
                 if (gx > x + 40 && gx < x + width - 40) {
                     if (is_zero) {
                         // Draw "0" for the trigger point
-                        int label_w = measure_text_with_font("0", FONT_SIZE_OSC_SCALE);
-                        draw_text_with_font("0", gx - label_w / 2, y + height - 14, FONT_SIZE_OSC_SCALE, COLOR_TEXT);
+                        int label_w = measure_text_mono("0", FONT_SIZE_OSC_SCALE);
+                        draw_text_mono("0", gx - label_w / 2, y + height - 16, FONT_SIZE_OSC_SCALE, COLOR_TEXT);
                     } else {
                         format_time_label(time_buf, sizeof(time_buf), fabs(t));
                         // Add sign prefix for negative times
@@ -186,8 +225,8 @@ static void draw_channel_grid(float x, float y, float width, float height,
                         } else {
                             snprintf(signed_buf, sizeof(signed_buf), "+%s", time_buf);
                         }
-                        int label_w = measure_text_with_font(signed_buf, FONT_SIZE_OSC_SCALE);
-                        draw_text_with_font(signed_buf, gx - label_w / 2, y + height - 14, FONT_SIZE_OSC_SCALE, COLOR_TEXT_DIM);
+                        int label_w = measure_text_mono(signed_buf, FONT_SIZE_OSC_SCALE);
+                        draw_text_mono(signed_buf, gx - label_w / 2, y + height - 16, FONT_SIZE_OSC_SCALE, COLOR_TEXT_DIM);
                     }
                 }
                 division_count++;
@@ -197,7 +236,7 @@ static void draw_channel_grid(float x, float y, float width, float height,
             format_time_label(time_buf, sizeof(time_buf), time_division);
             char div_label[48];
             snprintf(div_label, sizeof(div_label), "%s/div", time_buf);
-            draw_text_with_font(div_label, x + 6, y + height - 18, 18, COLOR_TEXT);
+            draw_text_mono(div_label, x + 6, y + height - 20, FONT_SIZE_OSC_SCALE, COLOR_TEXT);
         } else {
             // Fallback: fixed divisions when no sample rate available
             const int fixed_divisions = 10;
@@ -337,64 +376,132 @@ void render_oscilloscope_channel(gui_app_t *app, float x, float y, float width, 
 
     // Render based on per-channel display mode
     bool is_phosphor_mode = (trig->scope_mode == SCOPE_MODE_PHOSPHOR);
+    bool is_split_mode = (trig->scope_mode == SCOPE_MODE_SPLIT);
 
-    if (is_phosphor_mode) {
+    if (is_split_mode) {
+        // Split mode: phosphor waveform on left half, FFT spectrum on right half
+        float half_width = width / 2.0f;
+        float divider_x = x + half_width;
+
+        // Left half: phosphor waveform display
+        int buf_width = (int)half_width;
+        int buf_height = (int)height;
+        int waveform_samples = samples_to_draw / 2;
+        if (waveform_samples > buf_width) waveform_samples = buf_width;
+
+        if (buf_width > 0 && buf_height > 0) {
+            // Get phosphor state for this channel
+            phosphor_rt_t *prt = (channel == 0) ? app->phosphor_a : app->phosphor_b;
+            if (prt) {
+                // Initialize/resize phosphor if needed (no-op if already correct size)
+                phosphor_rt_init(prt, buf_width, buf_height);
+
+                // Update phosphor
+                phosphor_rt_begin_frame(prt);
+                phosphor_rt_draw_waveform(prt, samples, waveform_samples, app->settings.amplitude_scale);
+                phosphor_rt_end_frame(prt);
+
+                // Render phosphor to screen
+                if (trig->phosphor_color == PHOSPHOR_COLOR_OPACITY) {
+                    phosphor_rt_render_opacity(prt, x, y);
+                } else {
+                    phosphor_rt_render(prt, x, y, false);
+                }
+            }
+
+            // Draw line overlay on phosphor (semi-transparent)
+            float waveform_center_y = y + height / 2.0f;
+            float prev_py = waveform_center_y;
+            Color waveform_color = {channel_color.r, channel_color.g, channel_color.b, 200};
+
+            for (int px = 0; px < waveform_samples; px++) {
+                waveform_sample_t *sample = &samples[px];
+                float px_x = x + px;
+                float py = waveform_center_y - sample->value * scale;
+
+                if (py < y) py = y;
+                if (py > y + height) py = y + height;
+
+                if (px > 0) {
+                    DrawLineEx((Vector2){px_x - 1, prev_py}, (Vector2){px_x, py}, 1.0f, waveform_color);
+                }
+                prev_py = py;
+            }
+        }
+
+        // Draw divider line
+        DrawLineEx((Vector2){divider_x, y}, (Vector2){divider_x, y + height}, 2.0f, COLOR_GRID_MAJOR);
+
+        // Right half: FFT spectrum
+        fft_state_t *fft = (channel == 0) ? app->fft_a : app->fft_b;
+        if (fft && fft->initialized) {
+            // Calculate display sample rate (samples per second in display space)
+            // zoom_scale = raw samples per display pixel
+            // sample_rate = raw samples per second
+            // display_sample_rate = display pixels per second = sample_rate / zoom_scale
+            uint32_t sr = atomic_load(&app->sample_rate);
+            float display_sample_rate = (trig->zoom_scale > 0 && sr > 0) ?
+                                        (float)sr / trig->zoom_scale : 0;
+
+            // Process FFT from display samples
+            gui_fft_process_display(fft, samples, samples_available, display_sample_rate);
+
+            // Render FFT spectrum to right half
+            gui_fft_render(fft, divider_x + 2, y, half_width - 4, height, display_sample_rate, channel_color, app->fonts);
+        } else {
+            // FFT not available - show message
+            const char *text = gui_fft_available() ? "FFT Initializing..." : "FFT Not Available";
+            int text_width = measure_text_with_font(text, FONT_SIZE_OSC_MSG);
+            draw_text_with_font(text, divider_x + half_width/2 - text_width/2, y + height/2 - 12,
+                               FONT_SIZE_OSC_MSG, COLOR_TEXT_DIM);
+        }
+    } else if (is_phosphor_mode) {
         // Phosphor display (digital persistence with heatmap)
         int buf_width = (int)width;
         int buf_height = (int)height;
 
-        // Initialize/resize phosphor buffers if needed
-        if (buf_width > 0 && buf_height > 0) {
-            gui_phosphor_init(app, buf_width, buf_height);
+        // Get phosphor state for this channel
+        phosphor_rt_t *prt = (channel == 0) ? app->phosphor_a : app->phosphor_b;
+        if (prt && buf_width > 0 && buf_height > 0) {
+            // Initialize/resize phosphor if needed (no-op if already correct size)
+            phosphor_rt_init(prt, buf_width, buf_height);
+
+            // Update phosphor
+            phosphor_rt_begin_frame(prt);
+            phosphor_rt_draw_waveform(prt, samples, samples_to_draw, app->settings.amplitude_scale);
+            phosphor_rt_end_frame(prt);
+
+            // Render phosphor to screen
+            if (trig->phosphor_color == PHOSPHOR_COLOR_OPACITY) {
+                phosphor_rt_render_opacity(prt, x, y);
+            } else {
+                phosphor_rt_render(prt, x, y, false);
+            }
         }
-
-        // Update and render phosphor
-        gui_phosphor_update(app, channel, samples, samples_to_draw, app->settings.amplitude_scale);
-        gui_phosphor_render(app, channel, x, y);
-    } else {
-        // Line mode: draw peak envelope as filled area
-        // Color envelope_color = { channel_color.r, channel_color.g, channel_color.b, 60 };
-
-        // for (int px = 0; px < samples_to_draw; px++) {
-        //     waveform_sample_t *sample = &samples[px];
-        //     float px_x = x + px;
-
-        //     float min_y = center_y - sample->min_val * scale;
-        //     float max_y = center_y - sample->max_val * scale;
-
-        //     // Clamp to channel bounds
-        //     if (min_y < y) min_y = y;
-        //     if (min_y > y + height) min_y = y + height;
-        //     if (max_y < y) max_y = y;
-        //     if (max_y > y + height) max_y = y + height;
-
-        //     // Draw vertical line from min to max (envelope)
-        //     if (max_y < min_y) {
-        //         DrawLineV((Vector2){px_x, max_y}, (Vector2){px_x, min_y}, envelope_color);
-        //     }
-        // }
     }
 
-    // Draw resampled waveform as connected line
-    float prev_py = center_y;
-    Color waveform_color = is_phosphor_mode ?
-        (Color){channel_color.r, channel_color.g, channel_color.b, 200} : channel_color;
+    // Draw resampled waveform as connected line (for line and phosphor modes)
+    if (!is_split_mode) {
+        float prev_py = center_y;
+        Color waveform_color = is_phosphor_mode ?
+            (Color){channel_color.r, channel_color.g, channel_color.b, 200} : channel_color;
 
-    for (int px = 0; px < samples_to_draw; px++) {
-        waveform_sample_t *sample = &samples[px];
-        float px_x = x + px;
+        for (int px = 0; px < samples_to_draw; px++) {
+            waveform_sample_t *sample = &samples[px];
+            float px_x = x + px;
 
-        float py = center_y - sample->value * scale;
+            float py = center_y - sample->value * scale;
 
-        // Clamp to channel bounds
-        if (py < y) py = y;
-        if (py > y + height) py = y + height;
+            // Clamp to channel bounds
+            if (py < y) py = y;
+            if (py > y + height) py = y + height;
 
-        if (px > 0) {
-            DrawLineEx((Vector2){px_x - 1, prev_py}, (Vector2){px_x, py}, 1.0f, waveform_color);
+            if (px > 0) {
+                DrawLineEx((Vector2){px_x - 1, prev_py}, (Vector2){px_x, py}, 1.0f, waveform_color);
+            }
+
+            prev_py = py;
         }
-
-        prev_py = py;
     }
 }
 
@@ -476,8 +583,9 @@ void handle_oscilloscope_interaction(gui_app_t *app) {
             if (wheel > 0.0f) {
                 // Scroll up = zoom in (fewer samples per pixel)
                 trig->zoom_scale /= zoom_factor;
-                if (trig->zoom_scale < ZOOM_SCALE_MIN) {
-                    trig->zoom_scale = ZOOM_SCALE_MIN;
+                // Allow going below 1.0, will be clamped in processing
+                if (trig->zoom_scale < 0.5f) {
+                    trig->zoom_scale = 0.5f;
                 }
             } else {
                 // Scroll down = zoom out (more samples per pixel)
@@ -517,11 +625,64 @@ ssize_t find_trigger_point(const int16_t *buf, size_t count,
 // Decimation and Display Buffer Processing (with libsoxr resampling)
 //-----------------------------------------------------------------------------
 
-// Resample and decimate a single channel from source buffer to its display buffer
-// Calculates waveform value and min/max for peak envelope display
-// Uses float decimation for smooth zooming
-static size_t resample_to_buffer_smooth(waveform_sample_t *dest, const int16_t *buf,
-                                         size_t num_samples, size_t start_idx, float decimation,
+#if LIBSOXR_ENABLED
+// Ensure resampler is initialized with correct decimation ratio
+// Returns the resampler handle, creating/recreating if needed
+// decimation: the zoom_scale value (samples per pixel, continuous)
+static soxr_t ensure_resampler(channel_trigger_t *trig, float decimation) {
+    // Check if we need to create or recreate the resampler
+    // Recreate if ratio changed by more than 0.1% (to avoid floating point noise)
+    float ratio_diff = fabsf(trig->resampler_ratio - decimation);
+    bool need_recreate = (trig->resampler == NULL) ||
+                         (ratio_diff > decimation * 0.001f);
+
+    if (!need_recreate) {
+        return (soxr_t)trig->resampler;
+    }
+
+    // Destroy old resampler if exists
+    if (trig->resampler) {
+        soxr_delete((soxr_t)trig->resampler);
+        trig->resampler = NULL;
+    }
+
+    // Create new resampler for this decimation ratio
+    // in_rate:out_rate = decimation:1
+    printf("Creating soxr resampler for decimation %.3f\n", decimation);
+    double in_rate = (double)decimation;
+    double out_rate = 1.0;
+
+    soxr_error_t soxr_err = NULL;
+    soxr_io_spec_t io_spec = soxr_io_spec(SOXR_FLOAT32_I, SOXR_FLOAT32_I);
+    // Use SOXR_LQ - low latency works better for non-streaming frame-by-frame processing
+    soxr_quality_spec_t qual_spec = soxr_quality_spec(SOXR_QQ, 0);
+
+    soxr_t resampler = soxr_create(in_rate, out_rate, 1, &soxr_err, &io_spec, &qual_spec, NULL);
+    if (!resampler || soxr_err) {
+        return NULL;
+    }
+
+    trig->resampler = resampler;
+    trig->resampler_ratio = decimation;
+
+    return resampler;
+}
+
+// Cleanup resampler for a channel (call on shutdown)
+static void gui_oscilloscope_cleanup_resampler(channel_trigger_t *trig) {
+    if (trig && trig->resampler) {
+        soxr_delete((soxr_t)trig->resampler);
+        trig->resampler = NULL;
+        trig->resampler_ratio = 0.0f;
+    }
+}
+#endif
+
+// Resample a single channel from source buffer to display buffer using libsoxr
+// Proper anti-alias filtering is applied during resampling
+static size_t resample_to_buffer_smooth(channel_trigger_t *trig, waveform_sample_t *dest,
+                                         const int16_t *buf, size_t num_samples,
+                                         size_t start_idx, float decimation,
                                          size_t target_width) {
     const float scale = 1.0f / 2048.0f;
 
@@ -538,35 +699,73 @@ static size_t resample_to_buffer_smooth(waveform_sample_t *dest, const int16_t *
     if (display_count > target_width) display_count = target_width;
     if (display_count == 0) return 0;
 
-    // Process each display pixel
-    for (size_t i = 0; i < display_count; i++) {
-        // Calculate source window for this pixel (floating point positions)
-        float src_start_f = (float)start_idx + (float)i * decimation;
-        float src_end_f = src_start_f + decimation;
+    // Calculate how many source samples we actually need for this display width
+    size_t source_samples_needed = (size_t)ceilf((float)display_count * decimation);
+    if (source_samples_needed > available) source_samples_needed = available;
 
-        size_t src_start = (size_t)src_start_f;
-        size_t src_end = (size_t)src_end_f;
-        if (src_end <= src_start) src_end = src_start + 1;
-        if (src_end > num_samples) src_end = num_samples;
-        if (src_start >= num_samples) break;
-
-        // Find min/max within this decimation window for peak envelope
-        int16_t min_val = buf[src_start];
-        int16_t max_val = buf[src_start];
-
-        for (size_t j = src_start + 1; j < src_end; j++) {
-            if (buf[j] < min_val) min_val = buf[j];
-            if (buf[j] > max_val) max_val = buf[j];
+#if LIBSOXR_ENABLED
+    // Bypass soxr for 1:1 ratio (no resampling needed)
+    // Use small epsilon to handle floating point imprecision
+    if (decimation >= 0.999f && decimation <= 1.001f) {
+        size_t count = (display_count < source_samples_needed) ? display_count : source_samples_needed;
+        for (size_t i = 0; i < count; i++) {
+            dest[i].value = (float)buf[start_idx + i] * scale;
         }
-
-        dest[i].min_val = (float)min_val * scale;
-        dest[i].max_val = (float)max_val * scale;
-
-        // Use first sample of decimation window for waveform value
-        dest[i].value = (float)buf[src_start] * scale;
+        return count;
     }
 
+    // Temporary buffers for float conversion
+    static float temp_input[DISPLAY_BUFFER_SIZE * 256];  // Max ~256x decimation
+    static float temp_output[DISPLAY_BUFFER_SIZE];
+
+    // Limit input size to our temp buffer
+    size_t max_input = sizeof(temp_input) / sizeof(temp_input[0]);
+    if (source_samples_needed > max_input) {
+        source_samples_needed = max_input;
+        display_count = (size_t)((float)source_samples_needed / decimation);
+        if (display_count == 0) display_count = 1;
+    }
+
+    // Convert input to float with scaling
+    for (size_t i = 0; i < source_samples_needed; i++) {
+        temp_input[i] = (float)buf[start_idx + i] * scale;
+    }
+
+    // Get or create resampler for this decimation ratio
+    soxr_t resampler = ensure_resampler(trig, decimation);
+    if (!resampler) {
+        return 0;
+    }
+
+    // Clear resampler state for fresh data each frame
+    // (we're not doing continuous streaming, each frame is independent)
+    soxr_clear(resampler);
+
+    // Process through resampler
+    size_t in_done = 0, out_done = 0;
+    soxr_error_t soxr_err = soxr_process(resampler,
+                                          temp_input, source_samples_needed, &in_done,
+                                          temp_output, display_count, &out_done);
+
+    if (soxr_err || out_done == 0) {
+        return 0;
+    }
+
+    // Copy to destination
+    for (size_t i = 0; i < out_done; i++) {
+        dest[i].value = temp_output[i];
+    }
+
+    return out_done;
+#else
+    // No libsoxr: simple point sampling (no anti-aliasing)
+    for (size_t i = 0; i < display_count; i++) {
+        size_t src_idx = start_idx + (size_t)((float)i * decimation);
+        if (src_idx >= num_samples) src_idx = num_samples - 1;
+        dest[i].value = (float)buf[src_idx] * scale;
+    }
     return display_count;
+#endif
 }
 
 bool process_channel_display(gui_app_t *app, const int16_t *buf, size_t num_samples,
@@ -593,11 +792,12 @@ bool process_channel_display(gui_app_t *app, const int16_t *buf, size_t num_samp
     // Clamp decimation to valid range
     if (decimation < ZOOM_SCALE_MIN) {
         decimation = ZOOM_SCALE_MIN;
-        trig->zoom_scale = decimation;
+        trig->zoom_scale = decimation;  // Write back to snap to 1.0
     }
     if (decimation > max_decimation) {
         decimation = max_decimation;
-        trig->zoom_scale = decimation;
+        // Don't write back - this is a temporary limit based on available data,
+        // not a user preference change. Let the user's zoom level persist.
     }
 
     // How many raw samples we need for the full display at this zoom
@@ -606,7 +806,7 @@ bool process_channel_display(gui_app_t *app, const int16_t *buf, size_t num_samp
     // If trigger is disabled, just show the start of the buffer
     if (!trig->enabled) {
         trig->trigger_display_pos = -1;
-        *display_count = resample_to_buffer_smooth(display_buf, buf, num_samples, 0, decimation, display_width);
+        *display_count = resample_to_buffer_smooth(trig, display_buf, buf, num_samples, 0, decimation, display_width);
         return true;
     }
 
@@ -614,7 +814,7 @@ bool process_channel_display(gui_app_t *app, const int16_t *buf, size_t num_samp
     // there's no room for trigger positioning - just show from start
     if (display_window >= (float)num_samples * 0.9f) {
         trig->trigger_display_pos = -1;
-        *display_count = resample_to_buffer_smooth(display_buf, buf, num_samples, 0, decimation, display_width);
+        *display_count = resample_to_buffer_smooth(trig, display_buf, buf, num_samples, 0, decimation, display_width);
         return true;
     }
 
@@ -633,7 +833,7 @@ bool process_channel_display(gui_app_t *app, const int16_t *buf, size_t num_samp
     if (min_trig_pos >= max_trig_pos) {
         // No valid range - display window too large for this buffer
         trig->trigger_display_pos = -1;
-        *display_count = resample_to_buffer_smooth(display_buf, buf, num_samples, 0, decimation, display_width);
+        *display_count = resample_to_buffer_smooth(trig, display_buf, buf, num_samples, 0, decimation, display_width);
         return true;
     }
 
@@ -648,7 +848,7 @@ bool process_channel_display(gui_app_t *app, const int16_t *buf, size_t num_samp
     // Trigger found in valid range - place it at desired position
     size_t start_pos = (size_t)((float)trig_pos - pre_trigger_raw_samples);
     trig->trigger_display_pos = (int)trigger_display_pos;
-    *display_count = resample_to_buffer_smooth(display_buf, buf, num_samples, start_pos, decimation, display_width);
+    *display_count = resample_to_buffer_smooth(trig, display_buf, buf, num_samples, start_pos, decimation, display_width);
     return true;
 }
 

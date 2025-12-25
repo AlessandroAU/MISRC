@@ -12,12 +12,24 @@
 #include "raylib.h"
 
 //-----------------------------------------------------------------------------
+// Oscilloscope Phosphor Parameters
+//-----------------------------------------------------------------------------
+
+#define SCOPE_DECAY_RATE        0.75f   // Per-frame decay (higher = slower fade)
+#define SCOPE_HIT_INCREMENT     0.25f    // Intensity added per waveform hit
+#define SCOPE_BLOOM             2.0f    // Bloom factor
+
+//-----------------------------------------------------------------------------
 // Initialization and Cleanup
 //-----------------------------------------------------------------------------
 
-// Cleanup oscilloscope resources (resamplers, temp buffers, phosphor buffers)
+// Cleanup oscilloscope resources (static state only)
 // Call on application exit
 void gui_oscilloscope_cleanup(void);
+
+// Cleanup per-channel resampler resources
+// Call when app is being destroyed
+void gui_oscilloscope_cleanup_resamplers(gui_app_t *app);
 
 //-----------------------------------------------------------------------------
 // Oscilloscope Rendering

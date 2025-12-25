@@ -9,17 +9,18 @@
 // Forward declarations
 typedef struct hsdaoh_dev hsdaoh_dev_t;
 typedef struct sc_handle sc_handle_t;
+typedef struct fft_state fft_state_t;
+typedef struct phosphor_rt phosphor_rt_t;
 
 // Display buffer size (samples per channel for oscilloscope)
 #define DISPLAY_BUFFER_SIZE 4096
 #define MAX_DEVICES 16
 #define MAX_FILENAME_LEN 256
 
-// Waveform display sample with resampled value and peak envelope
+// Waveform display sample - resampled via libsoxr with anti-aliasing
 // Values are normalized floats in range -1.0 to 1.0
 typedef struct {
     float value;              // Resampled waveform value (via libsoxr)
-    float min_val, max_val;   // Raw min/max peaks for envelope display
 } waveform_sample_t;
 
 // VU meter state - tracks positive and negative separately for AC signals
@@ -36,6 +37,7 @@ typedef struct vu_meter_state {
 typedef enum {
     SCOPE_MODE_LINE,      // Basic line waveform (fast, simple)
     SCOPE_MODE_PHOSPHOR,  // Digital phosphor with heatmap persistence
+    SCOPE_MODE_SPLIT,     // Split view: waveform left, FFT waterfall right
     SCOPE_MODE_COUNT      // Number of modes (for cycling)
 } scope_display_mode_t;
 
@@ -64,6 +66,10 @@ typedef struct {
     scope_display_mode_t scope_mode;       // Display mode for this channel (line or phosphor)
     trigger_mode_t trigger_mode;           // Trigger mode (rising edge, falling edge, CVBS)
     phosphor_color_mode_t phosphor_color;  // Phosphor color mode (heatmap or opacity)
+
+    // Resampler state (managed by gui_oscilloscope.c)
+    void *resampler;           // soxr_t handle (NULL if not initialized)
+    float resampler_ratio;     // Current decimation ratio the resampler is configured for
 } channel_trigger_t;
 
 // Zoom limits
@@ -185,15 +191,13 @@ typedef struct gui_app {
     channel_trigger_t trigger_a;
     channel_trigger_t trigger_b;
 
-    // Digital phosphor - GPU render textures (ping-pong for persistence)
-    // All rendering done on GPU: decay, bloom, and colormap in shaders
-    RenderTexture2D phosphor_rt_a[2];  // Ping-pong render textures for channel A
-    RenderTexture2D phosphor_rt_b[2];  // Ping-pong render textures for channel B
-    int phosphor_rt_index_a;           // Current buffer index for channel A (0 or 1)
-    int phosphor_rt_index_b;           // Current buffer index for channel B (0 or 1)
-    int phosphor_width;                // Current phosphor buffer width
-    int phosphor_height;               // Current phosphor buffer height
-    bool phosphor_rt_valid;            // True if render textures are initialized
+    // Digital phosphor - uses shared phosphor_rt module
+    phosphor_rt_t *phosphor_a;         // Phosphor render texture for channel A
+    phosphor_rt_t *phosphor_b;         // Phosphor render texture for channel B
+
+    // FFT state for split mode (waterfall/spectrogram display)
+    fft_state_t *fft_a;                // FFT state for channel A (NULL if not in split mode)
+    fft_state_t *fft_b;                // FFT state for channel B (NULL if not in split mode)
 
 } gui_app_t;
 
