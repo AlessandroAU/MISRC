@@ -43,35 +43,78 @@ bool gui_fft_available(void) {
 // FFT Lifecycle Management
 //-----------------------------------------------------------------------------
 
-bool gui_fft_init(fft_state_t *state) {
+// Helper: Find smallest power of 2 >= n
+static int ceil_power_of_2(int n) {
+    if (n <= 0) return 1;
+    int power = 1;
+    while (power < n) {
+        power *= 2;
+    }
+    return power;
+}
+
+// Helper: Resize FFT buffers and recreate plan for new size
+static bool fft_resize(fft_state_t *state, int new_size) {
+#if LIBFFTW_ENABLED
     if (!state) return false;
 
-    // Clear state first
-    memset(state, 0, sizeof(fft_state_t));
+    // Round up to power of 2 first
+    new_size = ceil_power_of_2(new_size);
 
-#if LIBFFTW_ENABLED
-    // Allocate FFTW input buffer (real samples)
-    state->fftw_input = (float *)fftwf_malloc(sizeof(float) * FFT_SIZE);
+    // Clamp to valid range
+    if (new_size < FFT_SIZE_MIN) new_size = FFT_SIZE_MIN;
+    if (new_size > FFT_SIZE_MAX) new_size = FFT_SIZE_MAX;
+
+    // Already the right size?
+    if (state->allocated_size == new_size && state->fftw_plan) {
+        return true;
+    }
+
+    int new_bins = new_size / 2 + 1;
+
+    // Free old resources
+    if (state->fftw_plan) {
+        fftwf_destroy_plan((fftwf_plan)state->fftw_plan);
+        state->fftw_plan = NULL;
+    }
+    if (state->fftw_input) {
+        fftwf_free(state->fftw_input);
+        state->fftw_input = NULL;
+    }
+    if (state->fftw_output) {
+        fftwf_free(state->fftw_output);
+        state->fftw_output = NULL;
+    }
+    if (state->window) {
+        free(state->window);
+        state->window = NULL;
+    }
+    if (state->magnitude) {
+        free(state->magnitude);
+        state->magnitude = NULL;
+    }
+
+    // Allocate new buffers
+    state->fftw_input = (float *)fftwf_malloc(sizeof(float) * new_size);
     if (!state->fftw_input) {
-        fprintf(stderr, "[FFT] Failed to allocate FFTW input buffer\n");
+        fprintf(stderr, "[FFT] Failed to allocate FFTW input buffer (%d)\n", new_size);
         return false;
     }
 
-    // Allocate FFTW output buffer (complex)
-    state->fftw_output = fftwf_malloc(sizeof(fftwf_complex) * FFT_BINS);
+    state->fftw_output = fftwf_malloc(sizeof(fftwf_complex) * new_bins);
     if (!state->fftw_output) {
-        fprintf(stderr, "[FFT] Failed to allocate FFTW output buffer\n");
+        fprintf(stderr, "[FFT] Failed to allocate FFTW output buffer (%d bins)\n", new_bins);
         fftwf_free(state->fftw_input);
         state->fftw_input = NULL;
         return false;
     }
 
-    // Create FFTW plan (real-to-complex, measure for best performance)
-    state->fftw_plan = fftwf_plan_dft_r2c_1d(FFT_SIZE, state->fftw_input,
+    // Create new FFTW plan
+    state->fftw_plan = fftwf_plan_dft_r2c_1d(new_size, state->fftw_input,
                                               (fftwf_complex *)state->fftw_output,
-                                              FFTW_MEASURE);
+                                              FFTW_ESTIMATE);  // Use ESTIMATE for faster plan creation
     if (!state->fftw_plan) {
-        fprintf(stderr, "[FFT] Failed to create FFTW plan\n");
+        fprintf(stderr, "[FFT] Failed to create FFTW plan for size %d\n", new_size);
         fftwf_free(state->fftw_input);
         fftwf_free(state->fftw_output);
         state->fftw_input = NULL;
@@ -80,26 +123,63 @@ bool gui_fft_init(fft_state_t *state) {
     }
 
     // Allocate Hanning window
-    state->window = (float *)malloc(sizeof(float) * FFT_SIZE);
+    state->window = (float *)malloc(sizeof(float) * new_size);
     if (!state->window) {
-        fprintf(stderr, "[FFT] Failed to allocate window buffer\n");
-        gui_fft_cleanup(state);
+        fprintf(stderr, "[FFT] Failed to allocate window buffer (%d)\n", new_size);
+        fftwf_destroy_plan((fftwf_plan)state->fftw_plan);
+        fftwf_free(state->fftw_input);
+        fftwf_free(state->fftw_output);
+        state->fftw_plan = NULL;
+        state->fftw_input = NULL;
+        state->fftw_output = NULL;
         return false;
     }
 
     // Precompute Hanning window coefficients
-    for (int i = 0; i < FFT_SIZE; i++) {
-        state->window[i] = 0.5f * (1.0f - cosf(2.0f * (float)M_PI * i / (FFT_SIZE - 1)));
+    for (int i = 0; i < new_size; i++) {
+        state->window[i] = 0.5f * (1.0f - cosf(2.0f * (float)M_PI * i / (new_size - 1)));
     }
 
-    // Allocate magnitude output buffer (normalized 0-1)
-    state->magnitude = (float *)malloc(sizeof(float) * FFT_BINS);
+    // Allocate magnitude buffer
+    state->magnitude = (float *)malloc(sizeof(float) * new_bins);
     if (!state->magnitude) {
-        fprintf(stderr, "[FFT] Failed to allocate magnitude buffer\n");
-        gui_fft_cleanup(state);
+        fprintf(stderr, "[FFT] Failed to allocate magnitude buffer (%d bins)\n", new_bins);
+        fftwf_destroy_plan((fftwf_plan)state->fftw_plan);
+        fftwf_free(state->fftw_input);
+        fftwf_free(state->fftw_output);
+        free(state->window);
+        state->fftw_plan = NULL;
+        state->fftw_input = NULL;
+        state->fftw_output = NULL;
+        state->window = NULL;
         return false;
     }
-    memset(state->magnitude, 0, sizeof(float) * FFT_BINS);
+    memset(state->magnitude, 0, sizeof(float) * new_bins);
+
+    state->fft_size = new_size;
+    state->fft_bins = new_bins;
+    state->allocated_size = new_size;
+
+    fprintf(stderr, "[FFT] Resized to %d samples (%d bins)\n", new_size, new_bins);
+    return true;
+#else
+    (void)state;
+    (void)new_size;
+    return false;
+#endif
+}
+
+bool gui_fft_init(fft_state_t *state) {
+    if (!state) return false;
+
+    // Clear state first
+    memset(state, 0, sizeof(fft_state_t));
+
+#if LIBFFTW_ENABLED
+    // Initialize with minimum size - will be resized on first process call
+    if (!fft_resize(state, FFT_SIZE_MIN)) {
+        return false;
+    }
 
     // Phosphor render textures will be created on first render (need OpenGL context)
     memset(&state->phosphor, 0, sizeof(phosphor_rt_t));
@@ -112,8 +192,8 @@ bool gui_fft_init(fft_state_t *state) {
     state->data_ready = false;
     state->initialized = true;
 
-    fprintf(stderr, "[FFT] Initialized: FFT_SIZE=%d, FFT_BINS=%d (display sample based)\n",
-            FFT_SIZE, FFT_BINS);
+    fprintf(stderr, "[FFT] Initialized with dynamic sizing (%d-%d samples)\n",
+            FFT_SIZE_MIN, FFT_SIZE_MAX);
 
     return true;
 #else
@@ -127,8 +207,8 @@ void gui_fft_clear(fft_state_t *state) {
 
 #if LIBFFTW_ENABLED
     // Clear magnitude buffer
-    if (state->magnitude) {
-        memset(state->magnitude, 0, sizeof(float) * FFT_BINS);
+    if (state->magnitude && state->fft_bins > 0) {
+        memset(state->magnitude, 0, sizeof(float) * state->fft_bins);
     }
 
     // Clear phosphor render textures
@@ -184,22 +264,54 @@ void gui_fft_process_display(fft_state_t *state, const waveform_sample_t *sample
 
     (void)display_sample_rate; // Used only for frequency axis in render
 
-    // Need at least FFT_SIZE samples
-    if (count < FFT_SIZE) return;
+    // Need minimum samples
+    if (count < FFT_SIZE_MIN) return;
 
-    // Use the most recent FFT_SIZE samples
-    size_t start = (count > FFT_SIZE) ? (count - FFT_SIZE) : 0;
+    // Determine FFT size: round UP sample count to nearest power of 2 for zero-padding
+    int target_size = ceil_power_of_2((int)count);
+    if (target_size > FFT_SIZE_MAX) target_size = FFT_SIZE_MAX;
+    if (target_size < FFT_SIZE_MIN) target_size = FFT_SIZE_MIN;
 
-    // Calculate DC offset (mean of samples) to remove from signal
-    float dc_offset = 0.0f;
-    for (int i = 0; i < FFT_SIZE; i++) {
-        dc_offset += samples[start + i].value;
+    // Resize if needed
+    if (target_size != state->fft_size) {
+        if (!fft_resize(state, target_size)) {
+            return;  // Resize failed
+        }
     }
-    dc_offset /= FFT_SIZE;
 
-    // Copy samples to FFT input with DC removal and Hanning window
-    for (int i = 0; i < FFT_SIZE; i++) {
-        state->fftw_input[i] = (samples[start + i].value - dc_offset) * state->window[i];
+    int fft_size = state->fft_size;
+    int fft_bins = state->fft_bins;
+
+    // Use all available samples (up to fft_size, but typically count < fft_size due to zero-padding)
+    size_t samples_to_use = (count > (size_t)fft_size) ? (size_t)fft_size : count;
+
+    // Calculate DC offset (mean of actual samples) to remove from signal
+    float dc_offset = 0.0f;
+    for (size_t i = 0; i < samples_to_use; i++) {
+        dc_offset += samples[i].value;
+    }
+    dc_offset /= (float)samples_to_use;
+
+    // Zero-pad symmetrically: place windowed data in center of FFT buffer
+    // This preserves phase characteristics better than one-sided padding
+    int pad_total = fft_size - (int)samples_to_use;
+    int pad_left = pad_total / 2;
+    int pad_right = pad_total - pad_left;
+
+    // Zero-pad left side
+    for (int i = 0; i < pad_left; i++) {
+        state->fftw_input[i] = 0.0f;
+    }
+
+    // Apply Hanning window to actual sample data and place in center
+    for (size_t i = 0; i < samples_to_use; i++) {
+        float window_val = 0.5f * (1.0f - cosf(2.0f * (float)M_PI * (float)i / (float)(samples_to_use - 1)));
+        state->fftw_input[pad_left + (int)i] = (samples[i].value - dc_offset) * window_val;
+    }
+
+    // Zero-pad right side
+    for (int i = 0; i < pad_right; i++) {
+        state->fftw_input[pad_left + (int)samples_to_use + i] = 0.0f;
     }
 
     // Execute FFT
@@ -207,13 +319,13 @@ void gui_fft_process_display(fft_state_t *state, const waveform_sample_t *sample
 
     // Compute magnitude in dB, then normalize to 0-1, then apply EMA smoothing
     fftwf_complex *output = (fftwf_complex *)state->fftw_output;
-    for (int j = 0; j < FFT_BINS; j++) {
+    for (int j = 0; j < fft_bins; j++) {
         float real = output[j][0];
         float imag = output[j][1];
         float mag = sqrtf(real * real + imag * imag);
 
-        // Normalize by FFT size
-        mag /= FFT_SIZE;
+        // Normalize by actual sample count (not padded size) for correct amplitude
+        mag /= (float)samples_to_use;
 
         // Convert to dB (with small epsilon to avoid log(0))
         float db = 20.0f * log10f(mag + 1e-10f);
@@ -330,13 +442,15 @@ void gui_fft_render(fft_state_t *state, float x, float y,
     phosphor_rt_begin_frame(&state->phosphor);
 
     // Draw FFT bins as connected line segments
-    if (state->magnitude && state->data_ready) {
+    if (state->magnitude && state->data_ready && state->fft_bins > 1) {
         Color lineColor = phosphor_rt_get_draw_color(&state->phosphor);
 
-        // Map FFT bins to render texture width
-        float bin_width = (float)rt_width / (float)(FFT_BINS - 1);
+        int fft_bins = state->fft_bins;
 
-        for (int bin = 0; bin < FFT_BINS - 1; bin++) {
+        // Map FFT bins to render texture width
+        float bin_width = (float)rt_width / (float)(fft_bins - 1);
+
+        for (int bin = 0; bin < fft_bins - 1; bin++) {
             float intensity1 = state->magnitude[bin];
             float intensity2 = state->magnitude[bin + 1];
 
@@ -419,11 +533,12 @@ void gui_fft_render(fft_state_t *state, float x, float y,
             div_count++;
         }
 
-        // Show frequency per division in bottom-left corner (matching oscilloscope style)
+        // Show frequency per division in top-right corner (below FFT label)
         format_freq_label(freq_buf, sizeof(freq_buf), freq_division);
         char div_label[48];
         snprintf(div_label, sizeof(div_label), "%s/div", freq_buf);
-        fft_draw_text(fonts, div_label, x + 6, y + height - 18, 18, COLOR_TEXT);
+        int div_label_w = fft_measure_text(fonts, div_label, FONT_SIZE_OSC_DIV);
+        fft_draw_text_mono(fonts, div_label, x + width - div_label_w - 8, y + 26, FONT_SIZE_OSC_DIV, COLOR_TEXT);
 
         (void)pixels_per_div; // Suppress unused warning
     }

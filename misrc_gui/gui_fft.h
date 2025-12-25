@@ -24,17 +24,18 @@
 // FFT Configuration Constants
 //-----------------------------------------------------------------------------
 
-#define FFT_SIZE              512    // FFT window size (must be <= DISPLAY_BUFFER_SIZE)
-#define FFT_BINS              (FFT_SIZE/2 + 1)     // Output bins (FFT_SIZE/2 + 1)
+// FFT size limits (dynamically sized based on available samples)
+#define FFT_SIZE_MIN          128    // Minimum FFT size
+#define FFT_SIZE_MAX          4096   // Maximum FFT size (must be <= DISPLAY_BUFFER_SIZE)
 
 // dB range for magnitude normalization
-#define FFT_DB_MIN           -80.0f   // Minimum dB (bottom of display)
+#define FFT_DB_MIN           -100.0f   // Minimum dB (bottom of display)
 #define FFT_DB_MAX             0.0f   // Maximum dB (top of display)
 
-#define FFT_DECAY_RATE        0.85f   // Per-frame decay (higher = slower fade)
+#define FFT_DECAY_RATE        0.6f   // Per-frame decay (higher = slower fade)
 #define FFT_HIT_INCREMENT     0.1f    // Intensity added per FFT hit
-#define FFT_BLOOM             2.0f    // Bloom Factor
-#define FFT_EMA_ALPHA         0.2f
+#define FFT_BLOOM             1.0f    // Bloom Factor
+#define FFT_EMA_ALPHA         0.70f
 
 //-----------------------------------------------------------------------------
 // FFT State Structure
@@ -43,14 +44,19 @@
 typedef struct fft_state {
     // FFTW state (opaque pointers to avoid requiring fftw3.h in header)
     void *fftw_plan;           // fftwf_plan
-    float *fftw_input;         // Input buffer (FFT_SIZE floats)
-    void *fftw_output;         // Output buffer (fftwf_complex, FFT_BINS)
+    float *fftw_input;         // Input buffer (fft_size floats)
+    void *fftw_output;         // Output buffer (fftwf_complex, fft_bins)
 
-    // Hanning window coefficients (precomputed)
-    float *window;             // FFT_SIZE floats
+    // Current FFT size (power of 2, dynamically adjusted)
+    int fft_size;              // Current FFT window size
+    int fft_bins;              // Output bins (fft_size/2 + 1)
+    int allocated_size;        // Size of allocated buffers (to know when to reallocate)
+
+    // Hanning window coefficients (precomputed for current size)
+    float *window;             // fft_size floats
 
     // Current FFT magnitude output (normalized 0-1)
-    float *magnitude;          // FFT_BINS floats, latest FFT result normalized
+    float *magnitude;          // fft_bins floats, latest FFT result normalized
 
     // GPU phosphor render texture (shared module)
     phosphor_rt_t phosphor;    // Reusable phosphor persistence effect

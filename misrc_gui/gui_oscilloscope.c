@@ -232,11 +232,12 @@ static void draw_channel_grid(float x, float y, float width, float height,
                 division_count++;
             }
 
-            // Show time per division in bottom-left corner (larger, more prominent)
+            // Show time per division in top-right corner (below channel label)
             format_time_label(time_buf, sizeof(time_buf), time_division);
             char div_label[48];
             snprintf(div_label, sizeof(div_label), "%s/div", time_buf);
-            draw_text_mono(div_label, x + 6, y + height - 20, FONT_SIZE_OSC_SCALE, COLOR_TEXT);
+            int div_label_w = measure_text_mono(div_label, FONT_SIZE_OSC_DIV);
+            draw_text_mono(div_label, x + width - div_label_w - 8, y + 26, FONT_SIZE_OSC_DIV, COLOR_TEXT);
         } else {
             // Fallback: fixed divisions when no sample rate available
             const int fixed_divisions = 10;
@@ -259,7 +260,7 @@ static void draw_channel_grid(float x, float y, float width, float height,
     // Border
     DrawRectangleLinesEx((Rectangle){x, y, width, height}, 1, COLOR_GRID_MAJOR);
 
-    // Amplitude scale ticks on left side
+    // Amplitude scale ticks on left side (use mono font for numbers)
     const char *tick_labels[] = { "+1", "+0.5", "0", "-0.5", "-1" };
     float tick_positions[] = { 0.0f, 0.25f, 0.5f, 0.75f, 1.0f };
     for (int i = 0; i < 5; i++) {
@@ -267,7 +268,7 @@ static void draw_channel_grid(float x, float y, float width, float height,
         // Tick mark
         DrawLineEx((Vector2){x, tick_y}, (Vector2){x + 4, tick_y}, 1.0f, COLOR_GRID_MAJOR);
         // Label (offset to not overlap with border)
-        draw_text_with_font(tick_labels[i], x + 6, tick_y - 6, FONT_SIZE_OSC_SCALE, COLOR_TEXT_DIM);
+        draw_text_mono(tick_labels[i], x + 6, tick_y - 7, FONT_SIZE_OSC_SCALE, COLOR_TEXT_DIM);
     }
 
     // Channel label in top-right corner
@@ -426,6 +427,21 @@ void render_oscilloscope_channel(gui_app_t *app, float x, float y, float width, 
                     DrawLineEx((Vector2){px_x - 1, prev_py}, (Vector2){px_x, py}, 1.0f, waveform_color);
                 }
                 prev_py = py;
+            }
+
+            // Draw time/div label for left half waveform (grid drew it at full width position)
+            if (sample_rate > 0 && trig->zoom_scale > 0) {
+                double time_per_pixel = (double)trig->zoom_scale / (double)sample_rate;
+                double rough_division = time_per_pixel * (double)GRID_MIN_SPACING_PX;
+                double time_division = snap_to_125(rough_division);
+
+                char time_buf[32];
+                format_time_label(time_buf, sizeof(time_buf), time_division);
+                char div_label[48];
+                snprintf(div_label, sizeof(div_label), "%s/div", time_buf);
+                int div_label_w = measure_text_mono(div_label, FONT_SIZE_OSC_DIV);
+                // Position at top-right of left half (not full width)
+                draw_text_mono(div_label, x + half_width - div_label_w - 8, y + 26, FONT_SIZE_OSC_DIV, COLOR_TEXT);
             }
         }
 

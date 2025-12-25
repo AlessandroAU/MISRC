@@ -34,6 +34,7 @@
 #define FONT_SIZE_STATUS       18    // Status bar text
 #define FONT_SIZE_OSC_LABEL    20    // Oscilloscope channel labels "CH A", "CH B"
 #define FONT_SIZE_OSC_SCALE    16    // Oscilloscope scale ticks "+1", "0", "-1"
+#define FONT_SIZE_OSC_DIV      18    // Oscilloscope division labels "1ms/div", "1kHz/div"
 #define FONT_SIZE_OSC_MSG      26    // Oscilloscope messages like "No Signal"
 #define FONT_SIZE_VU_SCALE     16    // VU meter scale ticks
 #define FONT_SIZE_VU_CLIP      14    // VU meter clip indicators "+CLIP", "-CLIP"
