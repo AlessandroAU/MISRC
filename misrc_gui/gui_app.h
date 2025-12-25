@@ -66,7 +66,7 @@ typedef struct {
 // Digital phosphor display settings
 #define PHOSPHOR_MAX_WIDTH 4096   // Maximum phosphor buffer width (pixels)
 #define PHOSPHOR_MAX_HEIGHT 512   // Maximum phosphor buffer height (pixels)
-#define PHOSPHOR_DECAY_RATE 0.80f // Intensity decay per frame (0-1, higher = slower fade)
+#define PHOSPHOR_DECAY_RATE 0.75f // Intensity decay per frame (0-1, higher = slower fade)
 #define PHOSPHOR_HIT_INCREMENT 0.5f // Intensity added per waveform hit (0-1)
 
 // Device info for enumeration
@@ -174,17 +174,15 @@ typedef struct gui_app {
     channel_trigger_t trigger_a;
     channel_trigger_t trigger_b;
 
-    // Digital phosphor buffers (intensity accumulation per pixel)
-    // Dynamically allocated based on actual display size
-    float *phosphor_a;            // Width x Height intensity buffer for channel A
-    float *phosphor_b;            // Width x Height intensity buffer for channel B
-    Image phosphor_image_a;       // raylib Image for channel A
-    Image phosphor_image_b;       // raylib Image for channel B
-    Texture2D phosphor_texture_a; // GPU texture for channel A (RGBA for CPU, R32F for shader)
-    Texture2D phosphor_texture_b; // GPU texture for channel B (RGBA for CPU, R32F for shader)
-    int phosphor_width;           // Current phosphor buffer width
-    int phosphor_height;          // Current phosphor buffer height
-    bool phosphor_textures_valid; // True if textures are initialized
+    // Digital phosphor - GPU render textures (ping-pong for persistence)
+    // All rendering done on GPU: decay, bloom, and colormap in shaders
+    RenderTexture2D phosphor_rt_a[2];  // Ping-pong render textures for channel A
+    RenderTexture2D phosphor_rt_b[2];  // Ping-pong render textures for channel B
+    int phosphor_rt_index_a;           // Current buffer index for channel A (0 or 1)
+    int phosphor_rt_index_b;           // Current buffer index for channel B (0 or 1)
+    int phosphor_width;                // Current phosphor buffer width
+    int phosphor_height;               // Current phosphor buffer height
+    bool phosphor_rt_valid;            // True if render textures are initialized
 
 } gui_app_t;
 

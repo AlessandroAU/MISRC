@@ -265,16 +265,14 @@ void gui_app_init(gui_app_t *app) {
     app->trigger_b.scope_mode = SCOPE_MODE_PHOSPHOR;  // Phosphor mode by default
     app->trigger_b.trigger_mode = TRIGGER_MODE_RISING;  // Rising edge by default
 
-    // Initialize phosphor display state
-    app->phosphor_a = NULL;
-    app->phosphor_b = NULL;
-    memset(&app->phosphor_image_a, 0, sizeof(Image));
-    memset(&app->phosphor_image_b, 0, sizeof(Image));
-    memset(&app->phosphor_texture_a, 0, sizeof(Texture2D));
-    memset(&app->phosphor_texture_b, 0, sizeof(Texture2D));
+    // Initialize phosphor display state (GPU render textures)
+    memset(app->phosphor_rt_a, 0, sizeof(app->phosphor_rt_a));
+    memset(app->phosphor_rt_b, 0, sizeof(app->phosphor_rt_b));
+    app->phosphor_rt_index_a = 0;
+    app->phosphor_rt_index_b = 0;
     app->phosphor_width = 0;
     app->phosphor_height = 0;
-    app->phosphor_textures_valid = false;
+    app->phosphor_rt_valid = false;
 
     // Initialize capture ringbuffer
     if (!s_rb_initialized) {

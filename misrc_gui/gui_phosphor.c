@@ -1,8 +1,13 @@
 /*
- * MISRC GUI - Digital Phosphor Display Implementation
+ * MISRC GUI - Digital Phosphor Display Implementation (GPU-Accelerated)
  *
  * Simulates analog oscilloscope phosphor persistence with heatmap coloring.
- * Uses GPU shaders for fast intensity-to-color conversion.
+ * Uses GPU render textures for accumulation/decay and shaders for effects.
+ *
+ * Architecture:
+ *   - Two RenderTexture2D per channel (ping-pong for persistence)
+ *   - Waveforms drawn directly to GPU texture via raylib primitives
+ *   - Single shader pass: decay previous frame + bloom + colormap
  */
 
 #include "gui_phosphor.h"
@@ -15,7 +20,6 @@
 // Shader Code (embedded GLSL)
 //-----------------------------------------------------------------------------
 
-// GLSL version detection based on raylib's approach
 #if defined(GRAPHICS_API_OPENGL_ES2)
     #define GLSL_VERSION_STRING "#version 100\n"
     #define GLSL_PRECISION "precision mediump float;\n"
@@ -58,16 +62,19 @@ static const char *phosphor_vs =
     "    gl_Position = mvp * vec4(vertexPosition, 1.0);\n"
     "}\n";
 
-// Fragment shader - intensity to heatmap color conversion
-static const char *phosphor_fs =
+// Fragment shader - composites previous frame with decay + applies bloom + colormap
+// Reads from previous frame texture, applies decay and bloom, outputs heatmap color
+static const char *phosphor_composite_fs =
     GLSL_VERSION_STRING
     GLSL_PRECISION
     GLSL_FRAG_IN "vec2 fragTexCoord;\n"
     GLSL_FRAG_OUT
-    "uniform sampler2D texture0;\n"
+    "uniform sampler2D texture0;\n"    // Previous frame (accumulated intensity)
+    "uniform vec2 texelSize;\n"        // 1.0 / texture dimensions
+    "uniform float decayRate;\n"       // Persistence decay (0.8 = slow fade)
     "\n"
     "vec4 intensityToHeatmap(float intensity) {\n"
-    "    if (intensity <= 0.005) return vec4(0.0, 0.0, 0.0, 0.0);\n"
+    "    if (intensity < 0.02) return vec4(0.0, 0.0, 0.0, 0.0);\n"
     "    if (intensity > 1.0) intensity = 1.0;\n"
     "\n"
     "    vec3 color;\n"
@@ -90,42 +97,136 @@ static const char *phosphor_fs =
     "}\n"
     "\n"
     "void main() {\n"
-    "    float intensity = " GLSL_TEXTURE "(texture0, fragTexCoord).r;\n"
+    "    // Sample current pixel and neighbors for bloom\n"
+    "    float center = " GLSL_TEXTURE "(texture0, fragTexCoord).r;\n"
+    "    float up1    = " GLSL_TEXTURE "(texture0, fragTexCoord + vec2(0.0, -texelSize.y)).r;\n"
+    "    float down1  = " GLSL_TEXTURE "(texture0, fragTexCoord + vec2(0.0,  texelSize.y)).r;\n"
+    "    float up2    = " GLSL_TEXTURE "(texture0, fragTexCoord + vec2(0.0, -2.0*texelSize.y)).r;\n"
+    "    float down2  = " GLSL_TEXTURE "(texture0, fragTexCoord + vec2(0.0,  2.0*texelSize.y)).r;\n"
+    "    float up3    = " GLSL_TEXTURE "(texture0, fragTexCoord + vec2(0.0, -3.0*texelSize.y)).r;\n"
+    "    float down3  = " GLSL_TEXTURE "(texture0, fragTexCoord + vec2(0.0,  3.0*texelSize.y)).r;\n"
+    "\n"
+    "    // Combine with bloom weights (vertical blur for CRT-like glow)\n"
+    "    float intensity = center + 0.5 * (up1 + down1) + 0.25 * (up2 + down2) + 0.1 * (up3 + down3);\n"
+    "    intensity = min(intensity, 1.0);\n"
+    "\n"
     "    " GLSL_FRAG_COLOR " = intensityToHeatmap(intensity);\n"
+    "}\n";
+
+// Simple decay shader - used for the persistence pass (writes to ping-pong buffer)
+// Uses higher threshold (0.02) to ensure bloom neighbors also decay fully
+static const char *phosphor_decay_fs =
+    GLSL_VERSION_STRING
+    GLSL_PRECISION
+    GLSL_FRAG_IN "vec2 fragTexCoord;\n"
+    GLSL_FRAG_OUT
+    "uniform sampler2D texture0;\n"
+    "uniform float decayRate;\n"
+    "\n"
+    "void main() {\n"
+    "    float intensity = " GLSL_TEXTURE "(texture0, fragTexCoord).r;\n"
+    "    intensity = intensity * decayRate;\n"
+    "    if (intensity < 0.001) intensity = 0.0;\n"
+    "    " GLSL_FRAG_COLOR " = vec4(intensity, 0.0, 0.0, 1.0);\n"
     "}\n";
 
 //-----------------------------------------------------------------------------
 // Shader State
 //-----------------------------------------------------------------------------
 
-static Shader phosphor_shader = {0};
-static bool phosphor_shader_loaded = false;
-static int phosphor_shader_mvp_loc = -1;
+static Shader phosphor_composite_shader = {0};
+static Shader phosphor_decay_shader = {0};
+static bool phosphor_shaders_loaded = false;
 
-static bool init_phosphor_shader(void) {
-    if (phosphor_shader_loaded) return true;
+// Composite shader uniforms
+static int composite_texelSize_loc = -1;
+static int composite_decayRate_loc = -1;
 
-    phosphor_shader = LoadShaderFromMemory(phosphor_vs, phosphor_fs);
-    if (phosphor_shader.id == 0) {
-        TraceLog(LOG_WARNING, "PHOSPHOR: Failed to load shader");
+// Decay shader uniforms
+static int decay_decayRate_loc = -1;
+
+//-----------------------------------------------------------------------------
+// Performance Tracing
+//-----------------------------------------------------------------------------
+
+#define PHOSPHOR_PERF_ENABLED 1  // Set to 0 to disable tracing
+#define PHOSPHOR_PERF_SAMPLES 60 // Rolling average over N frames
+
+typedef struct {
+    double update_times[PHOSPHOR_PERF_SAMPLES];
+    double render_times[PHOSPHOR_PERF_SAMPLES];
+    int sample_index;
+    int sample_count;
+    double last_log_time;
+} phosphor_perf_t;
+
+static phosphor_perf_t perf_a = {0};
+static phosphor_perf_t perf_b = {0};
+
+static void perf_record(phosphor_perf_t *perf, double update_ms, double render_ms) {
+    perf->update_times[perf->sample_index] = update_ms;
+    perf->render_times[perf->sample_index] = render_ms;
+    perf->sample_index = (perf->sample_index + 1) % PHOSPHOR_PERF_SAMPLES;
+    if (perf->sample_count < PHOSPHOR_PERF_SAMPLES) perf->sample_count++;
+}
+
+static void perf_log(phosphor_perf_t *perf, int channel, double now) {
+    if (perf->sample_count == 0) return;
+    // Log every 2 seconds
+    if (now - perf->last_log_time < 2.0) return;
+    perf->last_log_time = now;
+
+    double update_sum = 0, render_sum = 0;
+    double update_max = 0, render_max = 0;
+    for (int i = 0; i < perf->sample_count; i++) {
+        update_sum += perf->update_times[i];
+        render_sum += perf->render_times[i];
+        if (perf->update_times[i] > update_max) update_max = perf->update_times[i];
+        if (perf->render_times[i] > render_max) render_max = perf->render_times[i];
+    }
+    double update_avg = update_sum / perf->sample_count;
+    double render_avg = render_sum / perf->sample_count;
+
+    TraceLog(LOG_DEBUG, "PHOSPHOR CH%c: update=%.2fms (max %.2f), render=%.2fms (max %.2f), total=%.2fms",
+             channel == 0 ? 'A' : 'B',
+             update_avg, update_max, render_avg, render_max, update_avg + render_avg);
+}
+
+static bool init_phosphor_shaders(void) {
+    if (phosphor_shaders_loaded) return true;
+
+    // Load composite shader (decay + bloom + colormap)
+    phosphor_composite_shader = LoadShaderFromMemory(phosphor_vs, phosphor_composite_fs);
+    if (phosphor_composite_shader.id == 0) {
+        TraceLog(LOG_WARNING, "PHOSPHOR: Failed to load composite shader");
         return false;
     }
+    composite_texelSize_loc = GetShaderLocation(phosphor_composite_shader, "texelSize");
+    composite_decayRate_loc = GetShaderLocation(phosphor_composite_shader, "decayRate");
 
-    phosphor_shader_mvp_loc = GetShaderLocation(phosphor_shader, "mvp");
-    phosphor_shader_loaded = true;
-    TraceLog(LOG_INFO, "PHOSPHOR: GPU shader loaded successfully");
+    // Load decay shader (persistence buffer update)
+    phosphor_decay_shader = LoadShaderFromMemory(phosphor_vs, phosphor_decay_fs);
+    if (phosphor_decay_shader.id == 0) {
+        TraceLog(LOG_WARNING, "PHOSPHOR: Failed to load decay shader");
+        UnloadShader(phosphor_composite_shader);
+        return false;
+    }
+    decay_decayRate_loc = GetShaderLocation(phosphor_decay_shader, "decayRate");
+
+    phosphor_shaders_loaded = true;
+    TraceLog(LOG_INFO, "PHOSPHOR: GPU shaders loaded successfully");
     return true;
 }
 
-static void cleanup_phosphor_shader(void) {
-    if (phosphor_shader_loaded) {
-        UnloadShader(phosphor_shader);
-        phosphor_shader_loaded = false;
-        phosphor_shader.id = 0;
+static void cleanup_phosphor_shaders(void) {
+    if (phosphor_shaders_loaded) {
+        UnloadShader(phosphor_composite_shader);
+        UnloadShader(phosphor_decay_shader);
+        phosphor_shaders_loaded = false;
+        phosphor_composite_shader.id = 0;
+        phosphor_decay_shader.id = 0;
     }
 }
-
-// Color conversion is performed in the GPU fragment shader; CPU fallback removed.
 
 //-----------------------------------------------------------------------------
 // Buffer Management
@@ -141,251 +242,229 @@ bool gui_phosphor_init(gui_app_t *app, int width, int height) {
     if (height < 1) height = 1;
 
     // Check if resize needed
-    if (app->phosphor_a && app->phosphor_b &&
+    if (app->phosphor_rt_valid &&
         app->phosphor_width == width && app->phosphor_height == height) {
         return true;  // Already correct size
     }
 
-    // Free existing buffers and textures
-    if (app->phosphor_textures_valid) {
-        UnloadTexture(app->phosphor_texture_a);
-        UnloadTexture(app->phosphor_texture_b);
-        app->phosphor_textures_valid = false;
+    // Free existing render textures
+    if (app->phosphor_rt_valid) {
+        UnloadRenderTexture(app->phosphor_rt_a[0]);
+        UnloadRenderTexture(app->phosphor_rt_a[1]);
+        UnloadRenderTexture(app->phosphor_rt_b[0]);
+        UnloadRenderTexture(app->phosphor_rt_b[1]);
+        app->phosphor_rt_valid = false;
     }
-    if (app->phosphor_a) { free(app->phosphor_a); app->phosphor_a = NULL; }
-    if (app->phosphor_b) { free(app->phosphor_b); app->phosphor_b = NULL; }
 
-    // Initialize GPU shader (required)
-    if (!init_phosphor_shader()) {
-        TraceLog(LOG_WARNING, "PHOSPHOR: Failed to load shader");
+    // Initialize GPU shaders
+    if (!init_phosphor_shaders()) {
+        TraceLog(LOG_WARNING, "PHOSPHOR: Failed to load shaders");
         return false;
     }
 
-    // Allocate intensity buffers (always needed)
-    size_t float_size = (size_t)width * (size_t)height * sizeof(float);
-    app->phosphor_a = (float *)calloc(1, float_size);
-    app->phosphor_b = (float *)calloc(1, float_size);
+    // Create render textures for ping-pong (channel A)
+    app->phosphor_rt_a[0] = LoadRenderTexture(width, height);
+    app->phosphor_rt_a[1] = LoadRenderTexture(width, height);
 
-    if (!app->phosphor_a || !app->phosphor_b) {
-        if (app->phosphor_a) { free(app->phosphor_a); app->phosphor_a = NULL; }
-        if (app->phosphor_b) { free(app->phosphor_b); app->phosphor_b = NULL; }
-        app->phosphor_width = 0;
-        app->phosphor_height = 0;
+    // Create render textures for ping-pong (channel B)
+    app->phosphor_rt_b[0] = LoadRenderTexture(width, height);
+    app->phosphor_rt_b[1] = LoadRenderTexture(width, height);
+
+    // Verify all render textures loaded
+    if (app->phosphor_rt_a[0].id == 0 || app->phosphor_rt_a[1].id == 0 ||
+        app->phosphor_rt_b[0].id == 0 || app->phosphor_rt_b[1].id == 0) {
+        TraceLog(LOG_WARNING, "PHOSPHOR: Failed to create render textures");
+        // Cleanup any that did load
+        if (app->phosphor_rt_a[0].id) UnloadRenderTexture(app->phosphor_rt_a[0]);
+        if (app->phosphor_rt_a[1].id) UnloadRenderTexture(app->phosphor_rt_a[1]);
+        if (app->phosphor_rt_b[0].id) UnloadRenderTexture(app->phosphor_rt_b[0]);
+        if (app->phosphor_rt_b[1].id) UnloadRenderTexture(app->phosphor_rt_b[1]);
         return false;
     }
+
+    // Set texture filtering for smooth appearance
+    SetTextureFilter(app->phosphor_rt_a[0].texture, TEXTURE_FILTER_BILINEAR);
+    SetTextureFilter(app->phosphor_rt_a[1].texture, TEXTURE_FILTER_BILINEAR);
+    SetTextureFilter(app->phosphor_rt_b[0].texture, TEXTURE_FILTER_BILINEAR);
+    SetTextureFilter(app->phosphor_rt_b[1].texture, TEXTURE_FILTER_BILINEAR);
+
+    // Clear all render textures
+    BeginTextureMode(app->phosphor_rt_a[0]); ClearBackground(BLACK); EndTextureMode();
+    BeginTextureMode(app->phosphor_rt_a[1]); ClearBackground(BLACK); EndTextureMode();
+    BeginTextureMode(app->phosphor_rt_b[0]); ClearBackground(BLACK); EndTextureMode();
+    BeginTextureMode(app->phosphor_rt_b[1]); ClearBackground(BLACK); EndTextureMode();
 
     app->phosphor_width = width;
     app->phosphor_height = height;
+    app->phosphor_rt_index_a = 0;
+    app->phosphor_rt_index_b = 0;
+    app->phosphor_rt_valid = true;
 
-    // GPU path only: Create R32F textures (single channel float)
-    Image img_a = { .data = app->phosphor_a, .width = width, .height = height,
-                    .mipmaps = 1, .format = PIXELFORMAT_UNCOMPRESSED_R32 };
-    Image img_b = { .data = app->phosphor_b, .width = width, .height = height,
-                    .mipmaps = 1, .format = PIXELFORMAT_UNCOMPRESSED_R32 };
-
-    app->phosphor_image_a = img_a;
-    app->phosphor_image_b = img_b;
-    app->phosphor_texture_a = LoadTextureFromImage(img_a);
-    app->phosphor_texture_b = LoadTextureFromImage(img_b);
-
-    // Set texture filtering to linear for smoother appearance
-    SetTextureFilter(app->phosphor_texture_a, TEXTURE_FILTER_BILINEAR);
-    SetTextureFilter(app->phosphor_texture_b, TEXTURE_FILTER_BILINEAR);
-
-    app->phosphor_textures_valid = true;
+    TraceLog(LOG_INFO, "PHOSPHOR: Initialized %dx%d render textures", width, height);
     return true;
 }
 
 void gui_phosphor_clear(gui_app_t *app) {
-    if (!app) return;
+    if (!app || !app->phosphor_rt_valid) return;
 
-    size_t buffer_size = (size_t)app->phosphor_width * (size_t)app->phosphor_height * sizeof(float);
-    if (app->phosphor_a) memset(app->phosphor_a, 0, buffer_size);
-    if (app->phosphor_b) memset(app->phosphor_b, 0, buffer_size);
+    BeginTextureMode(app->phosphor_rt_a[0]); ClearBackground(BLACK); EndTextureMode();
+    BeginTextureMode(app->phosphor_rt_a[1]); ClearBackground(BLACK); EndTextureMode();
+    BeginTextureMode(app->phosphor_rt_b[0]); ClearBackground(BLACK); EndTextureMode();
+    BeginTextureMode(app->phosphor_rt_b[1]); ClearBackground(BLACK); EndTextureMode();
 }
 
 void gui_phosphor_cleanup(gui_app_t *app) {
     if (!app) return;
-    if (app->phosphor_textures_valid) {
-        UnloadTexture(app->phosphor_texture_a);
-        UnloadTexture(app->phosphor_texture_b);
-        app->phosphor_textures_valid = false;
+
+    if (app->phosphor_rt_valid) {
+        UnloadRenderTexture(app->phosphor_rt_a[0]);
+        UnloadRenderTexture(app->phosphor_rt_a[1]);
+        UnloadRenderTexture(app->phosphor_rt_b[0]);
+        UnloadRenderTexture(app->phosphor_rt_b[1]);
+        app->phosphor_rt_valid = false;
     }
-    if (app->phosphor_a) { free(app->phosphor_a); app->phosphor_a = NULL; }
-    if (app->phosphor_b) { free(app->phosphor_b); app->phosphor_b = NULL; }
+
     app->phosphor_width = 0;
     app->phosphor_height = 0;
 
-    // Cleanup shader (only when last app instance is done)
-    cleanup_phosphor_shader();
-}
-
-//-----------------------------------------------------------------------------
-// Drawing Helpers
-//-----------------------------------------------------------------------------
-
-// Helper to add intensity to a pixel - no bounds checking (caller must ensure validity)
-static inline void add_phosphor_hit_unchecked(float *phosphor, int idx, float amount) {
-    phosphor[idx] += amount;
-    if (phosphor[idx] > 1.0f) phosphor[idx] = 1.0f;
-}
-
-// Helper to add intensity with bounds checking (for bloom pixels)
-static inline void add_phosphor_hit(float *phosphor, int buf_width, int buf_height,
-                                     int x, int y, float amount) {
-    if (x < 0 || x >= buf_width || y < 0 || y >= buf_height) return;
-    int idx = y * buf_width + x;
-    add_phosphor_hit_unchecked(phosphor, idx, amount);
-}
-
-// Draw a line with Bresenham's algorithm and bloom effect
-// Optimized: clips line to buffer bounds, reduces per-pixel bounds checks
-static void draw_phosphor_line(float *phosphor, int buf_width, int buf_height,
-                                int x0, int y0, int x1, int y1) {
-    // Quick reject if entirely outside buffer
-    if ((x0 < 0 && x1 < 0) || (x0 >= buf_width && x1 >= buf_width) ||
-        (y0 < 0 && y1 < 0) || (y0 >= buf_height && y1 >= buf_height)) {
-        return;
-    }
-
-    int dx = abs(x1 - x0);
-    int dy = abs(y1 - y0);
-    int sx = (x0 < x1) ? 1 : -1;
-    int sy = (y0 < y1) ? 1 : -1;
-    int err = dx - dy;
-
-    // Precompute bloom values
-    const float hit_inc = PHOSPHOR_HIT_INCREMENT;
-    const float bloom1 = hit_inc * 0.4f;
-    const float bloom2 = hit_inc * 0.2f;
-
-    int x = x0, y = y0;
-    while (1) {
-        // Only process pixels within x bounds
-        if (x >= 0 && x < buf_width) {
-            // Core pixel - check y bounds once
-            if (y >= 0 && y < buf_height) {
-                int idx = y * buf_width + x;
-                add_phosphor_hit_unchecked(phosphor, idx, hit_inc);
-            }
-
-            // Bloom pixels - only check y bounds (x already validated)
-            if (y - 1 >= 0 && y - 1 < buf_height) {
-                add_phosphor_hit_unchecked(phosphor, (y - 1) * buf_width + x, bloom1);
-            }
-            if (y + 1 >= 0 && y + 1 < buf_height) {
-                add_phosphor_hit_unchecked(phosphor, (y + 1) * buf_width + x, bloom1);
-            }
-            if (y - 2 >= 0 && y - 2 < buf_height) {
-                add_phosphor_hit_unchecked(phosphor, (y - 2) * buf_width + x, bloom2);
-            }
-            if (y + 2 >= 0 && y + 2 < buf_height) {
-                add_phosphor_hit_unchecked(phosphor, (y + 2) * buf_width + x, bloom2);
-            }
-        }
-
-        if (x == x1 && y == y1) break;
-
-        int e2 = 2 * err;
-        if (e2 > -dy) { err -= dy; x += sx; }
-        if (e2 < dx) { err += dx; y += sy; }
-    }
+    cleanup_phosphor_shaders();
 }
 
 //-----------------------------------------------------------------------------
 // Rendering
 //-----------------------------------------------------------------------------
 
+// Per-channel timing storage (updated in update, logged in render)
+static double update_time_a = 0, update_time_b = 0;
+
 void gui_phosphor_update(gui_app_t *app, int channel,
                          const waveform_sample_t *samples, size_t sample_count,
                          float amplitude_scale) {
-    if (!app || !samples || sample_count < 2) return;
+    if (!app || !samples || sample_count < 2 || !app->phosphor_rt_valid) return;
 
     // Check per-channel mode
     channel_trigger_t *trig = (channel == 0) ? &app->trigger_a : &app->trigger_b;
     if (trig->scope_mode != SCOPE_MODE_PHOSPHOR) return;
 
-    float *phosphor = (channel == 0) ? app->phosphor_a : app->phosphor_b;
-    if (!phosphor) return;
+#if PHOSPHOR_PERF_ENABLED
+    double start_time = GetTime();
+#endif
+
+    // Get current render texture for this channel
+    RenderTexture2D *rt_pair = (channel == 0) ? app->phosphor_rt_a : app->phosphor_rt_b;
+    int *rt_index = (channel == 0) ? &app->phosphor_rt_index_a : &app->phosphor_rt_index_b;
+
+    int current = *rt_index;
+    int next = 1 - current;
 
     int buf_width = app->phosphor_width;
     int buf_height = app->phosphor_height;
-    if (buf_width <= 0 || buf_height <= 0) return;
 
     // Scale factor: half height = full amplitude
     float scale = amplitude_scale * 0.5f;
-    float center_y_norm = 0.5f;
+    float center_y = buf_height * 0.5f;
 
+    // === Pass 1: Apply decay to previous frame, write to next buffer ===
+    BeginTextureMode(rt_pair[next]);
+    ClearBackground(BLACK);
+
+    // Draw decayed previous frame
+    float decayRate = PHOSPHOR_DECAY_RATE;
+    SetShaderValue(phosphor_decay_shader, decay_decayRate_loc, &decayRate, SHADER_UNIFORM_FLOAT);
+    BeginShaderMode(phosphor_decay_shader);
+    // Render textures are flipped in Y, so we need to flip when drawing
+    DrawTextureRec(rt_pair[current].texture,
+                   (Rectangle){0, 0, (float)buf_width, -(float)buf_height},
+                   (Vector2){0, 0}, WHITE);
+    EndShaderMode();
+
+    // === Pass 2: Draw new waveform on top (additive) ===
+    // Use additive blending for intensity accumulation
+    BeginBlendMode(BLEND_ADDITIVE);
+
+    // Waveform color - white with hit intensity as alpha
+    // The shader will interpret red channel as intensity
+    unsigned char hit_intensity = (unsigned char)(PHOSPHOR_HIT_INCREMENT * 255.0f);
+    Color waveColor = {hit_intensity, 0, 0, 255};
+
+    // Draw waveform as connected line segments
     for (size_t i = 0; i < sample_count - 1; i++) {
-        // Get Y positions for this sample and next (normalized 0-1)
-        float y0_norm = center_y_norm - samples[i].value * scale;
-        float y1_norm = center_y_norm - samples[i + 1].value * scale;
+        float y0 = center_y - samples[i].value * scale * buf_height;
+        float y1 = center_y - samples[i + 1].value * scale * buf_height;
 
-        // Convert to pixel coordinates
-        int x0 = (int)i;
-        int x1 = (int)(i + 1);
-        int y0 = (int)(y0_norm * (float)buf_height);
-        int y1 = (int)(y1_norm * (float)buf_height);
+        float x0 = (float)i;
+        float x1 = (float)(i + 1);
 
-        // Draw line with bloom
-        draw_phosphor_line(phosphor, buf_width, buf_height, x0, y0, x1, y1);
+        // Main waveform line
+        DrawLineEx((Vector2){x0, y0}, (Vector2){x1, y1}, 1.0f, waveColor);
 
-        // Also add hits from min/max envelope for peak visibility
-        int min_y = (int)((center_y_norm - samples[i].min_val * scale) * (float)buf_height);
-        int max_y = (int)((center_y_norm - samples[i].max_val * scale) * (float)buf_height);
+        // Draw envelope (min/max peaks) with lower intensity
+        float min_y = center_y - samples[i].min_val * scale * buf_height;
+        float max_y = center_y - samples[i].max_val * scale * buf_height;
 
-        // Ensure min_y > max_y (max_y is higher on screen = lower y value)
-        if (max_y > min_y) { int t = max_y; max_y = min_y; min_y = t; }
+        if (max_y > min_y) {
+            float t = max_y; max_y = min_y; min_y = t;
+        }
 
-        // Skip envelope if x is out of bounds
-        if (x0 < 0 || x0 >= buf_width) continue;
-
-        // Clamp y range to buffer bounds (avoids per-pixel bounds check)
-        if (max_y < 0) max_y = 0;
-        if (min_y >= buf_height) min_y = buf_height - 1;
-        if (max_y > min_y) continue;  // Entirely clipped
-
-        // Fill vertical envelope - x already validated, y range clamped
-        const float envelope_intensity = PHOSPHOR_HIT_INCREMENT * 0.2f;
-        int base_idx = max_y * buf_width + x0;
-        for (int py = max_y; py <= min_y; py++) {
-            add_phosphor_hit_unchecked(phosphor, base_idx, envelope_intensity);
-            base_idx += buf_width;  // Move to next row
+        // Only draw envelope if it differs from main value
+        if (min_y - max_y > 2.0f) {
+            unsigned char env_intensity = (unsigned char)(PHOSPHOR_HIT_INCREMENT * 0.2f * 255.0f);
+            Color envColor = {env_intensity, 0, 0, 255};
+            DrawLineEx((Vector2){x0, max_y}, (Vector2){x0, min_y}, 1.0f, envColor);
         }
     }
+
+    EndBlendMode();
+    EndTextureMode();
+
+    // Swap buffers
+    *rt_index = next;
+
+#if PHOSPHOR_PERF_ENABLED
+    double elapsed = (GetTime() - start_time) * 1000.0;  // Convert to ms
+    if (channel == 0) update_time_a = elapsed;
+    else update_time_b = elapsed;
+#endif
 }
 
 void gui_phosphor_render(gui_app_t *app, int channel, float x, float y) {
-    if (!app || !app->phosphor_textures_valid) return;
+    if (!app || !app->phosphor_rt_valid) return;
 
     // Check per-channel mode
     channel_trigger_t *trig = (channel == 0) ? &app->trigger_a : &app->trigger_b;
     if (trig->scope_mode != SCOPE_MODE_PHOSPHOR) return;
 
-    float *phosphor = (channel == 0) ? app->phosphor_a : app->phosphor_b;
-    Texture2D *texture = (channel == 0) ? &app->phosphor_texture_a : &app->phosphor_texture_b;
+#if PHOSPHOR_PERF_ENABLED
+    double start_time = GetTime();
+#endif
 
-    if (!phosphor) return;
+    // Get current render texture
+    RenderTexture2D *rt_pair = (channel == 0) ? app->phosphor_rt_a : app->phosphor_rt_b;
+    int rt_index = (channel == 0) ? app->phosphor_rt_index_a : app->phosphor_rt_index_b;
+    RenderTexture2D *current_rt = &rt_pair[rt_index];
 
-    int total_pixels = app->phosphor_width * app->phosphor_height;
-    const float decay_rate = PHOSPHOR_DECAY_RATE;
-    const float threshold = 0.005f;
+    int buf_width = app->phosphor_width;
+    int buf_height = app->phosphor_height;
 
-    // GPU-only path: Upload intensity buffer directly, shader does color conversion
-    UpdateTexture(*texture, phosphor);
+    // Set up composite shader uniforms
+    float texelSize[2] = {1.0f / buf_width, 1.0f / buf_height};
+    float decayRate = PHOSPHOR_DECAY_RATE;
+    SetShaderValue(phosphor_composite_shader, composite_texelSize_loc, texelSize, SHADER_UNIFORM_VEC2);
+    SetShaderValue(phosphor_composite_shader, composite_decayRate_loc, &decayRate, SHADER_UNIFORM_FLOAT);
 
-    // Draw with shader
-    BeginShaderMode(phosphor_shader);
-    DrawTexture(*texture, (int)x, (int)y, WHITE);
+    // Draw with composite shader (applies bloom + colormap)
+    BeginShaderMode(phosphor_composite_shader);
+    // Flip Y when drawing render texture
+    DrawTextureRec(current_rt->texture,
+                   (Rectangle){0, 0, (float)buf_width, -(float)buf_height},
+                   (Vector2){x, y}, WHITE);
     EndShaderMode();
 
-    // Apply decay for next frame (still on CPU since waveform drawing is CPU-based)
-    for (int i = 0; i < total_pixels; i++) {
-        float intensity = phosphor[i];
-        if (intensity < threshold) {
-            phosphor[i] = 0.0f;
-        } else {
-            phosphor[i] = intensity * decay_rate;
-        }
-    }
+#if PHOSPHOR_PERF_ENABLED
+    double render_ms = (GetTime() - start_time) * 1000.0;
+    double update_ms = (channel == 0) ? update_time_a : update_time_b;
+    phosphor_perf_t *perf = (channel == 0) ? &perf_a : &perf_b;
+    perf_record(perf, update_ms, render_ms);
+    perf_log(perf, channel, GetTime());
+#endif
 }
