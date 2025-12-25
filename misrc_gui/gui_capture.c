@@ -14,7 +14,7 @@
 
 #include <hsdaoh.h>
 #include <hsdaoh_raw.h>
-#include "../misrc_tools/extract.h"
+#include "../misrc_common/extract.h"
 #include "../misrc_common/ringbuffer.h"
 #include "../misrc_common/threading.h"
 #include "../misrc_common/frame_parser.h"

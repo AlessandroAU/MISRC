@@ -47,7 +47,7 @@
 #endif
 
 #include "version.h"
-#include "extract.h"
+#include "../misrc_common/extract.h"
 
 #define BUFFER_SIZE 65536*32
 

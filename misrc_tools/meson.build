@@ -23,13 +23,13 @@ ldflags_capture = [
 
 sources_extract = [
   'misrc_extract.c',
-  'extract.c',
+  '../misrc_common/extract.c',
   version_target
 ]
 
 sources_capture = [
   'misrc_capture.c',
-  'extract.c',
+  '../misrc_common/extract.c',
   '../misrc_common/ringbuffer.c',
   '../misrc_common/flac_writer.c',
   '../misrc_common/frame_parser.c',
@@ -69,7 +69,7 @@ if host_cpu_family == 'x86_64'
   endif
 
   nasm_sources = [
-    'extract.asm',
+    '../misrc_common/extract.asm',
   ]
 
   nasm = find_program('nasm')
@@ -165,7 +165,7 @@ if raylib_dep.found()
     '../misrc_gui/gui_record.c',
     '../misrc_gui/gui_extract.c',
     '../misrc_gui/clay_renderer_raylib.c',
-    'extract.c',
+    '../misrc_common/extract.c',
     '../misrc_common/ringbuffer.c',
     '../misrc_common/flac_writer.c',
     '../misrc_common/frame_parser.c',

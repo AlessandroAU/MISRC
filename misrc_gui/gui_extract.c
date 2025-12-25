@@ -10,7 +10,7 @@
 #include "gui_extract.h"
 #include "gui_app.h"
 #include "gui_oscilloscope.h"
-#include "../misrc_tools/extract.h"
+#include "../misrc_common/extract.h"
 #include "../misrc_common/ringbuffer.h"
 #include "../misrc_common/threading.h"
 #include "../misrc_common/buffer.h"

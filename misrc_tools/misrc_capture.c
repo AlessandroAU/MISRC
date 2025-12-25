@@ -107,7 +107,7 @@ static const char* const _FLAC_StreamEncoderSetNumThreadsStatusString[] = {
 #include "../misrc_common/frame_parser.h"
 #include "../misrc_common/capture_handler.h"
 #include "../misrc_common/device_enum.h"
-#include "extract.h"
+#include "../misrc_common/extract.h"
 #include "wave.h"
 
 #if LIBFLAC_ENABLED == 1 && defined(FLAC_API_VERSION_CURRENT) && FLAC_API_VERSION_CURRENT >= 14
