@@ -25,10 +25,6 @@ bool gui_phosphor_init(gui_app_t *app, int width, int height);
 // Call when switching display modes or resetting view
 void gui_phosphor_clear(gui_app_t *app);
 
-// Apply decay to phosphor buffers (call each frame)
-// Reduces all pixel intensities by PHOSPHOR_DECAY_RATE
-void gui_phosphor_decay(gui_app_t *app);
-
 // Free all phosphor resources (buffers and textures)
 // Call on application cleanup
 void gui_phosphor_cleanup(gui_app_t *app);
@@ -57,12 +53,6 @@ void gui_phosphor_update(gui_app_t *app, int channel,
 //   x, y: Screen position to draw texture
 void gui_phosphor_render(gui_app_t *app, int channel, float x, float y);
 
-//-----------------------------------------------------------------------------
-// Utility Functions
-//-----------------------------------------------------------------------------
-
-// Convert intensity (0-1) to heatmap color (blue -> green -> yellow -> red)
-// Exposed for potential use in legends/UI
-Color gui_phosphor_intensity_to_color(float intensity);
+// (Intensity-to-color conversion is handled in the GPU shader.)
 
 #endif // GUI_PHOSPHOR_H

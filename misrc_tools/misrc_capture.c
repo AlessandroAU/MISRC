@@ -47,6 +47,9 @@
 #endif
 #include <time.h>
 
+#include "../misrc_common/buffer.h"
+#include "../misrc_common/threading.h"
+
 #ifndef _WIN32
 	#if defined(__APPLE__) || defined(__MACH__)
 		#include <libkern/OSByteOrder.h>
@@ -60,9 +63,6 @@
 		#include <endian.h>
 	#endif
 	#include <getopt.h>
-	#include <unistd.h>
-	#define aligned_free(x) free(x)
-	#define sleep_ms(x) usleep(x*1000)
 #else
 	#include <windows.h>
 	#include <io.h>
@@ -72,9 +72,6 @@
 	#else
 		#include "getopt/getopt.h"
 	#endif
-	#define aligned_free(x) _aligned_free(x)
-	#define aligned_alloc(a,s) _aligned_malloc(s,a)
-	#define sleep_ms(x) Sleep(x)
 	#define F_OK 0
 	#define access _access
 	#define le32toh(x) (x)

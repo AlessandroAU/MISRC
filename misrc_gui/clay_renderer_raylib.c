@@ -5,7 +5,6 @@
 
 #include <clay.h>
 #include "raylib.h"
-#include "raymath.h"
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
@@ -15,22 +14,11 @@
 #define CLAY_RECTANGLE_TO_RAYLIB_RECTANGLE(rectangle) (Rectangle) { .x = rectangle.x, .y = rectangle.y, .width = rectangle.width, .height = rectangle.height }
 #define CLAY_COLOR_TO_RAYLIB_COLOR(color) (Color) { .r = (unsigned char)roundf(color.r), .g = (unsigned char)roundf(color.g), .b = (unsigned char)roundf(color.b), .a = (unsigned char)roundf(color.a) }
 
-Camera Raylib_camera;
-
 typedef enum
 {
-    CUSTOM_LAYOUT_ELEMENT_TYPE_3D_MODEL,
     CUSTOM_LAYOUT_ELEMENT_TYPE_OSCILLOSCOPE,
     CUSTOM_LAYOUT_ELEMENT_TYPE_VU_METER
 } CustomLayoutElementType;
-
-typedef struct
-{
-    Model model;
-    float scale;
-    Vector3 position;
-    Matrix rotation;
-} CustomLayoutElement_3DModel;
 
 // Forward declarations for custom element data
 typedef struct gui_app gui_app_t;
@@ -55,60 +43,10 @@ typedef struct
 {
     CustomLayoutElementType type;
     union {
-        CustomLayoutElement_3DModel model;
         CustomLayoutElement_Oscilloscope oscilloscope;
         CustomLayoutElement_VUMeter vu_meter;
     } customData;
 } CustomLayoutElement;
-
-// Get a ray trace from the screen position (i.e mouse) within a specific section of the screen
-Ray GetScreenToWorldPointWithZDistance(Vector2 position, Camera camera, int screenWidth, int screenHeight, float zDistance)
-{
-    Ray ray = { 0 };
-
-    // Calculate normalized device coordinates
-    // NOTE: y value is negative
-    float x = (2.0f*position.x)/(float)screenWidth - 1.0f;
-    float y = 1.0f - (2.0f*position.y)/(float)screenHeight;
-    float z = 1.0f;
-
-    // Store values in a vector
-    Vector3 deviceCoords = { x, y, z };
-
-    // Calculate view matrix from camera look at
-    Matrix matView = MatrixLookAt(camera.position, camera.target, camera.up);
-
-    Matrix matProj = MatrixIdentity();
-
-    if (camera.projection == CAMERA_PERSPECTIVE)
-    {
-        // Calculate projection matrix from perspective
-        matProj = MatrixPerspective(camera.fovy*DEG2RAD, ((double)screenWidth/(double)screenHeight), 0.01f, zDistance);
-    }
-    else if (camera.projection == CAMERA_ORTHOGRAPHIC)
-    {
-        double aspect = (double)screenWidth/(double)screenHeight;
-        double top = camera.fovy/2.0;
-        double right = top*aspect;
-
-        // Calculate projection matrix from orthographic
-        matProj = MatrixOrtho(-right, right, -top, top, 0.01, 1000.0);
-    }
-
-    // Unproject far/near points
-    Vector3 nearPoint = Vector3Unproject((Vector3){ deviceCoords.x, deviceCoords.y, 0.0f }, matProj, matView);
-    Vector3 farPoint = Vector3Unproject((Vector3){ deviceCoords.x, deviceCoords.y, 1.0f }, matProj, matView);
-
-    // Calculate normalized direction vector
-    Vector3 direction = Vector3Normalize(Vector3Subtract(farPoint, nearPoint));
-
-    ray.position = farPoint;
-
-    // Apply calculated vectors to ray
-    ray.direction = direction;
-
-    return ray;
-}
 
 
 Clay_Dimensions Raylib_MeasureText(Clay_StringSlice text, Clay_TextElementConfig *config, void *userData) {
@@ -173,7 +111,7 @@ void Clay_Raylib_Close()
     CloseWindow();
 }
 
-// Forward declaration for custom rendering functions (from gui_render.h)
+// Forward declarations for custom element data (from gui_render.h)
 void render_oscilloscope_custom(Clay_BoundingBox bounds, void *osc_data);
 void render_vu_meter_custom(Clay_BoundingBox bounds, void *vu_data);
 
@@ -275,15 +213,6 @@ void Clay_Raylib_Render(Clay_RenderCommandArray renderCommands, Font* fonts)
                 CustomLayoutElement *customElement = (CustomLayoutElement *)config->customData;
                 if (!customElement) continue;
                 switch (customElement->type) {
-                    case CUSTOM_LAYOUT_ELEMENT_TYPE_3D_MODEL: {
-                        Clay_BoundingBox rootBox = renderCommands.internalArray[0].boundingBox;
-                        float scaleValue = fminf(fminf(1, 768 / rootBox.height) * fmaxf(1, rootBox.width / 1024), 1.5f);
-                        Ray positionRay = GetScreenToWorldPointWithZDistance((Vector2) { renderCommand->boundingBox.x + renderCommand->boundingBox.width / 2, renderCommand->boundingBox.y + (renderCommand->boundingBox.height / 2) + 20 }, Raylib_camera, (int)roundf(rootBox.width), (int)roundf(rootBox.height), 140);
-                        BeginMode3D(Raylib_camera);
-                            DrawModel(customElement->customData.model.model, positionRay.position, customElement->customData.model.scale * scaleValue, WHITE);
-                        EndMode3D();
-                        break;
-                    }
                     case CUSTOM_LAYOUT_ELEMENT_TYPE_OSCILLOSCOPE: {
                         render_oscilloscope_custom(boundingBox, &customElement->customData.oscilloscope);
                         break;

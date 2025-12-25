@@ -221,9 +221,6 @@ int main(int argc, char **argv) {
         // Update VU meters
         gui_app_update_vu_meters(&app, dt);
 
-        // Apply phosphor decay (before updating display buffer)
-        gui_oscilloscope_decay_phosphor(&app);
-
         // Update display buffer from capture data
         gui_app_update_display_buffer(&app);
 

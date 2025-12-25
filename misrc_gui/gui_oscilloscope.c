@@ -49,10 +49,6 @@ void gui_oscilloscope_clear_phosphor(gui_app_t *app) {
     gui_phosphor_clear(app);
 }
 
-void gui_oscilloscope_decay_phosphor(gui_app_t *app) {
-    gui_phosphor_decay(app);
-}
-
 //-----------------------------------------------------------------------------
 // Internal Helper Functions
 //-----------------------------------------------------------------------------

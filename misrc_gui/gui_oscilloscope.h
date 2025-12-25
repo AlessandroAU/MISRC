@@ -26,9 +26,6 @@ bool gui_oscilloscope_init_phosphor(gui_app_t *app, int width, int height);
 // Clear phosphor buffers (reset all intensity to zero)
 void gui_oscilloscope_clear_phosphor(gui_app_t *app);
 
-// Apply decay to phosphor buffers (call each frame)
-void gui_oscilloscope_decay_phosphor(gui_app_t *app);
-
 //-----------------------------------------------------------------------------
 // Oscilloscope Rendering
 //-----------------------------------------------------------------------------

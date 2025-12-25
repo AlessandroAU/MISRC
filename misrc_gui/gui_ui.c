@@ -48,7 +48,6 @@ static Clay_String make_string(const char *str) {
 
 // Custom element type enum (must match clay_renderer_raylib.c)
 typedef enum {
-    CUSTOM_LAYOUT_ELEMENT_TYPE_3D_MODEL,
     CUSTOM_LAYOUT_ELEMENT_TYPE_OSCILLOSCOPE,
     CUSTOM_LAYOUT_ELEMENT_TYPE_VU_METER
 } CustomLayoutElementType;

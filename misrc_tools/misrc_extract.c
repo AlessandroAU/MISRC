@@ -24,9 +24,10 @@
 #include <stdint.h>
 #include <inttypes.h>
 
+#include "../misrc_common/buffer.h"
+
 #ifndef _WIN32
 	#include <getopt.h>
-	#define aligned_free(x) free(x)
 	#define PERF_MEASURE 0
 #else
 	#include <windows.h>
@@ -37,8 +38,6 @@
 	#else
 		#include "getopt/getopt.h"
 	#endif
-	#define aligned_free(x) _aligned_free(x)
-	#define aligned_alloc(a,s) _aligned_malloc(s,a)
 	#define PERF_MEASURE 0
 #endif
 

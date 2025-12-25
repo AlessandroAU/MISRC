@@ -107,7 +107,7 @@ static bool init_phosphor_shader(void) {
 
     phosphor_shader = LoadShaderFromMemory(phosphor_vs, phosphor_fs);
     if (phosphor_shader.id == 0) {
-        TraceLog(LOG_WARNING, "PHOSPHOR: Failed to load shader, falling back to CPU rendering");
+        TraceLog(LOG_WARNING, "PHOSPHOR: Failed to load shader");
         return false;
     }
 
@@ -125,72 +125,7 @@ static void cleanup_phosphor_shader(void) {
     }
 }
 
-//-----------------------------------------------------------------------------
-// CPU Fallback: Color Lookup Table (LUT) for intensity-to-color conversion
-//-----------------------------------------------------------------------------
-
-#define PHOSPHOR_LUT_SIZE 256
-static Color phosphor_color_lut[PHOSPHOR_LUT_SIZE];
-static bool phosphor_lut_initialized = false;
-
-static void init_phosphor_lut(void) {
-    if (phosphor_lut_initialized) return;
-
-    for (int i = 0; i < PHOSPHOR_LUT_SIZE; i++) {
-        float intensity = (float)i / (float)(PHOSPHOR_LUT_SIZE - 1);
-        phosphor_color_lut[i] = gui_phosphor_intensity_to_color(intensity);
-    }
-    phosphor_lut_initialized = true;
-}
-
-static inline Color phosphor_color_from_lut(float intensity) {
-    if (intensity <= 0.005f) return (Color){0, 0, 0, 0};
-    int idx = (int)(intensity * (PHOSPHOR_LUT_SIZE - 1));
-    if (idx >= PHOSPHOR_LUT_SIZE) idx = PHOSPHOR_LUT_SIZE - 1;
-    return phosphor_color_lut[idx];
-}
-
-//-----------------------------------------------------------------------------
-// Color Conversion
-//-----------------------------------------------------------------------------
-
-// Convert intensity (0-1) to heatmap color (blue -> green -> yellow -> red)
-Color gui_phosphor_intensity_to_color(float intensity) {
-    if (intensity <= 0.005f) return (Color){0, 0, 0, 0};  // Fully transparent for very dim
-    if (intensity > 1.0f) intensity = 1.0f;
-
-    unsigned char r, g, b, a;
-
-    if (intensity < 0.25f) {
-        // Blue (cold)
-        float t = intensity / 0.25f;
-        r = 0;
-        g = (unsigned char)(20 * t);
-        b = (unsigned char)(100 + 155 * t);
-    } else if (intensity < 0.5f) {
-        // Blue to green
-        float t = (intensity - 0.25f) / 0.25f;
-        r = 0;
-        g = (unsigned char)(20 + 235 * t);
-        b = (unsigned char)(255 - 200 * t);
-    } else if (intensity < 0.75f) {
-        // Green to yellow
-        float t = (intensity - 0.5f) / 0.25f;
-        r = (unsigned char)(255 * t);
-        g = 255;
-        b = (unsigned char)(55 - 55 * t);
-    } else {
-        // Yellow to red (hot)
-        float t = (intensity - 0.75f) / 0.25f;
-        r = 255;
-        g = (unsigned char)(255 - 180 * t);
-        b = 0;
-    }
-
-    // Full opacity once visible
-    a = (unsigned char)(200 + 55 * intensity);
-    return (Color){r, g, b, a};
-}
+// Color conversion is performed in the GPU fragment shader; CPU fallback removed.
 
 //-----------------------------------------------------------------------------
 // Buffer Management
@@ -219,11 +154,12 @@ bool gui_phosphor_init(gui_app_t *app, int width, int height) {
     }
     if (app->phosphor_a) { free(app->phosphor_a); app->phosphor_a = NULL; }
     if (app->phosphor_b) { free(app->phosphor_b); app->phosphor_b = NULL; }
-    if (app->phosphor_pixels_a) { free(app->phosphor_pixels_a); app->phosphor_pixels_a = NULL; }
-    if (app->phosphor_pixels_b) { free(app->phosphor_pixels_b); app->phosphor_pixels_b = NULL; }
 
-    // Try to initialize GPU shader
-    app->phosphor_use_shader = init_phosphor_shader();
+    // Initialize GPU shader (required)
+    if (!init_phosphor_shader()) {
+        TraceLog(LOG_WARNING, "PHOSPHOR: Failed to load shader");
+        return false;
+    }
 
     // Allocate intensity buffers (always needed)
     size_t float_size = (size_t)width * (size_t)height * sizeof(float);
@@ -241,50 +177,20 @@ bool gui_phosphor_init(gui_app_t *app, int width, int height) {
     app->phosphor_width = width;
     app->phosphor_height = height;
 
-    if (app->phosphor_use_shader) {
-        // GPU path: Create R32F textures (single channel float)
-        // We upload intensity directly, shader converts to color
-        Image img_a = { .data = app->phosphor_a, .width = width, .height = height,
-                        .mipmaps = 1, .format = PIXELFORMAT_UNCOMPRESSED_R32 };
-        Image img_b = { .data = app->phosphor_b, .width = width, .height = height,
-                        .mipmaps = 1, .format = PIXELFORMAT_UNCOMPRESSED_R32 };
+    // GPU path only: Create R32F textures (single channel float)
+    Image img_a = { .data = app->phosphor_a, .width = width, .height = height,
+                    .mipmaps = 1, .format = PIXELFORMAT_UNCOMPRESSED_R32 };
+    Image img_b = { .data = app->phosphor_b, .width = width, .height = height,
+                    .mipmaps = 1, .format = PIXELFORMAT_UNCOMPRESSED_R32 };
 
-        app->phosphor_image_a = img_a;
-        app->phosphor_image_b = img_b;
-        app->phosphor_texture_a = LoadTextureFromImage(img_a);
-        app->phosphor_texture_b = LoadTextureFromImage(img_b);
+    app->phosphor_image_a = img_a;
+    app->phosphor_image_b = img_b;
+    app->phosphor_texture_a = LoadTextureFromImage(img_a);
+    app->phosphor_texture_b = LoadTextureFromImage(img_b);
 
-        // Set texture filtering to linear for smoother appearance
-        SetTextureFilter(app->phosphor_texture_a, TEXTURE_FILTER_BILINEAR);
-        SetTextureFilter(app->phosphor_texture_b, TEXTURE_FILTER_BILINEAR);
-    } else {
-        // CPU fallback: Need RGBA pixel buffers and LUT
-        init_phosphor_lut();
-
-        size_t pixel_size = (size_t)width * (size_t)height * sizeof(Color);
-        app->phosphor_pixels_a = (Color *)calloc(1, pixel_size);
-        app->phosphor_pixels_b = (Color *)calloc(1, pixel_size);
-
-        if (!app->phosphor_pixels_a || !app->phosphor_pixels_b) {
-            free(app->phosphor_a); app->phosphor_a = NULL;
-            free(app->phosphor_b); app->phosphor_b = NULL;
-            if (app->phosphor_pixels_a) { free(app->phosphor_pixels_a); app->phosphor_pixels_a = NULL; }
-            if (app->phosphor_pixels_b) { free(app->phosphor_pixels_b); app->phosphor_pixels_b = NULL; }
-            app->phosphor_width = 0;
-            app->phosphor_height = 0;
-            return false;
-        }
-
-        Image img_a = { .data = app->phosphor_pixels_a, .width = width, .height = height,
-                        .mipmaps = 1, .format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8 };
-        Image img_b = { .data = app->phosphor_pixels_b, .width = width, .height = height,
-                        .mipmaps = 1, .format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8 };
-
-        app->phosphor_image_a = img_a;
-        app->phosphor_image_b = img_b;
-        app->phosphor_texture_a = LoadTextureFromImage(img_a);
-        app->phosphor_texture_b = LoadTextureFromImage(img_b);
-    }
+    // Set texture filtering to linear for smoother appearance
+    SetTextureFilter(app->phosphor_texture_a, TEXTURE_FILTER_BILINEAR);
+    SetTextureFilter(app->phosphor_texture_b, TEXTURE_FILTER_BILINEAR);
 
     app->phosphor_textures_valid = true;
     return true;
@@ -298,14 +204,6 @@ void gui_phosphor_clear(gui_app_t *app) {
     if (app->phosphor_b) memset(app->phosphor_b, 0, buffer_size);
 }
 
-void gui_phosphor_decay(gui_app_t *app) {
-    // NOTE: Decay is now integrated into gui_phosphor_render() for better performance.
-    // This function is kept for API compatibility but does nothing.
-    // The render function applies decay during the color conversion pass,
-    // avoiding a separate iteration over the buffer.
-    (void)app;
-}
-
 void gui_phosphor_cleanup(gui_app_t *app) {
     if (!app) return;
     if (app->phosphor_textures_valid) {
@@ -315,11 +213,8 @@ void gui_phosphor_cleanup(gui_app_t *app) {
     }
     if (app->phosphor_a) { free(app->phosphor_a); app->phosphor_a = NULL; }
     if (app->phosphor_b) { free(app->phosphor_b); app->phosphor_b = NULL; }
-    if (app->phosphor_pixels_a) { free(app->phosphor_pixels_a); app->phosphor_pixels_a = NULL; }
-    if (app->phosphor_pixels_b) { free(app->phosphor_pixels_b); app->phosphor_pixels_b = NULL; }
     app->phosphor_width = 0;
     app->phosphor_height = 0;
-    app->phosphor_use_shader = false;
 
     // Cleanup shader (only when last app instance is done)
     cleanup_phosphor_shader();
@@ -476,43 +371,21 @@ void gui_phosphor_render(gui_app_t *app, int channel, float x, float y) {
     const float decay_rate = PHOSPHOR_DECAY_RATE;
     const float threshold = 0.005f;
 
-    if (app->phosphor_use_shader) {
-        // GPU shader path: Upload intensity buffer directly, shader does color conversion
-        UpdateTexture(*texture, phosphor);
+    // GPU-only path: Upload intensity buffer directly, shader does color conversion
+    UpdateTexture(*texture, phosphor);
 
-        // Draw with shader
-        BeginShaderMode(phosphor_shader);
-        DrawTexture(*texture, (int)x, (int)y, WHITE);
-        EndShaderMode();
+    // Draw with shader
+    BeginShaderMode(phosphor_shader);
+    DrawTexture(*texture, (int)x, (int)y, WHITE);
+    EndShaderMode();
 
-        // Apply decay for next frame (still on CPU since waveform drawing is CPU-based)
-        for (int i = 0; i < total_pixels; i++) {
-            float intensity = phosphor[i];
-            if (intensity < threshold) {
-                phosphor[i] = 0.0f;
-            } else {
-                phosphor[i] = intensity * decay_rate;
-            }
+    // Apply decay for next frame (still on CPU since waveform drawing is CPU-based)
+    for (int i = 0; i < total_pixels; i++) {
+        float intensity = phosphor[i];
+        if (intensity < threshold) {
+            phosphor[i] = 0.0f;
+        } else {
+            phosphor[i] = intensity * decay_rate;
         }
-    } else {
-        // CPU fallback path
-        Color *pixels = (channel == 0) ? app->phosphor_pixels_a : app->phosphor_pixels_b;
-        if (!pixels) return;
-
-        // Convert intensity to colors, then apply decay for next frame
-        for (int i = 0; i < total_pixels; i++) {
-            float intensity = phosphor[i];
-
-            if (intensity < threshold) {
-                pixels[i] = (Color){0, 0, 0, 0};
-                phosphor[i] = 0.0f;
-            } else {
-                pixels[i] = phosphor_color_from_lut(intensity);
-                phosphor[i] = intensity * decay_rate;
-            }
-        }
-
-        UpdateTexture(*texture, pixels);
-        DrawTexture(*texture, (int)x, (int)y, WHITE);
     }
 }

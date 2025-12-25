@@ -16,29 +16,13 @@
 #include <hsdaoh_raw.h>
 #include "../misrc_tools/extract.h"
 #include "../misrc_common/ringbuffer.h"
+#include "../misrc_common/threading.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
 #include <math.h>
-
-#ifndef _WIN32
-#include <unistd.h>
-#include <sys/time.h>
-#endif
-
-// Get current time in milliseconds
-static uint64_t get_time_ms(void) {
-#ifdef _WIN32
-    extern __declspec(dllimport) unsigned long __stdcall GetTickCount(void);
-    return (uint64_t)GetTickCount();
-#else
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return (uint64_t)(tv.tv_sec * 1000 + tv.tv_usec / 1000);
-#endif
-}
 
 // Buffer sizes - match reference implementation
 #define BUFFER_READ_SIZE 65536
@@ -189,15 +173,7 @@ void gui_capture_callback(void *data_info_ptr) {
     while ((buf_out = rb_write_ptr(&s_capture_rb, stream0_payload_bytes)) == NULL) {
         if (atomic_load(&do_exit)) return;
         // Sleep briefly to allow consumer to drain buffer
-        // Use Windows Sleep directly to avoid raylib conflicts
-#ifdef _WIN32
-        {
-            extern __declspec(dllimport) void __stdcall Sleep(unsigned long);
-            Sleep(4);
-        }
-#else
-        usleep(4000);
-#endif
+        thrd_sleep_ms(4);
     }
 
     // Second pass: copy payload data to ringbuffer
@@ -271,8 +247,6 @@ void gui_app_init(gui_app_t *app) {
     // Initialize phosphor display state
     app->phosphor_a = NULL;
     app->phosphor_b = NULL;
-    app->phosphor_pixels_a = NULL;
-    app->phosphor_pixels_b = NULL;
     memset(&app->phosphor_image_a, 0, sizeof(Image));
     memset(&app->phosphor_image_b, 0, sizeof(Image));
     memset(&app->phosphor_texture_a, 0, sizeof(Texture2D));
