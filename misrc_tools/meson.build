@@ -32,6 +32,8 @@ sources_capture = [
   'extract.c',
   '../misrc_common/ringbuffer.c',
   '../misrc_common/flac_writer.c',
+  '../misrc_common/frame_parser.c',
+  '../misrc_common/capture_handler.c',
   version_target
 ]
 
@@ -165,6 +167,8 @@ if raylib_dep.found()
     'extract.c',
     '../misrc_common/ringbuffer.c',
     '../misrc_common/flac_writer.c',
+    '../misrc_common/frame_parser.c',
+    '../misrc_common/capture_handler.c',
     version_target
   ]
 

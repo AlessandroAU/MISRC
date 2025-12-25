@@ -7,6 +7,7 @@
 #include "gui_ui.h"
 #include "gui_render.h"
 #include "gui_dropdown.h"
+#include "version.h"
 #include <clay.h>
 #include <stdio.h>
 #include <string.h>
@@ -93,7 +94,7 @@ static void render_toolbar(gui_app_t *app) {
         .backgroundColor = to_clay_color(COLOR_TOOLBAR_BG)
     }) {
         // Title
-        CLAY_TEXT(CLAY_STRING("MISRC Capture (Beta)"),
+        CLAY_TEXT(CLAY_STRING("MISRC Capture " MIRSC_TOOLS_VERSION),
             CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_TITLE, .textColor = to_clay_color(COLOR_TEXT) }));
 
         // Spacer

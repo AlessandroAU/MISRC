@@ -17,6 +17,8 @@
 #include "../misrc_tools/extract.h"
 #include "../misrc_common/ringbuffer.h"
 #include "../misrc_common/threading.h"
+#include "../misrc_common/frame_parser.h"
+#include "../misrc_common/capture_handler.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,9 +34,8 @@
 static ringbuffer_t s_capture_rb;
 static bool s_rb_initialized = false;
 
-// Frame tracking state (like reference implementation)
-static uint16_t s_last_frame_cnt = 0;
-static unsigned int s_in_order_cnt = 0;
+// Capture handler context (includes frame parser state)
+static capture_handler_ctx_t s_capture_handler;
 
 // Message callback for hsdaoh
 static void gui_message_callback(void *ctx, enum hsdaoh_msg_level level, const char *format, ...) {
@@ -64,6 +65,40 @@ static void gui_message_callback(void *ctx, enum hsdaoh_msg_level level, const c
 // Debug counter
 static int s_callback_count = 0;
 
+/*-----------------------------------------------------------------------------
+ * GUI-Specific Capture Handler Callbacks
+ *-----------------------------------------------------------------------------*/
+
+static void gui_sync_event_cb(void *user_ctx, frame_sync_result_t result,
+                               const metadata_t *meta, bool was_synced)
+{
+    (void)meta;
+    gui_app_t *app = (gui_app_t *)user_ctx;
+
+    switch (result) {
+        case FRAME_SYNC_LOST:
+            if (was_synced) {
+                fprintf(stderr, "[CB] Lost sync to HDMI input stream\n");
+            }
+            atomic_store(&app->stream_synced, false);
+            break;
+        case FRAME_SYNC_MISSED:
+            fprintf(stderr, "[CB] Missed frame(s)\n");
+            break;
+        case FRAME_SYNC_ACQUIRED:
+            fprintf(stderr, "[CB] Synchronized to HDMI input stream\n");
+            atomic_store(&app->stream_synced, true);
+            break;
+        case FRAME_SYNC_DUPLICATE:
+        case FRAME_SYNC_OK:
+            break;
+    }
+}
+
+/*-----------------------------------------------------------------------------
+ * Main Capture Callback
+ *-----------------------------------------------------------------------------*/
+
 // Main capture callback - writes raw data to ringbuffer (like reference implementation)
 void gui_capture_callback(void *data_info_ptr) {
     hsdaoh_data_info_t *data_info = (hsdaoh_data_info_t *)data_info_ptr;
@@ -78,6 +113,7 @@ void gui_capture_callback(void *data_info_ptr) {
 
     if (data_info->device_error) {
         atomic_store(&app->stream_synced, false);
+        s_capture_handler.frame_state.sync.stream_synced = false;
         return;
     }
 
@@ -85,45 +121,24 @@ void gui_capture_callback(void *data_info_ptr) {
     metadata_t meta;
     hsdaoh_extract_metadata(data_info->buf, &meta, data_info->width);
 
-    bool was_synced = atomic_load(&app->stream_synced);
+    bool was_synced = s_capture_handler.frame_state.sync.stream_synced;
 
-    // Validate magic number
-    if (meta.magic != HSDAOH_MAGIC) {
-        if (was_synced) {
-            fprintf(stderr, "[CB] Lost sync to HDMI input stream\n");
-        }
-        atomic_store(&app->stream_synced, false);
-        s_in_order_cnt = 0;
+    // Process frame using shared parser
+    frame_process_result_t result = frame_process(&s_capture_handler.frame_state,
+                                                   data_info->buf,
+                                                   data_info->width,
+                                                   data_info->height,
+                                                   &meta, 4);
+
+    // Handle sync state changes using shared handler
+    if (!capture_handler_process_sync_event(&s_capture_handler, result.sync_result,
+                                             &meta, was_synced)) {
+        return;  // LOST or DUPLICATE - stop processing
+    }
+
+    // Don't process until synced
+    if (!s_capture_handler.frame_state.sync.stream_synced) {
         return;
-    }
-
-    // Drop duplicate frames (like reference implementation)
-    if (meta.framecounter == s_last_frame_cnt) {
-        return;
-    }
-
-    // Check for missed frames
-    if (meta.framecounter != ((s_last_frame_cnt + 1) & 0xffff)) {
-        s_in_order_cnt = 0;
-        if (was_synced) {
-            fprintf(stderr, "[CB] Missed frame(s), fcnt %d, expected %d\n",
-                    meta.framecounter, ((s_last_frame_cnt + 1) & 0xffff));
-        }
-    } else {
-        s_in_order_cnt++;
-    }
-
-    s_last_frame_cnt = meta.framecounter;
-
-    // Don't process until we have enough in-order frames (like reference: >4)
-    if (!was_synced && s_in_order_cnt <= 4) {
-        return;
-    }
-
-    // Now consider stream synced
-    if (!was_synced) {
-        fprintf(stderr, "[CB] Synchronized to HDMI input stream\n");
-        atomic_store(&app->stream_synced, true);
     }
 
     // Update last callback time for disconnect detection
@@ -136,69 +151,35 @@ void gui_capture_callback(void *data_info_ptr) {
         atomic_store(&app->sample_rate, meta.stream_info[0].srate);
     }
 
-    // First pass: calculate total payload size and validate
-    size_t stream0_payload_bytes = 0;
-    bool has_stream_id = (meta.flags & FLAG_STREAM_ID_PRESENT) != 0;
-    bool frame_valid = true;
-
-    for (unsigned int line = 0; line < data_info->height; line++) {
-        uint8_t *line_dat = data_info->buf + (data_info->width * sizeof(uint16_t) * line);
-        uint16_t payload_len = ((uint16_t *)line_dat)[data_info->width - 1] & 0x0FFF;
-        uint16_t stream_id = has_stream_id ? (((uint16_t *)line_dat)[data_info->width - 3] & 0x0FFF) : 0;
-
-        // Validate payload length
-        if (payload_len > data_info->width - 1) {
-            fprintf(stderr, "[CB] Invalid payload length: %d\n", payload_len);
-            frame_valid = false;
-            break;
+    // Handle errors
+    if (result.error_count > 0) {
+        if (result.report_errors) {
+            fprintf(stderr, "[CB] %d frame errors\n", result.error_count);
+            atomic_fetch_add(&app->error_count, result.error_count);
         }
-
-        if (payload_len == 0) {
-            continue;
-        }
-        if (stream_id != 0) {
-            continue;
-        }
-        stream0_payload_bytes += payload_len * sizeof(uint16_t);
+        return;  // Discard frame with errors
     }
 
-    // Don't process invalid frames
-    if (!frame_valid || stream0_payload_bytes == 0) {
+    // Don't process if no payload
+    if (!result.valid || result.stream0_bytes == 0) {
         return;
     }
 
-    // Wait for ringbuffer space (like reference implementation)
-    // This ensures we don't drop frames when the consumer is slow
+    // Wait for ringbuffer space
     uint8_t *buf_out;
-    while ((buf_out = rb_write_ptr(&s_capture_rb, stream0_payload_bytes)) == NULL) {
+    while ((buf_out = rb_write_ptr(&s_capture_rb, result.stream0_bytes)) == NULL) {
         if (atomic_load(&do_exit)) return;
-        // Sleep briefly to allow consumer to drain buffer
         thrd_sleep_ms(4);
     }
 
-    // Second pass: copy payload data to ringbuffer
-    size_t offset = 0;
-    for (unsigned int line = 0; line < data_info->height; line++) {
-        uint8_t *line_dat = data_info->buf + (data_info->width * sizeof(uint16_t) * line);
-        uint16_t payload_len = ((uint16_t *)line_dat)[data_info->width - 1] & 0x0FFF;
-        uint16_t stream_id = has_stream_id ? (((uint16_t *)line_dat)[data_info->width - 3] & 0x0FFF) : 0;
+    // Copy payload data to ringbuffer (stream 0 only for GUI)
+    frame_copy_payloads(data_info->buf, data_info->width, data_info->height,
+                        &meta, buf_out, NULL);
 
-        if (payload_len == 0 || payload_len > data_info->width - 1) {
-            continue;
-        }
-        if (stream_id != 0) {
-            continue;
-        }
-
-        memcpy(buf_out + offset, line_dat, payload_len * sizeof(uint16_t));
-        offset += payload_len * sizeof(uint16_t);
-    }
-
-    // Mark write complete with actual bytes written
-    rb_write_finished(&s_capture_rb, stream0_payload_bytes);
+    rb_write_finished(&s_capture_rb, result.stream0_bytes);
 
     if (s_callback_count <= 3) {
-        fprintf(stderr, "[CB] Wrote %zu bytes to ringbuffer\n", stream0_payload_bytes);
+        fprintf(stderr, "[CB] Wrote %zu bytes to ringbuffer\n", result.stream0_bytes);
     }
 }
 
@@ -265,6 +246,14 @@ void gui_app_init(gui_app_t *app) {
             fprintf(stderr, "Capture ringbuffer initialized (%d bytes)\n", BUFFER_TOTAL_SIZE);
         }
     }
+
+    // Initialize capture handler (includes frame parser state)
+    capture_handler_init(&s_capture_handler);
+    s_capture_handler.rb_rf = &s_capture_rb;
+    s_capture_handler.capture_rf = true;
+    s_capture_handler.capture_audio = false;  // No audio capture in GUI yet
+    s_capture_handler.sync_event_cb = gui_sync_event_cb;
+    s_capture_handler.user_ctx = app;
 
     // Set render app for custom rendering
     set_render_app(app);
@@ -364,10 +353,14 @@ int gui_app_start_capture(gui_app_t *app) {
     app->display_samples_available_a = 0;
     app->display_samples_available_b = 0;
 
-    // Reset callback counter and frame tracking
+    // Reset callback counter and capture handler state
     s_callback_count = 0;
-    s_last_frame_cnt = 0;
-    s_in_order_cnt = 0;
+    capture_handler_init(&s_capture_handler);
+    s_capture_handler.rb_rf = &s_capture_rb;
+    s_capture_handler.capture_rf = true;
+    s_capture_handler.capture_audio = false;
+    s_capture_handler.sync_event_cb = gui_sync_event_cb;
+    s_capture_handler.user_ctx = app;
 
     // Open device
     fprintf(stderr, "[GUI] Allocating device...\n");

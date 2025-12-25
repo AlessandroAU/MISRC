@@ -104,6 +104,8 @@ static const char* const _FLAC_StreamEncoderSetNumThreadsStatusString[] = {
 #include "version.h"
 #include "../misrc_common/ringbuffer.h"
 #include "../misrc_common/flac_writer.h"
+#include "../misrc_common/frame_parser.h"
+#include "../misrc_common/capture_handler.h"
 #include "extract.h"
 #include "wave.h"
 
@@ -141,21 +143,12 @@ static const char* const _FLAC_StreamEncoderSetNumThreadsStatusString[] = {
 # define UNUSED(x) x
 #endif
 
+/* CLI capture context - extends capture_handler with ringbuffers */
 typedef struct {
-	ringbuffer_t rb;
-	ringbuffer_t rb_audio;
-	int hsdaoh_frames_since_error;
-	unsigned int hsdaoh_in_order_cnt;
-	unsigned int non_sync_cnt;
-	uint16_t hsdaoh_last_frame_cnt;
-	uint16_t hsdaoh_last_crc[2];
-	uint16_t hsdaoh_idle_cnt;
-	bool hsdaoh_stream_synced;
-	bool capture_rf;
-	bool capture_audio;
-	bool capture_audio_started;
-	bool capture_audio_started2;
-} capture_ctx_t;
+	capture_handler_ctx_t handler;    /* Shared capture handler context */
+	ringbuffer_t rb;                  /* RF ringbuffer (handler.rb_rf points here) */
+	ringbuffer_t rb_audio;            /* Audio ringbuffer (handler.rb_audio points here) */
+} cli_capture_ctx_t;
 
 
 typedef struct {
@@ -364,148 +357,126 @@ static void print_capture_message(void UNUSED(*ctx), enum hsdaoh_msg_level UNUSE
 	new_line = 1;
 }
 
+/* CLI sync progress callback - extends default with simple_capture warning */
+static void cli_sync_progress_cb(void *user_ctx, unsigned int non_sync_cnt)
+{
+	(void)user_ctx;
+	capture_handler_default_progress(NULL, non_sync_cnt);
+	if (non_sync_cnt == 500 && sc_dev) {
+		print_capture_message(NULL, HSDAOH_ERROR, "Verify that your device does not modify the video data!\n");
+	}
+}
+
+/* CLI sync event callback - handles sync state changes with CLI-specific messages */
+static void cli_sync_event_cb(void *user_ctx, frame_sync_result_t result,
+                               const metadata_t *meta, bool was_synced)
+{
+	cli_capture_ctx_t *ctx = (cli_capture_ctx_t *)user_ctx;
+
+	switch (result) {
+		case FRAME_SYNC_LOST:
+			if (was_synced)
+				print_capture_message(NULL, HSDAOH_ERROR, "Lost sync to HDMI input stream\n");
+			break;
+		case FRAME_SYNC_DUPLICATE:
+			break;
+		case FRAME_SYNC_MISSED:
+			print_capture_message(NULL, HSDAOH_ERROR, "Missed at least one frame, fcnt %d, expected %d!\n",
+			                      meta->framecounter, ((ctx->handler.frame_state.sync.last_frame_cnt) & 0xffff));
+			break;
+		case FRAME_SYNC_ACQUIRED:
+			print_capture_message(NULL, HSDAOH_INFO, "Syncronized to HDMI input stream\n MISRC uses CRC: %s\n MISRC uses stream ids: %s\n",
+			                      yesno[((meta->crc_config == CRC_NONE) ? 0 : 1)],
+			                      yesno[((meta->flags & FLAG_STREAM_ID_PRESENT) ? 1 : 0)]);
+			if (ctx->handler.capture_audio) {
+				if ((meta->flags & FLAG_STREAM_ID_PRESENT)) {
+					print_capture_message(NULL, HSDAOH_INFO, "Wait for RF and audio syncronisation...\n");
+				} else {
+					print_capture_message(NULL, HSDAOH_CRITICAL, "MISRC does not transmit audio, cannot capture audio!\n");
+					do_exit = 1;
+				}
+			}
+			break;
+		case FRAME_SYNC_OK:
+			break;
+	}
+}
+
+/* CLI audio sync callback - notifies when audio is synced */
+static void cli_audio_sync_cb(void *user_ctx, bool synced)
+{
+	(void)user_ctx;
+	if (synced) {
+		print_capture_message(NULL, HSDAOH_INFO, "Audio and RF now in sync\n");
+	}
+}
+
 static void hsdaoh_callback(hsdaoh_data_info_t *data_info)
 {
-	capture_ctx_t *cap_ctx = data_info->ctx;
-	metadata_t meta;
-	uint32_t stream0_payload_bytes = 0;
-	uint32_t stream1_payload_bytes = 0;
-	int frame_errors = 0;
-	uint8_t *buf_out;
-	uint8_t *buf_out_audio;
-
-	if (do_exit)
+	cli_capture_ctx_t *ctx = data_info->ctx;
+	if (do_exit || !ctx)
 		return;
 
-	if(cap_ctx) {
-		hsdaoh_extract_metadata(data_info->buf, &meta, data_info->width);
+	capture_handler_ctx_t *handler = &ctx->handler;
 
-		if(!cap_ctx->hsdaoh_stream_synced) {
-			if(cap_ctx->non_sync_cnt%5==0) fprintf(stderr,"\033[A\33[2K\r Received %i frames without sync...\n",cap_ctx->non_sync_cnt+1);
-			if(cap_ctx->non_sync_cnt == 500) {
-				print_capture_message(NULL,HSDAOH_ERROR," Received more than 500 corrupted frames! Check connection!\n");
-				if (sc_dev) print_capture_message(NULL,HSDAOH_ERROR,"Verify that your device does not modify the video data!\n");
-			}
-		}
+	metadata_t meta;
+	hsdaoh_extract_metadata(data_info->buf, &meta, data_info->width);
 
-		if (le32toh(meta.magic) != HSDAOH_MAGIC) {
-			if (cap_ctx->hsdaoh_stream_synced) {
-				print_capture_message(NULL,HSDAOH_ERROR,"Lost sync to HDMI input stream\n");
-			}
-			cap_ctx->hsdaoh_stream_synced = false;
-			cap_ctx->non_sync_cnt++;
-			return;
-		}
+	bool was_synced = handler->frame_state.sync.stream_synced;
+	if (!was_synced && handler->progress_cb)
+		handler->progress_cb(handler->user_ctx, handler->frame_state.sync.non_sync_cnt);
 
-		/* drop duplicated frames */
-		if (meta.framecounter == cap_ctx->hsdaoh_last_frame_cnt)
-			return;
+	/* Process frame */
+	frame_process_result_t result = frame_process(&handler->frame_state,
+	                                               data_info->buf,
+	                                               data_info->width,
+	                                               data_info->height,
+	                                               &meta, 4);
 
-		if (meta.framecounter != ((cap_ctx->hsdaoh_last_frame_cnt + 1) & 0xffff)) {
-			cap_ctx->hsdaoh_in_order_cnt = 0;
-			if (cap_ctx->hsdaoh_stream_synced)
-				print_capture_message(NULL,HSDAOH_ERROR,"Missed at least one frame, fcnt %d, expected %d!\n",
-					meta.framecounter, ((cap_ctx->hsdaoh_last_frame_cnt + 1) & 0xffff));
-		} else
-			cap_ctx->hsdaoh_in_order_cnt++;
+	/* Handle sync events using shared module */
+	if (!capture_handler_process_sync_event(handler, result.sync_result, &meta, was_synced))
+		return;
 
-		cap_ctx->hsdaoh_last_frame_cnt = meta.framecounter;
+	/* Handle errors */
+	if (result.error_count > 0 && result.report_errors) {
+		print_capture_message(NULL, HSDAOH_ERROR, "%d frame errors, %d frames since last error\n",
+		                      result.error_count, handler->frame_state.frames_since_error);
+		return;
+	}
 
-		if (cap_ctx->capture_rf) while((buf_out = rb_write_ptr(&cap_ctx->rb, data_info->len))==NULL) {
+	if (!result.valid)
+		return;
+
+	/* Allocate ringbuffer space */
+	uint8_t *buf_out = NULL;
+	uint8_t *buf_out_audio = NULL;
+
+	if (handler->capture_rf) {
+		while ((buf_out = rb_write_ptr(&ctx->rb, data_info->len)) == NULL) {
 			if (do_exit) return;
-			print_capture_message(NULL,HSDAOH_WARNING,"Cannot get space in ringbuffer for next frame (RF)\n");
+			print_capture_message(NULL, HSDAOH_WARNING, "Cannot get space in ringbuffer for next frame (RF)\n");
 			sleep_ms(4);
-		}
-
-		if (cap_ctx->capture_audio) while((buf_out_audio = rb_write_ptr(&cap_ctx->rb_audio, data_info->len))==NULL) {
-			if (do_exit) return;
-			print_capture_message(NULL,HSDAOH_WARNING,"Cannot get space in ringbuffer for next frame (audio)\n");
-			sleep_ms(4);
-		}
-
-		for (unsigned int i = 0; i < data_info->height; i++) {
-			uint8_t *line_dat = data_info->buf + (data_info->width * sizeof(uint16_t) * i);
-
-			/* extract number of payload words from reserved field at end of line */
-			uint16_t payload_len = le16toh(((uint16_t *)line_dat)[data_info->width - 1]);
-			uint16_t crc = le16toh(((uint16_t *)line_dat)[data_info->width - 2]);
-			uint16_t stream_id = (meta.flags & FLAG_STREAM_ID_PRESENT) ? le16toh(((uint16_t *)line_dat)[data_info->width - 3]) : 0;
-
-			/* we only use 12 bits, the upper 4 bits are reserved for the metadata */
-			payload_len &= 0x0fff;
-
-			if (payload_len > data_info->width-1) {
-				if (cap_ctx->hsdaoh_stream_synced) {
-					print_capture_message(NULL,HSDAOH_ERROR,"Invalid payload length: %d\n", payload_len);
-					/* discard frame */
-					return;
-				}
-				cap_ctx->non_sync_cnt++;
-				return;
-			}
-
-			uint16_t idle_len = (data_info->width-1) - payload_len - ((meta.flags & FLAG_STREAM_ID_PRESENT) ? 1 : 0) - ((meta.crc_config == CRC_NONE) ? 0 : 1);
-			frame_errors += hsdaoh_check_idle_cnt(&cap_ctx->hsdaoh_idle_cnt, (uint16_t *)line_dat + payload_len, idle_len);
-
-			if ((meta.crc_config == CRC16_1_LINE) || (meta.crc_config == CRC16_2_LINE)) {
-				uint16_t expected_crc = (meta.crc_config == CRC16_1_LINE) ? cap_ctx->hsdaoh_last_crc[0] : cap_ctx->hsdaoh_last_crc[1];
-
-				if ((crc != expected_crc) && cap_ctx->hsdaoh_stream_synced)
-					frame_errors++;
-
-				cap_ctx->hsdaoh_last_crc[1] = cap_ctx->hsdaoh_last_crc[0];
-				cap_ctx->hsdaoh_last_crc[0] = crc16_ccitt(line_dat, data_info->width * sizeof(uint16_t));
-			}
-
-			if (payload_len > 0 && cap_ctx->hsdaoh_stream_synced) {
-				if (cap_ctx->capture_rf && stream_id == 0 && (!cap_ctx->capture_audio || cap_ctx->capture_audio_started)) {
-					memcpy(buf_out + stream0_payload_bytes, line_dat, payload_len * sizeof(uint16_t));
-					//fprintf(stderr,"rf line, length: %i\n", payload_len * sizeof(uint16_t));
-					stream0_payload_bytes += payload_len * sizeof(uint16_t);
-				}
-				else if (cap_ctx->capture_audio && stream_id == 1) {
-					if(cap_ctx->capture_audio_started2) {
-						memcpy(buf_out_audio + stream1_payload_bytes, line_dat, payload_len * sizeof(uint16_t));
-						//fprintf(stderr,"audio line, length: %i\n", payload_len * sizeof(uint16_t));
-						stream1_payload_bytes += payload_len * sizeof(uint16_t);
-					}
-					else {
-						if (cap_ctx->capture_audio_started) {
-							cap_ctx->capture_audio_started2 = true;
-							print_capture_message(NULL,HSDAOH_INFO,"Audio and RF now in sync\n");
-						}
-						else
-							cap_ctx->capture_audio_started = true;
-					}
-				}
-			}
-		}
-
-		if (frame_errors && cap_ctx->hsdaoh_stream_synced) {
-			print_capture_message(NULL,HSDAOH_ERROR,"%d frame errors, %d frames since last error\n", frame_errors, cap_ctx->hsdaoh_frames_since_error);
-			cap_ctx->hsdaoh_frames_since_error = 0;
-		} else {
-			cap_ctx->hsdaoh_frames_since_error++;
-			if (cap_ctx->capture_rf) rb_write_finished(&cap_ctx->rb, stream0_payload_bytes);
-			if (cap_ctx->capture_audio) rb_write_finished(&cap_ctx->rb_audio, stream1_payload_bytes);
-		}
-		if (!cap_ctx->hsdaoh_stream_synced && !frame_errors && (cap_ctx->hsdaoh_in_order_cnt > 4)) {
-			print_capture_message(NULL, HSDAOH_INFO, "Syncronized to HDMI input stream\n MISRC uses CRC: %s\n MISRC uses stream ids: %s\n",
-									yesno[((meta.crc_config == CRC_NONE) ? 0 : 1)], yesno[((meta.flags & FLAG_STREAM_ID_PRESENT) ? 1 : 0)]);
-			if (cap_ctx->capture_audio) {
-				if ((meta.flags & FLAG_STREAM_ID_PRESENT)) {
-					print_capture_message(NULL,HSDAOH_INFO,"Wait for RF and audio syncronisation...\n");
-				}
-				else {
-					print_capture_message(NULL,HSDAOH_CRITICAL,"MISRC does not transmit audio, cannot capture audio!\n");
-					do_exit = 1;
-					return;
-				}
-			}
-			cap_ctx->hsdaoh_stream_synced = true;
-			cap_ctx->non_sync_cnt = 0;
 		}
 	}
+
+	if (handler->capture_audio) {
+		while ((buf_out_audio = rb_write_ptr(&ctx->rb_audio, data_info->len)) == NULL) {
+			if (do_exit) return;
+			print_capture_message(NULL, HSDAOH_WARNING, "Cannot get space in ringbuffer for next frame (audio)\n");
+			sleep_ms(4);
+		}
+	}
+
+	/* Copy payloads with audio sync filtering using shared module */
+	frame_copy_payloads_cb(data_info->buf, data_info->width, data_info->height,
+	                        &meta, buf_out, buf_out_audio,
+	                        capture_handler_audio_filter, handler);
+
+	/* Commit to ringbuffers */
+	if (handler->capture_rf)
+		rb_write_finished(&ctx->rb, result.stream0_bytes);
+	if (handler->capture_audio)
+		rb_write_finished(&ctx->rb_audio, result.stream1_bytes);
 }
 
 int audio_file_writer(void *ctx)
@@ -879,8 +850,14 @@ int main(int argc, char **argv)
 	bool reduce_8bit[] = {false, false};
 #endif
 	thrd_start_t output_thread_func = (thrd_start_t)raw_file_writer;
-	capture_ctx_t cap_ctx;
-	memset(&cap_ctx,0,sizeof(cap_ctx));
+	cli_capture_ctx_t cap_ctx;
+	memset(&cap_ctx, 0, sizeof(cap_ctx));
+	capture_handler_init(&cap_ctx.handler);
+	/* Set up CLI-specific callbacks */
+	cap_ctx.handler.progress_cb = cli_sync_progress_cb;
+	cap_ctx.handler.sync_event_cb = cli_sync_event_cb;
+	cap_ctx.handler.audio_sync_cb = cli_audio_sync_cb;
+	cap_ctx.handler.user_ctx = &cap_ctx;
 
 	// getopt string
 	char getopt_string[256];
@@ -1081,7 +1058,7 @@ int main(int argc, char **argv)
 		usage();
 	}
 	else {
-		cap_ctx.capture_rf = true;
+		cap_ctx.handler.capture_rf = true;
 	}
 
 #if LIBSOXR_ENABLED == 1
@@ -1214,7 +1191,7 @@ int main(int argc, char **argv)
 	{
 		//opening output file audio
 		if (open_file(&(thread_audio_ctx.f_4ch), output_name_4ch_audio, overwrite_files)) return -ENOENT;
-		cap_ctx.capture_audio = true;
+		cap_ctx.handler.capture_audio = true;
 	}
 
 	for(int i=0; i<2; i++) {
@@ -1222,7 +1199,7 @@ int main(int argc, char **argv)
 		{
 			//opening output file audio
 			if (open_file(&(thread_audio_ctx.f_2ch[i]), output_names_2ch_audio[i], overwrite_files)) return -ENOENT;
-			cap_ctx.capture_audio = true;
+			cap_ctx.handler.capture_audio = true;
 		}
 	}
 
@@ -1231,7 +1208,7 @@ int main(int argc, char **argv)
 		{
 			//opening output file audio
 			if (open_file(&(thread_audio_ctx.f_1ch[i]), output_names_1ch_audio[i], overwrite_files)) return -ENOENT;
-			cap_ctx.capture_audio = true;
+			cap_ctx.handler.capture_audio = true;
 		}
 	}
 
@@ -1247,8 +1224,9 @@ int main(int argc, char **argv)
 		if (open_file(&output_raw, output_name_raw, overwrite_files)) return -ENOENT;
 	}
 
-	if(cap_ctx.capture_audio) {
+	if(cap_ctx.handler.capture_audio) {
 		rb_init(&cap_ctx.rb_audio,"capture_audio_ringbuffer",BUFFER_AUDIO_TOTAL_SIZE);
+		cap_ctx.handler.rb_audio = &cap_ctx.rb_audio;
 		thread_audio_ctx.rb = &cap_ctx.rb_audio;
 		r = thrd_create(&thread_audio, &audio_file_writer, &thread_audio_ctx);
 		if (r != thrd_success) {
@@ -1260,6 +1238,7 @@ int main(int argc, char **argv)
 	conv_function = get_conv_function(0, pad, (out_size==2) ? 0 : 1, plevel, output_names[0], output_names[1]);
 
 	rb_init(&cap_ctx.rb,"capture_ringbuffer",BUFFER_TOTAL_SIZE);
+	cap_ctx.handler.rb_rf = &cap_ctx.rb;
 
 	if (sc_dev_name) {
 		r = sc_start_capture(sc_dev_name, 1920, 1080, SC_CODEC_YUYV, 60, 1, (sc_frame_callback_t)hsdaoh_callback, &cap_ctx, &sc_dev);
