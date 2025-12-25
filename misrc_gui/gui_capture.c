@@ -14,8 +14,8 @@
 
 #include <hsdaoh.h>
 #include <hsdaoh_raw.h>
-#include "../extract.h"
-#include "../ringbuffer.h"
+#include "../misrc_tools/extract.h"
+#include "../misrc_common/ringbuffer.h"
 
 #include <stdio.h>
 #include <stdlib.h>

@@ -13,7 +13,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
-#include "../ringbuffer.h"
+#include "../misrc_common/ringbuffer.h"
 
 // Forward declarations
 typedef struct gui_app gui_app_t;

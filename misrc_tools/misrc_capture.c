@@ -105,7 +105,7 @@ static const char* const _FLAC_StreamEncoderSetNumThreadsStatusString[] = {
 #include "simple_capture/simple_capture.h"
 
 #include "version.h"
-#include "ringbuffer.h"
+#include "../misrc_common/ringbuffer.h"
 #include "extract.h"
 #include "wave.h"
 

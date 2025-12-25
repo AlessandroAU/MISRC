@@ -30,7 +30,7 @@ sources_extract = [
 sources_capture = [
   'misrc_capture.c',
   'extract.c',
-  'ringbuffer.c',
+  '../misrc_common/ringbuffer.c',
   version_target
 ]
 
@@ -150,19 +150,19 @@ raylib_dep = dependency('raylib', required: false)
 
 if raylib_dep.found()
   sources_gui = [
-    'misrc_gui/misrc_gui.c',
-    'misrc_gui/gui_ui.c',
-    'misrc_gui/gui_render.c',
-    'misrc_gui/gui_oscilloscope.c',
-    'misrc_gui/gui_phosphor.c',
-    'misrc_gui/gui_dropdown.c',
-    'misrc_gui/gui_trigger.c',
-    'misrc_gui/gui_capture.c',
-    'misrc_gui/gui_record.c',
-    'misrc_gui/gui_extract.c',
-    'misrc_gui/clay_renderer_raylib.c',
+    '../misrc_gui/misrc_gui.c',
+    '../misrc_gui/gui_ui.c',
+    '../misrc_gui/gui_render.c',
+    '../misrc_gui/gui_oscilloscope.c',
+    '../misrc_gui/gui_phosphor.c',
+    '../misrc_gui/gui_dropdown.c',
+    '../misrc_gui/gui_trigger.c',
+    '../misrc_gui/gui_capture.c',
+    '../misrc_gui/gui_record.c',
+    '../misrc_gui/gui_extract.c',
+    '../misrc_gui/clay_renderer_raylib.c',
     'extract.c',
-    'ringbuffer.c',
+    '../misrc_common/ringbuffer.c',
     version_target
   ]
 

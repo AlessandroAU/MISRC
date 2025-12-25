@@ -11,7 +11,7 @@
 #include "gui_app.h"
 #include "gui_extract.h"
 
-#include "../ringbuffer.h"
+#include "../misrc_common/ringbuffer.h"
 
 #include <stdio.h>
 #include <stdlib.h>
