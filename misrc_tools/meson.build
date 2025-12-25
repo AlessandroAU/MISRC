@@ -35,6 +35,8 @@ sources_capture = [
   '../misrc_common/frame_parser.c',
   '../misrc_common/capture_handler.c',
   '../misrc_common/device_enum.c',
+  '../misrc_common/file_utils.c',
+  '../misrc_common/ringbuffer_writer.c',
   version_target
 ]
 
@@ -160,6 +162,7 @@ if raylib_dep.found()
     '../misrc_gui/gui_oscilloscope.c',
     '../misrc_gui/gui_phosphor.c',
     '../misrc_gui/gui_dropdown.c',
+    '../misrc_gui/gui_popup.c',
     '../misrc_gui/gui_trigger.c',
     '../misrc_gui/gui_capture.c',
     '../misrc_gui/gui_record.c',
@@ -171,6 +174,8 @@ if raylib_dep.found()
     '../misrc_common/frame_parser.c',
     '../misrc_common/capture_handler.c',
     '../misrc_common/device_enum.c',
+    '../misrc_common/file_utils.c',
+    '../misrc_common/ringbuffer_writer.c',
     version_target
   ]
 

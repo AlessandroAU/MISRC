@@ -85,6 +85,7 @@ static void gui_sync_event_cb(void *user_ctx, frame_sync_result_t result,
             break;
         case FRAME_SYNC_MISSED:
             fprintf(stderr, "[CB] Missed frame(s)\n");
+            atomic_fetch_add(&app->missed_frame_count, 1);
             break;
         case FRAME_SYNC_ACQUIRED:
             fprintf(stderr, "[CB] Synchronized to HDMI input stream\n");
@@ -360,6 +361,7 @@ int gui_app_start_capture(gui_app_t *app) {
     atomic_store(&app->samples_a, 0);
     atomic_store(&app->samples_b, 0);
     atomic_store(&app->frame_count, 0);
+    atomic_store(&app->missed_frame_count, 0);
     atomic_store(&app->error_count, 0);
     atomic_store(&app->error_count_a, 0);
     atomic_store(&app->error_count_b, 0);

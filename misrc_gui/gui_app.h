@@ -127,6 +127,7 @@ typedef struct gui_app {
     atomic_uint_fast64_t samples_a;         // Per-channel sample count
     atomic_uint_fast64_t samples_b;
     atomic_uint_fast32_t frame_count;
+    atomic_uint_fast32_t missed_frame_count;  // Missed frames from sync events
     atomic_uint_fast32_t error_count;
     atomic_uint_fast32_t error_count_a;     // Per-channel error counts
     atomic_uint_fast32_t error_count_b;

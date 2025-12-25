@@ -108,7 +108,8 @@ static const char* const _FLAC_StreamEncoderSetNumThreadsStatusString[] = {
 #include "../misrc_common/capture_handler.h"
 #include "../misrc_common/device_enum.h"
 #include "../misrc_common/extract.h"
-#include "wave.h"
+#include "../misrc_common/wave.h"
+#include "../misrc_common/file_utils.h"
 
 #if LIBFLAC_ENABLED == 1 && defined(FLAC_API_VERSION_CURRENT) && FLAC_API_VERSION_CURRENT >= 14
 #include "numcores.h"
@@ -753,25 +754,6 @@ int flac_file_writer(void *ctx)
 }
 #endif
 
-int open_file(FILE **f, char *filename, bool overwrite)
-{
-	if (strcmp(filename, "-") == 0) { // Write to stdout
-		*f = stdout;
-		return 0;
-	}
-	if (access(filename, F_OK) == 0 && !overwrite) {
-		char ch = 0;
-		fprintf(stderr, "File '%s' already exists. Overwrite? (y/n) ", filename);
-		scanf(" %c",&ch);
-		if (ch != 'y' && ch != 'Y') return -1;
-	}
-	*f = fopen(filename, "wb");
-	if (!(*f)) {
-		fprintf(stderr, "Failed to open %s\n", filename);
-		return -2;
-	}
-	return 0;
-}
 
 static bool str_starts_with(const char *restrict prefixA, const char *restrict prefixB, size_t *prefixLen, const char *restrict string)
 {
@@ -1136,7 +1118,7 @@ int main(int argc, char **argv)
 #endif
 	for(int i=0; i<2; i++) {
 		if (output_names[i] != NULL) {
-			if (open_file(&(thread_out_ctx[i].f),output_names[i],overwrite_files)) return -ENOENT;
+			if (file_open_write(&(thread_out_ctx[i].f),output_names[i],overwrite_files,true)) return -ENOENT;
 			thread_out_ctx[i].reduce_8bit = reduce_8bit[i];
 			if (out_size == 4) {
 				thread_out_ctx[i].init_scale = (reduce_8bit[i]) ? ((pad==1) ? 256.0 : 4096.0) : 65536.0;
@@ -1172,7 +1154,7 @@ int main(int argc, char **argv)
 	if(output_name_4ch_audio != NULL)
 	{
 		//opening output file audio
-		if (open_file(&(thread_audio_ctx.f_4ch), output_name_4ch_audio, overwrite_files)) return -ENOENT;
+		if (file_open_write(&(thread_audio_ctx.f_4ch), output_name_4ch_audio, overwrite_files, true)) return -ENOENT;
 		cap_ctx.handler.capture_audio = true;
 	}
 
@@ -1180,7 +1162,7 @@ int main(int argc, char **argv)
 		if(output_names_2ch_audio[i] != NULL)
 		{
 			//opening output file audio
-			if (open_file(&(thread_audio_ctx.f_2ch[i]), output_names_2ch_audio[i], overwrite_files)) return -ENOENT;
+			if (file_open_write(&(thread_audio_ctx.f_2ch[i]), output_names_2ch_audio[i], overwrite_files, true)) return -ENOENT;
 			cap_ctx.handler.capture_audio = true;
 		}
 	}
@@ -1189,7 +1171,7 @@ int main(int argc, char **argv)
 		if(output_names_1ch_audio[i] != NULL)
 		{
 			//opening output file audio
-			if (open_file(&(thread_audio_ctx.f_1ch[i]), output_names_1ch_audio[i], overwrite_files)) return -ENOENT;
+			if (file_open_write(&(thread_audio_ctx.f_1ch[i]), output_names_1ch_audio[i], overwrite_files, true)) return -ENOENT;
 			cap_ctx.handler.capture_audio = true;
 		}
 	}
@@ -1197,13 +1179,13 @@ int main(int argc, char **argv)
 	if(output_name_aux != NULL)
 	{
 		//opening output file aux
-		if (open_file(&output_aux, output_name_aux, overwrite_files)) return -ENOENT;
+		if (file_open_write(&output_aux, output_name_aux, overwrite_files, true)) return -ENOENT;
 	}
 
 	if(output_name_raw != NULL)
 	{
 		//opening output file raw
-		if (open_file(&output_raw, output_name_raw, overwrite_files)) return -ENOENT;
+		if (file_open_write(&output_raw, output_name_raw, overwrite_files, true)) return -ENOENT;
 	}
 
 	if(cap_ctx.handler.capture_audio) {

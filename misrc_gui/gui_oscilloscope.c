@@ -7,6 +7,7 @@
 #include "gui_oscilloscope.h"
 #include "gui_phosphor.h"
 #include "gui_trigger.h"
+#include "gui_popup.h"
 #include "gui_ui.h"
 #include <math.h>
 #include <stdio.h>
@@ -223,26 +224,26 @@ void render_oscilloscope_channel(gui_app_t *app, float x, float y, float width, 
         gui_phosphor_render(app, channel, x, y);
     } else {
         // Line mode: draw peak envelope as filled area
-        Color envelope_color = { channel_color.r, channel_color.g, channel_color.b, 60 };
+        // Color envelope_color = { channel_color.r, channel_color.g, channel_color.b, 60 };
 
-        for (int px = 0; px < samples_to_draw; px++) {
-            waveform_sample_t *sample = &samples[px];
-            float px_x = x + px;
+        // for (int px = 0; px < samples_to_draw; px++) {
+        //     waveform_sample_t *sample = &samples[px];
+        //     float px_x = x + px;
 
-            float min_y = center_y - sample->min_val * scale;
-            float max_y = center_y - sample->max_val * scale;
+        //     float min_y = center_y - sample->min_val * scale;
+        //     float max_y = center_y - sample->max_val * scale;
 
-            // Clamp to channel bounds
-            if (min_y < y) min_y = y;
-            if (min_y > y + height) min_y = y + height;
-            if (max_y < y) max_y = y;
-            if (max_y > y + height) max_y = y + height;
+        //     // Clamp to channel bounds
+        //     if (min_y < y) min_y = y;
+        //     if (min_y > y + height) min_y = y + height;
+        //     if (max_y < y) max_y = y;
+        //     if (max_y > y + height) max_y = y + height;
 
-            // Draw vertical line from min to max (envelope)
-            if (max_y < min_y) {
-                DrawLineV((Vector2){px_x, max_y}, (Vector2){px_x, min_y}, envelope_color);
-            }
-        }
+        //     // Draw vertical line from min to max (envelope)
+        //     if (max_y < min_y) {
+        //         DrawLineV((Vector2){px_x, max_y}, (Vector2){px_x, min_y}, envelope_color);
+        //     }
+        // }
     }
 
     // Draw resampled waveform as connected line
@@ -359,8 +360,10 @@ void handle_oscilloscope_interaction(gui_app_t *app) {
         }
     }
 
-    // Change cursor when hovering over oscilloscope
-    if (hover_channel >= 0 || s_dragging_channel >= 0) {
+    // Change cursor when hovering over oscilloscope (but not when popup is open)
+    if (gui_popup_is_open()) {
+        SetMouseCursor(MOUSE_CURSOR_DEFAULT);
+    } else if (hover_channel >= 0 || s_dragging_channel >= 0) {
         SetMouseCursor(MOUSE_CURSOR_CROSSHAIR);
     } else {
         SetMouseCursor(MOUSE_CURSOR_DEFAULT);

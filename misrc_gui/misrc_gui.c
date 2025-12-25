@@ -13,6 +13,7 @@
 
 #include "raylib.h"
 #include "inter_font_data.h"
+#include "space_mono_font_data.h"
 
 #include "gui_app.h"
 #include "gui_ui.h"
@@ -20,6 +21,8 @@
 #include "gui_capture.h"
 #include "gui_oscilloscope.h"
 #include "gui_dropdown.h"
+#include "gui_popup.h"
+#include "gui_record.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,7 +32,8 @@
 volatile atomic_int do_exit = 0;
 
 // Font array for Clay
-#define FONT_COUNT 1
+// Index 0: Inter (general UI), Index 1: Space Mono (monospace sections)
+#define FONT_COUNT 2
 static Font fonts[FONT_COUNT];
 
 // Clay error handler
@@ -66,11 +70,21 @@ int main(int argc, char **argv) {
     // Font data is ~342KB and embedded as a C array for complete portability
     fonts[0] = LoadFontFromMemory(".ttf", inter_font_data, inter_font_data_size, 32, NULL, 256);
     if (fonts[0].texture.id == 0) {
-        fprintf(stderr, "Error: Failed to load embedded font data\n");
+        fprintf(stderr, "Error: Failed to load embedded Inter font data\n");
         CloseWindow();
         return 1;
     }
     SetTextureFilter(fonts[0].texture, TEXTURE_FILTER_BILINEAR);
+
+    // Load embedded Space Mono font directly from memory (SIL Open Font License)
+    // Font data is embedded as a C array for complete portability
+    fonts[1] = LoadFontFromMemory(".ttf", space_mono_font_data, space_mono_font_data_size, 32, NULL, 256);
+    if (fonts[1].texture.id == 0) {
+        fprintf(stderr, "Error: Failed to load embedded Space Mono font data\n");
+        CloseWindow();
+        return 1;
+    }
+    SetTextureFilter(fonts[1].texture, TEXTURE_FILTER_BILINEAR);
 
     // Initialize Clay
     uint64_t clay_memory_size = Clay_MinMemorySize();
@@ -123,28 +137,42 @@ int main(int argc, char **argv) {
             });
         }
 
+        // Check for pending popup result (for async confirmations like file overwrite)
+        gui_record_check_popup(&app);
+
         // Handle keyboard shortcuts
-        if (IsKeyPressed(KEY_ESCAPE)) {
-            if (app.settings_panel_open) {
-                app.settings_panel_open = false;
-            } else {
-                gui_dropdown_close_all();
+        // Popup gets priority for keyboard input
+        if (gui_popup_is_open()) {
+            if (IsKeyPressed(KEY_ESCAPE)) {
+                gui_popup_dismiss();
+            } else if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER)) {
+                // Enter confirms (equivalent to clicking Yes/OK)
+                // This is handled by simulating a click - we'll let the popup handle it
+                // For now, ESC dismisses and the popup buttons handle confirmation
             }
-        }
-
-        if (IsKeyPressed(KEY_SPACE) && !app.settings_panel_open) {
-            if (app.is_capturing) {
-                gui_app_stop_capture(&app);
-            } else {
-                gui_app_start_capture(&app);
+        } else {
+            if (IsKeyPressed(KEY_ESCAPE)) {
+                if (app.settings_panel_open) {
+                    app.settings_panel_open = false;
+                } else {
+                    gui_dropdown_close_all();
+                }
             }
-        }
 
-        if (IsKeyPressed(KEY_R) && app.is_capturing && !app.settings_panel_open) {
-            if (app.is_recording) {
-                gui_app_stop_recording(&app);
-            } else {
-                gui_app_start_recording(&app);
+            if (IsKeyPressed(KEY_SPACE) && !app.settings_panel_open) {
+                if (app.is_capturing) {
+                    gui_app_stop_capture(&app);
+                } else {
+                    gui_app_start_capture(&app);
+                }
+            }
+
+            if (IsKeyPressed(KEY_R) && app.is_capturing && !app.settings_panel_open) {
+                if (app.is_recording) {
+                    gui_app_stop_recording(&app);
+                } else {
+                    gui_app_start_recording(&app);
+                }
             }
         }
 
@@ -245,9 +273,12 @@ int main(int argc, char **argv) {
     gui_app_cleanup(&app);
     free(clay_memory);
 
-    // Unload font if we loaded a TTF (not the default font)
+    // Unload fonts if we loaded TTFs (not the default font)
     if (fonts[0].texture.id != 0 && fonts[0].texture.id != GetFontDefault().texture.id) {
         UnloadFont(fonts[0]);
+    }
+    if (fonts[1].texture.id != 0 && fonts[1].texture.id != GetFontDefault().texture.id) {
+        UnloadFont(fonts[1]);
     }
 
     CloseWindow();

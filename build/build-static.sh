@@ -133,12 +133,13 @@ mkdir -p "${WORKSPACE}/include"
 cp clay.h "${WORKSPACE}/include/"
 
 # ----------------------------------------------------------------------------
-# Embed Inter font: unzip assets and generate C header for standalone GUI
+# Embed fonts: unzip assets and generate C headers for standalone GUI
+# Inter font for general UI, Space Mono for monospace sections
 # ----------------------------------------------------------------------------
 ASSETS_DIR="$REPO_ROOT/assets/fonts"
-FONT_ZIP="$ASSETS_DIR/Inter.zip"
+INTER_ZIP="$ASSETS_DIR/Inter.zip"
+SPACE_MONO_ZIP="$ASSETS_DIR/Space_Mono.zip"
 GEN_SCRIPT="$ASSETS_DIR/generate_font_header.py"
-HEADER_OUT="$REPO_ROOT/misrc_gui/inter_font_data.h"
 
 # Choose python executable for header generation
 if command -v python3 >/dev/null 2>&1; then
@@ -149,38 +150,46 @@ else
   PYTHON=""
 fi
 
-# If a font zip is present, ensure it's extracted and header generated
-if [[ -f "$FONT_ZIP" ]]; then
+# Extract Inter font if present
+if [[ -f "$INTER_ZIP" ]]; then
   mkdir -p "$ASSETS_DIR"
   # Extract using unzip only (no Python fallback)
-  EXTRACTED=0
   if command -v unzip >/dev/null 2>&1; then
-    if unzip -o "$FONT_ZIP" -d "$ASSETS_DIR"; then
-      EXTRACTED=1
+    if unzip -o "$INTER_ZIP" -d "$ASSETS_DIR"; then
+      echo "Extracted Inter font"
     fi
   else
-    echo "Warning: 'unzip' not found; skipping font extraction"
+    echo "Warning: 'unzip' not found; skipping Inter font extraction"
   fi
+fi
 
-  # Generate the embedded font header if script and Python exist
-  HEADER_OK=0
-  if [[ -n "$PYTHON" && -f "$GEN_SCRIPT" ]]; then
-    echo "Generating embedded font header via $GEN_SCRIPT"
-    if (cd "$REPO_ROOT" && "$PYTHON" "$GEN_SCRIPT"); then
-      HEADER_OK=1
-    else
-      echo "Warning: Font header generation failed"
+# Extract Space Mono font if present
+if [[ -f "$SPACE_MONO_ZIP" ]]; then
+  mkdir -p "$ASSETS_DIR"
+  # Extract using unzip only (no Python fallback)
+  if command -v unzip >/dev/null 2>&1; then
+    if unzip -o "$SPACE_MONO_ZIP" -d "$ASSETS_DIR"; then
+      echo "Extracted Space Mono font"
     fi
   else
-    echo "Warning: Python or generate_font_header.py not found; skipping font header generation"
+    echo "Warning: 'unzip' not found; skipping Space Mono font extraction"
   fi
+fi
 
-  # Cleanup extracted files after successful header generation
-  if [[ "$EXTRACTED" -eq 1 && "$HEADER_OK" -eq 1 ]]; then
+# Generate both embedded font headers if script and Python exist
+if [[ -n "$PYTHON" && -f "$GEN_SCRIPT" ]]; then
+  echo "Generating embedded font headers via $GEN_SCRIPT"
+  if (cd "$REPO_ROOT" && "$PYTHON" "$GEN_SCRIPT"); then
+    echo "Font headers generated successfully"
+    # Cleanup extracted files after successful header generation
     echo "Cleaning up extracted font files..."
     rm -rf "$ASSETS_DIR/static" 2>/dev/null || true
     rm -f "$ASSETS_DIR"/*.ttf "$ASSETS_DIR"/OFL.txt "$ASSETS_DIR"/README.txt 2>/dev/null || true
+  else
+    echo "Warning: Font header generation failed"
   fi
+else
+  echo "Warning: Python or generate_font_header.py not found; skipping font header generation"
 fi
 
 cd ../misrc_tools

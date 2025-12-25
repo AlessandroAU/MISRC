@@ -10,6 +10,7 @@
 #include "gui_record.h"
 #include "gui_app.h"
 #include "gui_extract.h"
+#include "gui_popup.h"
 
 #include "../misrc_common/ringbuffer.h"
 #include "../misrc_common/flac_writer.h"
@@ -21,8 +22,32 @@
 #include <string.h>
 #include <stdatomic.h>
 
+#include <sys/stat.h>
+
+#if defined(_WIN32) || defined(_WIN64)
+#include <io.h>
+#define access _access
+#define F_OK 0
+#define stat _stat
+#else
+#include <unistd.h>
+#endif
+
 // Buffer sizes
 #define BUFFER_READ_SIZE 65536
+
+// Format file size into human-readable string
+static void format_file_size(off_t size, char *buf, size_t buf_size) {
+    if (size >= 1073741824) {  // >= 1 GB
+        snprintf(buf, buf_size, "%.2f GB", (double)size / 1073741824.0);
+    } else if (size >= 1048576) {  // >= 1 MB
+        snprintf(buf, buf_size, "%.2f MB", (double)size / 1048576.0);
+    } else if (size >= 1024) {  // >= 1 KB
+        snprintf(buf, buf_size, "%.2f KB", (double)size / 1024.0);
+    } else {
+        snprintf(buf, buf_size, "%lld bytes", (long long)size);
+    }
+}
 
 // External do_exit flag from ringbuffer.h
 extern atomic_int do_exit;
@@ -36,6 +61,10 @@ static FILE *s_file_b = NULL;
 
 // Global app pointer for threads
 static gui_app_t *s_recording_app = NULL;
+
+// Overwrite confirmation pending state
+static bool s_overwrite_pending = false;
+static gui_app_t *s_pending_app = NULL;
 
 // File writer context
 typedef struct {
@@ -186,22 +215,102 @@ bool gui_record_is_active(void) {
     return s_recording_app != NULL && s_recording_app->is_recording;
 }
 
-// Start recording
+// Check if waiting for popup confirmation
+bool gui_record_is_pending(void) {
+    return s_overwrite_pending;
+}
+
+// Forward declaration of actual recording start (after confirmation)
+static int gui_record_start_confirmed(gui_app_t *app);
+
+// Start recording - checks for file existence first
 int gui_record_start(gui_app_t *app) {
 
     if (!app->is_capturing) {
         gui_app_set_status(app, "Start capture first");
-        return -1;
+        return RECORD_ERROR;
     }
 
     if (app->is_recording) {
-        return 0;
+        return RECORD_OK;
     }
+
+    // If already pending confirmation, don't show another popup
+    if (s_overwrite_pending) {
+        return RECORD_PENDING;
+    }
+
+    // Check if output files already exist
+    struct stat stat_a, stat_b;
+    bool file_a_exists = (stat(app->settings.output_filename_a, &stat_a) == 0);
+    bool file_b_exists = (stat(app->settings.output_filename_b, &stat_b) == 0);
+
+    if (file_a_exists || file_b_exists) {
+        // Build detailed message with file info
+        char message[512];
+        char size_buf[32];
+        int offset = 0;
+
+        offset += snprintf(message + offset, sizeof(message) - offset,
+            "The following files will be overwritten:\n\n");
+
+        if (file_a_exists) {
+            format_file_size(stat_a.st_size, size_buf, sizeof(size_buf));
+            offset += snprintf(message + offset, sizeof(message) - offset,
+                "CH A: %s (%s)\n", app->settings.output_filename_a, size_buf);
+        }
+
+        if (file_b_exists) {
+            format_file_size(stat_b.st_size, size_buf, sizeof(size_buf));
+            offset += snprintf(message + offset, sizeof(message) - offset,
+                "CH B: %s (%s)\n", app->settings.output_filename_b, size_buf);
+        }
+
+        // Show confirmation popup with detailed info
+        gui_popup_confirm("Overwrite Files?", message, "Overwrite", "Cancel", app);
+        s_overwrite_pending = true;
+        s_pending_app = app;
+        return RECORD_PENDING;
+    }
+
+    // No files exist, start recording directly
+    return gui_record_start_confirmed(app);
+}
+
+// Check popup result and continue recording if confirmed
+void gui_record_check_popup(gui_app_t *app) {
+    if (!s_overwrite_pending) {
+        return;
+    }
+
+    popup_result_t result = gui_popup_get_result();
+
+    if (result == POPUP_RESULT_NONE) {
+        // Popup still open, wait
+        return;
+    }
+
+    // Popup closed, clear pending state
+    s_overwrite_pending = false;
+
+    if (result == POPUP_RESULT_YES) {
+        // User confirmed, start recording
+        gui_record_start_confirmed(app);
+    } else {
+        // User cancelled
+        gui_app_set_status(app, "Recording cancelled");
+    }
+
+    s_pending_app = NULL;
+}
+
+// Internal: Start recording after confirmation
+static int gui_record_start_confirmed(gui_app_t *app) {
 
     // Verify extraction thread is running
     if (!gui_extract_is_running()) {
         gui_app_set_status(app, "Extraction not running");
-        return -1;
+        return RECORD_ERROR;
     }
 
     // Get record ringbuffers from gui_extract
@@ -210,7 +319,7 @@ int gui_record_start(gui_app_t *app) {
 
     if (!rb_a || !rb_b) {
         gui_app_set_status(app, "Record buffers not initialized");
-        return -1;
+        return RECORD_ERROR;
     }
 
     s_recording_app = app;
@@ -234,7 +343,7 @@ int gui_record_start(gui_app_t *app) {
             if (s_file_a) fclose(s_file_a);
             if (s_file_b) fclose(s_file_b);
             s_file_a = s_file_b = NULL;
-            return -1;
+            return RECORD_ERROR;
         }
 
         // Setup writer contexts
@@ -269,7 +378,7 @@ int gui_record_start(gui_app_t *app) {
             gui_app_set_status(app, "Failed to create FLAC encoder A");
             fclose(s_file_a); fclose(s_file_b);
             s_file_a = s_file_b = NULL;
-            return -1;
+            return RECORD_ERROR;
         }
         s_ctx_a.writer = s_flac_writer_a;
 
@@ -283,7 +392,7 @@ int gui_record_start(gui_app_t *app) {
             s_flac_writer_a = NULL;
             fclose(s_file_a); fclose(s_file_b);
             s_file_a = s_file_b = NULL;
-            return -1;
+            return RECORD_ERROR;
         }
         s_ctx_b.writer = s_flac_writer_b;
 
@@ -311,7 +420,7 @@ int gui_record_start(gui_app_t *app) {
             if (s_file_a) fclose(s_file_a);
             if (s_file_b) fclose(s_file_b);
             s_file_a = s_file_b = NULL;
-            return -1;
+            return RECORD_ERROR;
         }
 
         s_ctx_a.rb = rb_a;
@@ -336,7 +445,7 @@ int gui_record_start(gui_app_t *app) {
         gui_app_set_status(app, "Recording (RAW)...");
     }
 
-    return 0;
+    return RECORD_OK;
 }
 
 // Stop recording

@@ -26,18 +26,19 @@
 #define COLOR_METER_RED       (Color){ 220, 50, 50, 255 }
 
 // Font sizes - adjust these to change all UI text sizes
-#define FONT_SIZE_TITLE       26    // Main title "MISRC Capture"
-#define FONT_SIZE_HEADING     20    // Section headings like "Statistics"
-#define FONT_SIZE_NORMAL      18    // Normal UI text, buttons, labels
-#define FONT_SIZE_DROPDOWN    16    // Dropdown menu items
-#define FONT_SIZE_STATUS      18    // Status bar text
-#define FONT_SIZE_OSC_LABEL   20    // Oscilloscope channel labels "CH A", "CH B"
-#define FONT_SIZE_OSC_SCALE   14    // Oscilloscope scale ticks "+1", "0", "-1"
-#define FONT_SIZE_OSC_MSG     26    // Oscilloscope messages like "No Signal"
-#define FONT_SIZE_VU_SCALE    14    // VU meter scale ticks
-#define FONT_SIZE_VU_CLIP     12    // VU meter clip indicators "+CLIP", "-CLIP"
-#define FONT_SIZE_STATS_LABEL 18    // Per-channel stats panel channel label
-#define FONT_SIZE_STATS       16    // Per-channel stats panel text
+#define FONT_SIZE_TITLE        26    // Main title "MISRC Capture"
+#define FONT_SIZE_HEADING      20    // Section headings like "Statistics"
+#define FONT_SIZE_NORMAL       18    // Normal UI text, buttons, labels
+#define FONT_SIZE_DROPDOWN     18    // Dropdown menu headers
+#define FONT_SIZE_DROPDOWN_OPT 16   // Dropdown menu option items
+#define FONT_SIZE_STATUS       18    // Status bar text
+#define FONT_SIZE_OSC_LABEL    20    // Oscilloscope channel labels "CH A", "CH B"
+#define FONT_SIZE_OSC_SCALE    14    // Oscilloscope scale ticks "+1", "0", "-1"
+#define FONT_SIZE_OSC_MSG      26    // Oscilloscope messages like "No Signal"
+#define FONT_SIZE_VU_SCALE     14    // VU meter scale ticks
+#define FONT_SIZE_VU_CLIP      12    // VU meter clip indicators "+CLIP", "-CLIP"
+#define FONT_SIZE_STATS_LABEL  18    // Per-channel stats panel channel label
+#define FONT_SIZE_STATS        16    // Per-channel stats panel text
 
 // UI Layout functions
 void gui_render_layout(gui_app_t *app);
