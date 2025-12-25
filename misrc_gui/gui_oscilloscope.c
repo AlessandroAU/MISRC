@@ -38,18 +38,6 @@ void gui_oscilloscope_cleanup(void) {
 }
 
 //-----------------------------------------------------------------------------
-// Legacy Phosphor Wrappers (forward to gui_phosphor module)
-//-----------------------------------------------------------------------------
-
-bool gui_oscilloscope_init_phosphor(gui_app_t *app, int width, int height) {
-    return gui_phosphor_init(app, width, height);
-}
-
-void gui_oscilloscope_clear_phosphor(gui_app_t *app) {
-    gui_phosphor_clear(app);
-}
-
-//-----------------------------------------------------------------------------
 // Internal Helper Functions
 //-----------------------------------------------------------------------------
 

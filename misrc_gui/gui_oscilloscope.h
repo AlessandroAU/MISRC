@@ -19,13 +19,6 @@
 // Call on application exit
 void gui_oscilloscope_cleanup(void);
 
-// Initialize/resize phosphor buffers for given dimensions
-// Returns true on success, false on allocation failure
-bool gui_oscilloscope_init_phosphor(gui_app_t *app, int width, int height);
-
-// Clear phosphor buffers (reset all intensity to zero)
-void gui_oscilloscope_clear_phosphor(gui_app_t *app);
-
 //-----------------------------------------------------------------------------
 // Oscilloscope Rendering
 //-----------------------------------------------------------------------------
