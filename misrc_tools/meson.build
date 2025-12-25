@@ -34,6 +34,7 @@ sources_capture = [
   '../misrc_common/flac_writer.c',
   '../misrc_common/frame_parser.c',
   '../misrc_common/capture_handler.c',
+  '../misrc_common/device_enum.c',
   version_target
 ]
 
@@ -169,6 +170,7 @@ if raylib_dep.found()
     '../misrc_common/flac_writer.c',
     '../misrc_common/frame_parser.c',
     '../misrc_common/capture_handler.c',
+    '../misrc_common/device_enum.c',
     version_target
   ]
 
@@ -189,10 +191,16 @@ if raylib_dep.found()
     gui_ldflags += ['-lopengl32', '-lgdi32', '-lwinmm']
     # Need mincore for VirtualAlloc2/MapViewOfFile3 used by ringbuffer
     gui_ldflags += ['-lmincore']
+    # simple_capture for device enumeration
+    sources_gui += 'simple_capture/simple_capture_mediafoundation.c'
+    gui_ldflags += ['-lmf', '-lmfplat', '-lmfuuid', '-lmfreadwrite', '-lole32']
   elif host_system == 'linux'
     gui_ldflags += ['-lGL', '-lm', '-lpthread', '-ldl', '-lrt', '-lX11']
+    sources_gui += 'simple_capture/simple_capture_v4l2.c'
   elif host_system == 'darwin'
     gui_ldflags += ['-Wl,-framework,OpenGL', '-Wl,-framework,Cocoa', '-Wl,-framework,IOKit', '-Wl,-framework,CoreAudio', '-Wl,-framework,CoreVideo']
+    gui_ldflags += ['-Wl,-framework,AVFoundation', '-Wl,-framework,CoreMedia']
+    sources_gui += 'simple_capture/simple_capture_avfoundation.m'
   endif
 
   executable('misrc_gui',

@@ -106,6 +106,7 @@ static const char* const _FLAC_StreamEncoderSetNumThreadsStatusString[] = {
 #include "../misrc_common/flac_writer.h"
 #include "../misrc_common/frame_parser.h"
 #include "../misrc_common/capture_handler.h"
+#include "../misrc_common/device_enum.h"
 #include "extract.h"
 #include "wave.h"
 
@@ -788,30 +789,11 @@ static bool str_starts_with(const char *restrict prefixA, const char *restrict p
 }
 
 void list_devices() {
-	sc_capture_dev_t *sc_devs;
-	size_t sc_n = sc_get_devices(&sc_devs);
-	uint32_t hs_n = hsdaoh_get_device_count();
-	fprintf(stderr, "Devices that can be used using libusb / libuvc / libhsdaoh:\n");
-	for (uint32_t i=0; i<hs_n; i++) {
-		fprintf(stderr, " %i: %s\n", i, hsdaoh_get_device_name(i));
-	}
-	fprintf(stderr, "\nDevices that can be used using %s:\n", sc_get_impl_name());
-	for (size_t i=0; i<sc_n; i++) {
-		sc_formatlist_t *sc_fmt;
-		size_t f_n = sc_get_formats(sc_devs[i].device_id, &sc_fmt);
-		for (size_t j=0; j<f_n; j++) {
-			if (SC_CODEC_EQUAL(sc_fmt[j].codec, SC_CODEC_YUYV)) for (size_t k=0; k<sc_fmt[j].n_sizes; k++) {
-				if (sc_fmt[j].sizes[k].w == 1920 && sc_fmt[j].sizes[k].h == 1080) for (size_t l=0; l<sc_fmt[j].sizes[k].n_fps; l++) {
-					if ((sc_fmt[j].sizes[k].fps[l].den != 0 && (float)sc_fmt[j].sizes[k].fps[l].num / (float)sc_fmt[j].sizes[k].fps[l].den >= 40.0f)
-					|| (sc_fmt[j].sizes[k].fps[l].den == 0 && (float)sc_fmt[j].sizes[k].fps[l].max_num / (float)sc_fmt[j].sizes[k].fps[l].max_den >= 40.0f)) {
-						fprintf(stderr, " %s://%s: %s\n", sc_get_impl_name_short(), sc_devs[i].device_id, sc_devs[i].name);
-						break;
-					}
-				}
-			}
-		}
-	}
-	fprintf(stderr, "\nDevice names can change when devices are connected/disconnected!\nUsing %s requires that the device does not modify the video data.\n\n", sc_get_impl_name_short());
+	misrc_device_list_t devices;
+	misrc_device_list_init(&devices);
+	misrc_device_enumerate(&devices, true, true);
+	misrc_device_list_print(&devices);
+	misrc_device_list_free(&devices);
 	exit(1);
 }
 

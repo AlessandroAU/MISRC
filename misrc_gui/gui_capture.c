@@ -19,6 +19,7 @@
 #include "../misrc_common/threading.h"
 #include "../misrc_common/frame_parser.h"
 #include "../misrc_common/capture_handler.h"
+#include "../misrc_common/device_enum.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -285,20 +286,41 @@ void gui_app_cleanup(gui_app_t *app) {
 void gui_app_enumerate_devices(gui_app_t *app) {
     app->device_count = 0;
 
-    // Enumerate hsdaoh devices
-    uint32_t hsdaoh_count = hsdaoh_get_device_count();
+    // Use shared device enumeration (hsdaoh + simple_capture)
+    misrc_device_list_t devices;
+    misrc_device_list_init(&devices);
+    int count = misrc_device_enumerate(&devices, true, true);
 
-    for (uint32_t i = 0; i < hsdaoh_count && app->device_count < MAX_DEVICES; i++) {
-        const char *name = hsdaoh_get_device_name(i);
+    if (count < 0) {
+        gui_app_set_status(app, "Device enumeration failed");
+        misrc_device_list_free(&devices);
+        return;
+    }
 
-        device_info_t *dev = &app->devices[app->device_count];
-        snprintf(dev->name, sizeof(dev->name), "%s", name ? name : "Unknown");
-        dev->serial[0] = '\0';  // Serial obtained after device open
-        dev->is_simple_capture = false;
-        dev->index = i;
+    // Copy devices to GUI format
+    for (size_t i = 0; i < devices.count && app->device_count < MAX_DEVICES; i++) {
+        misrc_device_info_t *src = &devices.devices[i];
+        device_info_t *dst = &app->devices[app->device_count];
+
+        // Format name with type prefix for simple_capture devices
+        if (src->type == MISRC_DEVICE_TYPE_SIMPLE_CAPTURE) {
+            snprintf(dst->name, sizeof(dst->name), "[%s] %s",
+                     device_get_simple_capture_short_name(), src->name);
+            dst->is_simple_capture = true;
+            dst->index = -1;
+            // Store device_id in serial field for simple_capture
+            snprintf(dst->serial, sizeof(dst->serial), "%s", src->device_id);
+        } else {
+            snprintf(dst->name, sizeof(dst->name), "%s", src->name);
+            dst->is_simple_capture = false;
+            dst->index = src->index;
+            dst->serial[0] = '\0';
+        }
 
         app->device_count++;
     }
+
+    misrc_device_list_free(&devices);
 
     if (app->device_count == 0) {
         gui_app_set_status(app, "No capture devices found");
