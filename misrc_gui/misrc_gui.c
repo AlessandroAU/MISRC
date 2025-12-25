@@ -12,6 +12,7 @@
 #include <clay.h>
 
 #include "raylib.h"
+#include "inter_font_data.h"
 
 #include "gui_app.h"
 #include "gui_ui.h"
@@ -61,32 +62,15 @@ int main(int argc, char **argv) {
     SetTargetFPS(60);
     SetExitKey(0);  // Disable escape key auto-close
 
-    // Load fonts - try to load a clean TTF font, fall back to default
-    // Try common Windows fonts that render well at small sizes
-    const char *font_paths[] = {
-        "C:/Windows/Fonts/arial.ttf",       // Arial - widely available
-        "C:/Windows/Fonts/segoeui.ttf",    // Segoe UI - modern Windows UI font
-        "C:/Windows/Fonts/calibri.ttf",     // Calibri - clean and readable
-        "C:/Windows/Fonts/tahoma.ttf",      // Tahoma - good at small sizes
-        NULL
-    };
-
-    fonts[0] = (Font){0};
-    for (int i = 0; font_paths[i] != NULL; i++) {
-        if (FileExists(font_paths[i])) {
-            // Load with a good size for UI text (will be scaled as needed)
-            fonts[0] = LoadFontEx(font_paths[i], 32, NULL, 256);
-            if (fonts[0].texture.id != 0) {
-                SetTextureFilter(fonts[0].texture, TEXTURE_FILTER_BILINEAR);
-                break;
-            }
-        }
-    }
-
-    // Fall back to default if no TTF font found
+    // Load embedded Inter font directly from memory (Apache 2.0 licensed)
+    // Font data is ~342KB and embedded as a C array for complete portability
+    fonts[0] = LoadFontFromMemory(".ttf", inter_font_data, inter_font_data_size, 32, NULL, 256);
     if (fonts[0].texture.id == 0) {
-        fonts[0] = GetFontDefault();
+        fprintf(stderr, "Error: Failed to load embedded font data\n");
+        CloseWindow();
+        return 1;
     }
+    SetTextureFilter(fonts[0].texture, TEXTURE_FILTER_BILINEAR);
 
     // Initialize Clay
     uint64_t clay_memory_size = Clay_MinMemorySize();

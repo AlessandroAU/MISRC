@@ -1,6 +1,8 @@
 #!/bin/bash
 
 CWD=$(pwd)
+# Repo root is parent of build directory
+REPO_ROOT=$(cd "$CWD/.." && pwd)
 WORKSPACE="$CWD/workspace"
 CFLAGS="-I$WORKSPACE/include"
 LDFLAGS="-L$WORKSPACE/lib"
@@ -126,9 +128,60 @@ fi
 cd ../../
 
 # Download Clay (header-only library)
-curl -L --silent -o "clay.h" "https://raw.githubusercontent.com/nicbarker/clay/main/clay.h"
+curl -L --silent -o "clay.h" "https://raw.githubusercontent.com/nicbarker/clay/refs/tags/v0.14/clay.h"
 mkdir -p "${WORKSPACE}/include"
 cp clay.h "${WORKSPACE}/include/"
+
+# ----------------------------------------------------------------------------
+# Embed Inter font: unzip assets and generate C header for standalone GUI
+# ----------------------------------------------------------------------------
+ASSETS_DIR="$REPO_ROOT/assets/fonts"
+FONT_ZIP="$ASSETS_DIR/Inter.zip"
+GEN_SCRIPT="$ASSETS_DIR/generate_font_header.py"
+HEADER_OUT="$REPO_ROOT/misrc_gui/inter_font_data.h"
+
+# Choose python executable for header generation
+if command -v python3 >/dev/null 2>&1; then
+  PYTHON=python3
+elif command -v python >/dev/null 2>&1; then
+  PYTHON=python
+else
+  PYTHON=""
+fi
+
+# If a font zip is present, ensure it's extracted and header generated
+if [[ -f "$FONT_ZIP" ]]; then
+  mkdir -p "$ASSETS_DIR"
+  # Extract using unzip only (no Python fallback)
+  EXTRACTED=0
+  if command -v unzip >/dev/null 2>&1; then
+    if unzip -o "$FONT_ZIP" -d "$ASSETS_DIR"; then
+      EXTRACTED=1
+    fi
+  else
+    echo "Warning: 'unzip' not found; skipping font extraction"
+  fi
+
+  # Generate the embedded font header if script and Python exist
+  HEADER_OK=0
+  if [[ -n "$PYTHON" && -f "$GEN_SCRIPT" ]]; then
+    echo "Generating embedded font header via $GEN_SCRIPT"
+    if (cd "$REPO_ROOT" && "$PYTHON" "$GEN_SCRIPT"); then
+      HEADER_OK=1
+    else
+      echo "Warning: Font header generation failed"
+    fi
+  else
+    echo "Warning: Python or generate_font_header.py not found; skipping font header generation"
+  fi
+
+  # Cleanup extracted files after successful header generation
+  if [[ "$EXTRACTED" -eq 1 && "$HEADER_OK" -eq 1 ]]; then
+    echo "Cleaning up extracted font files..."
+    rm -rf "$ASSETS_DIR/static" 2>/dev/null || true
+    rm -f "$ASSETS_DIR"/*.ttf "$ASSETS_DIR"/OFL.txt "$ASSETS_DIR"/README.txt 2>/dev/null || true
+  fi
+fi
 
 cd ../misrc_tools
 meson setup ../build/misrc --prefix="${WORKSPACE}" --buildtype=release --default-library=static --libdir="${WORKSPACE}"/lib
