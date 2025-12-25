@@ -1,20 +1,27 @@
 #!/usr/bin/env python3
-"""Generate C header file with embedded font binary data."""
+"""Generate C header files with embedded font binary data."""
 
 import sys
+import os
 
-def embed_font(font_path, output_path, var_name='inter_font_data'):
+def embed_font(font_path, output_path, var_name='font_data', font_name='Font'):
     """Convert font binary to C hex array."""
+    if not os.path.exists(font_path):
+        print(f'Error: Font file not found: {font_path}')
+        return False
+        
     with open(font_path, 'rb') as f:
         data = f.read()
+    
+    # Generate header guard from var name
+    header_guard = f'{var_name.upper()}_H'
     
     # Generate C code
     lines = [
         f'// Auto-generated font data - {len(data)} bytes',
-        f'// Open font from google (https://fonts.google.com/specimen/Inter)',
-        f'// Auto-generated font data - {len(data)} bytes',
-        f'#ifndef INTER_FONT_DATA_H',
-        f'#define INTER_FONT_DATA_H',
+        f'// {font_name} font from google fonts',
+        f'#ifndef {header_guard}',
+        f'#define {header_guard}',
         f'',
         f'static const unsigned char {var_name}[] = {{',
     ]
@@ -30,7 +37,7 @@ def embed_font(font_path, output_path, var_name='inter_font_data'):
         f'',
         f'static const unsigned int {var_name}_size = {len(data)};',
         f'',
-        f'#endif // INTER_FONT_DATA_H',
+        f'#endif // {header_guard}',
         '',
     ])
     
@@ -38,8 +45,15 @@ def embed_font(font_path, output_path, var_name='inter_font_data'):
         f.write('\n'.join(lines))
     
     print(f'Generated {output_path}: {len(data)} bytes embedded')
+    return True
 
 if __name__ == '__main__':
-    font_path = 'assets/fonts/static/Inter_18pt-Regular.ttf'
-    output_path = 'misrc_gui/inter_font_data.h'
-    embed_font(font_path, output_path)
+    # Generate Inter font header
+    inter_font_path = 'assets/fonts/static/Inter_18pt-Regular.ttf'
+    inter_output_path = 'misrc_gui/inter_font_data.h'
+    embed_font(inter_font_path, inter_output_path, 'inter_font_data', 'Inter')
+    
+    # Generate Space Mono font header
+    space_mono_path = 'assets/fonts/SpaceMono-Regular.ttf'
+    space_mono_output_path = 'misrc_gui/space_mono_font_data.h'
+    embed_font(space_mono_path, space_mono_output_path, 'space_mono_font_data', 'Space Mono')
