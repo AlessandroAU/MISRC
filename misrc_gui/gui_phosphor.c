@@ -113,8 +113,42 @@ static const char *phosphor_composite_fs =
     "    " GLSL_FRAG_COLOR " = intensityToHeatmap(intensity);\n"
     "}\n";
 
-// Simple decay shader - used for the persistence pass (writes to ping-pong buffer)
-// Uses higher threshold (0.02) to ensure bloom neighbors also decay fully
+// Fragment shader - opacity mode (uses channel color with intensity as alpha)
+static const char *phosphor_opacity_fs =
+    GLSL_VERSION_STRING
+    GLSL_PRECISION
+    GLSL_FRAG_IN "vec2 fragTexCoord;\n"
+    GLSL_FRAG_OUT
+    "uniform sampler2D texture0;\n"
+    "uniform vec2 texelSize;\n"
+    "uniform vec3 channelColor;\n"  // RGB color for this channel (0-1 range)
+    "\n"
+    "void main() {\n"
+    "    // Sample current pixel and neighbors for bloom\n"
+    "    float center = " GLSL_TEXTURE "(texture0, fragTexCoord).r;\n"
+    "    float up1    = " GLSL_TEXTURE "(texture0, fragTexCoord + vec2(0.0, -texelSize.y)).r;\n"
+    "    float down1  = " GLSL_TEXTURE "(texture0, fragTexCoord + vec2(0.0,  texelSize.y)).r;\n"
+    "    float up2    = " GLSL_TEXTURE "(texture0, fragTexCoord + vec2(0.0, -2.0*texelSize.y)).r;\n"
+    "    float down2  = " GLSL_TEXTURE "(texture0, fragTexCoord + vec2(0.0,  2.0*texelSize.y)).r;\n"
+    "    float up3    = " GLSL_TEXTURE "(texture0, fragTexCoord + vec2(0.0, -3.0*texelSize.y)).r;\n"
+    "    float down3  = " GLSL_TEXTURE "(texture0, fragTexCoord + vec2(0.0,  3.0*texelSize.y)).r;\n"
+    "\n"
+    "    // Combine with bloom weights (vertical blur for CRT-like glow)\n"
+    "    float intensity = center + 0.5 * (up1 + down1) + 0.25 * (up2 + down2) + 0.1 * (up3 + down3);\n"
+    "    intensity = min(intensity, 1.0);\n"
+    "\n"
+    "    // Use channel color with intensity as alpha\n"
+    "    if (intensity < 0.02) {\n"
+    "        " GLSL_FRAG_COLOR " = vec4(0.0, 0.0, 0.0, 0.0);\n"
+    "    } else {\n"
+    "        float alpha = 0.3 + 0.7 * intensity;\n"  // Min alpha 0.3 for visibility
+    "        " GLSL_FRAG_COLOR " = vec4(channelColor, alpha);\n"
+    "    }\n"
+    "}\n";
+
+// Simple decay shader - linear multiplicative decay per frame
+// Threshold must be high enough that bloom (which sums ~2.2x neighbors) doesn't
+// amplify tiny residuals above the heatmap visibility threshold (0.02)
 static const char *phosphor_decay_fs =
     GLSL_VERSION_STRING
     GLSL_PRECISION
@@ -126,7 +160,7 @@ static const char *phosphor_decay_fs =
     "void main() {\n"
     "    float intensity = " GLSL_TEXTURE "(texture0, fragTexCoord).r;\n"
     "    intensity = intensity * decayRate;\n"
-    "    if (intensity < 0.001) intensity = 0.0;\n"
+    "    if (intensity < 0.01) intensity = 0.0;\n"
     "    " GLSL_FRAG_COLOR " = vec4(intensity, 0.0, 0.0, 1.0);\n"
     "}\n";
 
@@ -134,13 +168,18 @@ static const char *phosphor_decay_fs =
 // Shader State
 //-----------------------------------------------------------------------------
 
-static Shader phosphor_composite_shader = {0};
+static Shader phosphor_composite_shader = {0};  // Heatmap color mode
+static Shader phosphor_opacity_shader = {0};    // Opacity mode (channel color)
 static Shader phosphor_decay_shader = {0};
 static bool phosphor_shaders_loaded = false;
 
-// Composite shader uniforms
+// Composite shader uniforms (heatmap mode)
 static int composite_texelSize_loc = -1;
 static int composite_decayRate_loc = -1;
+
+// Opacity shader uniforms
+static int opacity_texelSize_loc = -1;
+static int opacity_channelColor_loc = -1;
 
 // Decay shader uniforms
 static int decay_decayRate_loc = -1;
@@ -195,7 +234,7 @@ static void perf_log(phosphor_perf_t *perf, int channel, double now) {
 static bool init_phosphor_shaders(void) {
     if (phosphor_shaders_loaded) return true;
 
-    // Load composite shader (decay + bloom + colormap)
+    // Load composite shader (heatmap mode)
     phosphor_composite_shader = LoadShaderFromMemory(phosphor_vs, phosphor_composite_fs);
     if (phosphor_composite_shader.id == 0) {
         TraceLog(LOG_WARNING, "PHOSPHOR: Failed to load composite shader");
@@ -204,11 +243,22 @@ static bool init_phosphor_shaders(void) {
     composite_texelSize_loc = GetShaderLocation(phosphor_composite_shader, "texelSize");
     composite_decayRate_loc = GetShaderLocation(phosphor_composite_shader, "decayRate");
 
+    // Load opacity shader (channel color mode)
+    phosphor_opacity_shader = LoadShaderFromMemory(phosphor_vs, phosphor_opacity_fs);
+    if (phosphor_opacity_shader.id == 0) {
+        TraceLog(LOG_WARNING, "PHOSPHOR: Failed to load opacity shader");
+        UnloadShader(phosphor_composite_shader);
+        return false;
+    }
+    opacity_texelSize_loc = GetShaderLocation(phosphor_opacity_shader, "texelSize");
+    opacity_channelColor_loc = GetShaderLocation(phosphor_opacity_shader, "channelColor");
+
     // Load decay shader (persistence buffer update)
     phosphor_decay_shader = LoadShaderFromMemory(phosphor_vs, phosphor_decay_fs);
     if (phosphor_decay_shader.id == 0) {
         TraceLog(LOG_WARNING, "PHOSPHOR: Failed to load decay shader");
         UnloadShader(phosphor_composite_shader);
+        UnloadShader(phosphor_opacity_shader);
         return false;
     }
     decay_decayRate_loc = GetShaderLocation(phosphor_decay_shader, "decayRate");
@@ -221,9 +271,11 @@ static bool init_phosphor_shaders(void) {
 static void cleanup_phosphor_shaders(void) {
     if (phosphor_shaders_loaded) {
         UnloadShader(phosphor_composite_shader);
+        UnloadShader(phosphor_opacity_shader);
         UnloadShader(phosphor_decay_shader);
         phosphor_shaders_loaded = false;
         phosphor_composite_shader.id = 0;
+        phosphor_opacity_shader.id = 0;
         phosphor_decay_shader.id = 0;
     }
 }
@@ -427,6 +479,10 @@ void gui_phosphor_update(gui_app_t *app, int channel,
 #endif
 }
 
+// Channel colors (must match gui_ui.h definitions)
+static const float CHANNEL_COLOR_A[3] = { 80.0f/255.0f, 220.0f/255.0f, 100.0f/255.0f };
+static const float CHANNEL_COLOR_B[3] = { 220.0f/255.0f, 200.0f/255.0f, 80.0f/255.0f };
+
 void gui_phosphor_render(gui_app_t *app, int channel, float x, float y) {
     if (!app || !app->phosphor_rt_valid) return;
 
@@ -445,20 +501,32 @@ void gui_phosphor_render(gui_app_t *app, int channel, float x, float y) {
 
     int buf_width = app->phosphor_width;
     int buf_height = app->phosphor_height;
-
-    // Set up composite shader uniforms
     float texelSize[2] = {1.0f / buf_width, 1.0f / buf_height};
-    float decayRate = PHOSPHOR_DECAY_RATE;
-    SetShaderValue(phosphor_composite_shader, composite_texelSize_loc, texelSize, SHADER_UNIFORM_VEC2);
-    SetShaderValue(phosphor_composite_shader, composite_decayRate_loc, &decayRate, SHADER_UNIFORM_FLOAT);
 
-    // Draw with composite shader (applies bloom + colormap)
-    BeginShaderMode(phosphor_composite_shader);
-    // Flip Y when drawing render texture
-    DrawTextureRec(current_rt->texture,
-                   (Rectangle){0, 0, (float)buf_width, -(float)buf_height},
-                   (Vector2){x, y}, WHITE);
-    EndShaderMode();
+    // Choose shader based on color mode
+    if (trig->phosphor_color == PHOSPHOR_COLOR_OPACITY) {
+        // Opacity mode: use channel color with intensity as alpha
+        const float *channelColor = (channel == 0) ? CHANNEL_COLOR_A : CHANNEL_COLOR_B;
+        SetShaderValue(phosphor_opacity_shader, opacity_texelSize_loc, texelSize, SHADER_UNIFORM_VEC2);
+        SetShaderValue(phosphor_opacity_shader, opacity_channelColor_loc, channelColor, SHADER_UNIFORM_VEC3);
+
+        BeginShaderMode(phosphor_opacity_shader);
+        DrawTextureRec(current_rt->texture,
+                       (Rectangle){0, 0, (float)buf_width, -(float)buf_height},
+                       (Vector2){x, y}, WHITE);
+        EndShaderMode();
+    } else {
+        // Heatmap mode (default)
+        float decayRate = PHOSPHOR_DECAY_RATE;
+        SetShaderValue(phosphor_composite_shader, composite_texelSize_loc, texelSize, SHADER_UNIFORM_VEC2);
+        SetShaderValue(phosphor_composite_shader, composite_decayRate_loc, &decayRate, SHADER_UNIFORM_FLOAT);
+
+        BeginShaderMode(phosphor_composite_shader);
+        DrawTextureRec(current_rt->texture,
+                       (Rectangle){0, 0, (float)buf_width, -(float)buf_height},
+                       (Vector2){x, y}, WHITE);
+        EndShaderMode();
+    }
 
 #if PHOSPHOR_PERF_ENABLED
     double render_ms = (GetTime() - start_time) * 1000.0;

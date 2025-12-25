@@ -39,6 +39,13 @@ typedef enum {
     SCOPE_MODE_COUNT      // Number of modes (for cycling)
 } scope_display_mode_t;
 
+// Phosphor color modes
+typedef enum {
+    PHOSPHOR_COLOR_HEATMAP,   // Blue-green-yellow-red heatmap based on intensity
+    PHOSPHOR_COLOR_OPACITY,   // Channel color with intensity as opacity
+    PHOSPHOR_COLOR_COUNT
+} phosphor_color_mode_t;
+
 // Trigger modes (per-channel)
 typedef enum {
     TRIGGER_MODE_RISING,      // Rising edge crossing level
@@ -54,8 +61,9 @@ typedef struct {
     float zoom_scale;          // Samples per pixel (1.0 = max zoom, higher = more zoomed out)
     int trigger_display_pos;   // Where trigger appears in display buffer (-1 if not triggered)
     atomic_int display_width;  // Actual pixel width of oscilloscope display (updated by renderer, read by extraction thread)
-    scope_display_mode_t scope_mode;   // Display mode for this channel (line or phosphor)
-    trigger_mode_t trigger_mode;       // Trigger mode (rising edge, falling edge, CVBS)
+    scope_display_mode_t scope_mode;       // Display mode for this channel (line or phosphor)
+    trigger_mode_t trigger_mode;           // Trigger mode (rising edge, falling edge, CVBS)
+    phosphor_color_mode_t phosphor_color;  // Phosphor color mode (heatmap or opacity)
 } channel_trigger_t;
 
 // Zoom limits
@@ -66,7 +74,7 @@ typedef struct {
 // Digital phosphor display settings
 #define PHOSPHOR_MAX_WIDTH 4096   // Maximum phosphor buffer width (pixels)
 #define PHOSPHOR_MAX_HEIGHT 512   // Maximum phosphor buffer height (pixels)
-#define PHOSPHOR_DECAY_RATE 0.75f // Intensity decay per frame (0-1, higher = slower fade)
+#define PHOSPHOR_DECAY_RATE 0.80f // Intensity decay per frame (0-1, higher = slower fade)
 #define PHOSPHOR_HIT_INCREMENT 0.5f // Intensity added per waveform hit (0-1)
 
 // Device info for enumeration

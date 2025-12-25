@@ -255,6 +255,7 @@ void gui_app_init(gui_app_t *app) {
     atomic_store(&app->trigger_a.display_width, DISPLAY_BUFFER_SIZE);  // Will be updated by renderer
     app->trigger_a.scope_mode = SCOPE_MODE_PHOSPHOR;  // Phosphor mode by default
     app->trigger_a.trigger_mode = TRIGGER_MODE_RISING;  // Rising edge by default
+    app->trigger_a.phosphor_color = PHOSPHOR_COLOR_HEATMAP;  // Opacity mode by default
 
     // Initialize trigger state for channel B
     app->trigger_b.enabled = false;
@@ -264,6 +265,7 @@ void gui_app_init(gui_app_t *app) {
     atomic_store(&app->trigger_b.display_width, DISPLAY_BUFFER_SIZE);  // Will be updated by renderer
     app->trigger_b.scope_mode = SCOPE_MODE_PHOSPHOR;  // Phosphor mode by default
     app->trigger_b.trigger_mode = TRIGGER_MODE_RISING;  // Rising edge by default
+    app->trigger_b.phosphor_color = PHOSPHOR_COLOR_HEATMAP;  // Opacity mode by default
 
     // Initialize phosphor display state (GPU render textures)
     memset(app->phosphor_rt_a, 0, sizeof(app->phosphor_rt_a));
