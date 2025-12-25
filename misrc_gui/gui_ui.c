@@ -699,7 +699,7 @@ static void render_status_bar(gui_app_t *app) {
                 CLAY_TEXT(CLAY_STRING("Frames:"),
                     CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATUS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
                 CLAY(CLAY_ID("FrameValue"), {
-                    .layout = { .sizing = { CLAY_SIZING_FIXED(70), CLAY_SIZING_FIT(0) } }
+                    .layout = { .sizing = { CLAY_SIZING_FIXED(50), CLAY_SIZING_FIT(0) } }
                 }) {
                     CLAY_TEXT(make_string(temp_buf4),
                         CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATUS, .fontId = 1, .textColor = to_clay_color(COLOR_TEXT) }));
@@ -720,7 +720,7 @@ static void render_status_bar(gui_app_t *app) {
                     CLAY_TEXT(CLAY_STRING("Missed:"),
                         CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATUS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
                     CLAY(CLAY_ID("MissedValue"), {
-                        .layout = { .sizing = { CLAY_SIZING_FIXED(50), CLAY_SIZING_FIT(0) } }
+                        .layout = { .sizing = { CLAY_SIZING_FIXED(20), CLAY_SIZING_FIT(0) } }
                     }) {
                         CLAY_TEXT(make_string(temp_buf5),
                             CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATUS, .fontId = 1, .textColor = to_clay_color(COLOR_CLIP_RED) }));
@@ -742,7 +742,7 @@ static void render_status_bar(gui_app_t *app) {
                     CLAY_TEXT(CLAY_STRING("Errors:"),
                         CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATUS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
                     CLAY(CLAY_ID("ErrorValue"), {
-                        .layout = { .sizing = { CLAY_SIZING_FIXED(70), CLAY_SIZING_FIT(0) } }
+                        .layout = { .sizing = { CLAY_SIZING_FIXED(20), CLAY_SIZING_FIT(0) } }
                     }) {
                         CLAY_TEXT(make_string(temp_buf6),
                             CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATUS, .fontId = 1, .textColor = to_clay_color(COLOR_CLIP_RED) }));
