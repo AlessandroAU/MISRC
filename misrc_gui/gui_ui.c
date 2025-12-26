@@ -9,6 +9,7 @@
 #include "gui_dropdown.h"
 #include "gui_popup.h"
 #include "gui_fft.h"
+#include "gui_panel.h"
 #include "version.h"
 #include <clay.h>
 #include <stdio.h>
@@ -23,6 +24,9 @@
 #define DROPDOWN_DEVICE       "Device"
 #define DROPDOWN_SCOPE_MODE   "ScopeMode"
 #define DROPDOWN_TRIGGER_MODE "TriggerMode"
+#define DROPDOWN_LAYOUT       "Layout"
+#define DROPDOWN_LEFT_VIEW    "LeftView"
+#define DROPDOWN_RIGHT_VIEW   "RightView"
 
 // Track if UI consumed the current frame's click (prevents click-through)
 static bool s_ui_consumed_click = false;
@@ -415,14 +419,19 @@ static void render_channel_stats(gui_app_t *app, int channel) {
             }
         }
 
-        // Separator line before display mode
+        // Separator line before panel configuration
         CLAY(CLAY_IDI("ModeSep", channel), {
             .layout = { .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1) } },
             .backgroundColor = to_clay_color(COLOR_TEXT_DIM)
         }) {}
 
-        // Display mode row
-        CLAY(CLAY_IDI("ModeRow", channel), {
+        // Get panel config for this channel
+        bool panel_split = (channel == 0) ? app->panel_config_a.split : app->panel_config_b.split;
+        int left_view = (channel == 0) ? app->panel_config_a.left_view : app->panel_config_b.left_view;
+        int right_view = (channel == 0) ? app->panel_config_a.right_view : app->panel_config_b.right_view;
+
+        // Layout row (Single/Split toggle)
+        CLAY(CLAY_IDI("LayoutRow", channel), {
             .layout = {
                 .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0) },
                 .layoutDirection = CLAY_LEFT_TO_RIGHT,
@@ -430,84 +439,182 @@ static void render_channel_stats(gui_app_t *app, int channel) {
                 .childGap = 4
             }
         }) {
-            CLAY_TEXT(CLAY_STRING("Display:"),
+            CLAY_TEXT(CLAY_STRING("Layout:"),
                 CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
 
-            // Mode dropdown button
-            const char *mode_name;
-            switch (trig->scope_mode) {
-                case SCOPE_MODE_LINE:     mode_name = "Line"; break;
-                case SCOPE_MODE_PHOSPHOR: mode_name = "Phosphor"; break;
-                case SCOPE_MODE_SPLIT:    mode_name = "Split"; break;
-                default:                  mode_name = "Line"; break;
-            }
-            bool scope_dropdown_open = gui_dropdown_is_open(DROPDOWN_SCOPE_MODE, channel);
-            CLAY(CLAY_IDI("ScopeModeBtn", channel), {
+            const char *layout_name = panel_split ? "Split" : "Single";
+            bool layout_dropdown_open = gui_dropdown_is_open(DROPDOWN_LAYOUT, channel);
+            CLAY(CLAY_IDI("LayoutBtn", channel), {
                 .layout = {
-                    .sizing = { CLAY_SIZING_FIXED(70), CLAY_SIZING_FIXED(18) },
+                    .sizing = { CLAY_SIZING_FIXED(55), CLAY_SIZING_FIXED(18) },
                     .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER }
                 },
-                .backgroundColor = to_clay_color(scope_dropdown_open ? COLOR_BUTTON_HOVER : COLOR_BUTTON),
+                .backgroundColor = to_clay_color(layout_dropdown_open ? COLOR_BUTTON_HOVER : COLOR_BUTTON),
                 .cornerRadius = CLAY_CORNER_RADIUS(3)
             }) {
-                CLAY_TEXT(make_string(mode_name),
+                CLAY_TEXT(make_string(layout_name),
                     CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_DROPDOWN_OPT, .textColor = to_clay_color(COLOR_TEXT) }));
             }
         }
 
-        // Per-channel scope mode dropdown options (floating, visible when open)
-        if (gui_dropdown_is_open(DROPDOWN_SCOPE_MODE, channel)) {
-            CLAY(CLAY_IDI("ScopeModeOpts", channel), {
+        // Layout dropdown options
+        if (gui_dropdown_is_open(DROPDOWN_LAYOUT, channel)) {
+            CLAY(CLAY_IDI("LayoutOpts", channel), {
                 .layout = {
-                    .sizing = { CLAY_SIZING_FIXED(70), CLAY_SIZING_FIT(0) },
+                    .sizing = { CLAY_SIZING_FIXED(55), CLAY_SIZING_FIT(0) },
                     .layoutDirection = CLAY_TOP_TO_BOTTOM
                 },
                 .floating = {
                     .attachTo = CLAY_ATTACH_TO_ELEMENT_WITH_ID,
-                    .parentId = CLAY_IDI("ScopeModeBtn", channel).id,
+                    .parentId = CLAY_IDI("LayoutBtn", channel).id,
                     .attachPoints = { .element = CLAY_ATTACH_POINT_LEFT_TOP, .parent = CLAY_ATTACH_POINT_LEFT_BOTTOM }
                 },
                 .backgroundColor = to_clay_color(COLOR_PANEL_BG),
                 .cornerRadius = CLAY_CORNER_RADIUS(3)
             }) {
-                // Line mode option
-                Color line_color = (trig->scope_mode == SCOPE_MODE_LINE) ? COLOR_BUTTON_ACTIVE : COLOR_BUTTON;
-                CLAY(CLAY_IDI("ScopeModeOptLine", channel), {
+                Color single_color = !panel_split ? COLOR_BUTTON_ACTIVE : COLOR_BUTTON;
+                CLAY(CLAY_IDI("LayoutOptSingle", channel), {
                     .layout = {
                         .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(20) },
                         .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER }
                     },
-                    .backgroundColor = to_clay_color(line_color)
+                    .backgroundColor = to_clay_color(single_color)
                 }) {
-                    CLAY_TEXT(CLAY_STRING("Line"),
+                    CLAY_TEXT(CLAY_STRING("Single"),
                         CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_DROPDOWN_OPT, .textColor = to_clay_color(COLOR_TEXT) }));
                 }
 
-                // Phosphor mode option
-                Color phosphor_color = (trig->scope_mode == SCOPE_MODE_PHOSPHOR) ? COLOR_BUTTON_ACTIVE : COLOR_BUTTON;
-                CLAY(CLAY_IDI("ScopeModeOptPhos", channel), {
+                Color split_color = panel_split ? COLOR_BUTTON_ACTIVE : COLOR_BUTTON;
+                CLAY(CLAY_IDI("LayoutOptSplit", channel), {
                     .layout = {
                         .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(20) },
                         .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER }
                     },
-                    .backgroundColor = to_clay_color(phosphor_color)
+                    .backgroundColor = to_clay_color(split_color)
                 }) {
-                    CLAY_TEXT(CLAY_STRING("Phosphor"),
+                    CLAY_TEXT(CLAY_STRING("Split"),
                         CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_DROPDOWN_OPT, .textColor = to_clay_color(COLOR_TEXT) }));
                 }
+            }
+        }
 
-                // Split mode option (only show if FFT available)
-                if (gui_fft_available()) {
-                    Color split_color = (trig->scope_mode == SCOPE_MODE_SPLIT) ? COLOR_BUTTON_ACTIVE : COLOR_BUTTON;
-                    CLAY(CLAY_IDI("ScopeModeOptSplit", channel), {
+        // Left view row (always shown)
+        CLAY(CLAY_IDI("LeftViewRow", channel), {
+            .layout = {
+                .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0) },
+                .layoutDirection = CLAY_LEFT_TO_RIGHT,
+                .childAlignment = { .y = CLAY_ALIGN_Y_CENTER },
+                .childGap = 4
+            }
+        }) {
+            CLAY_TEXT(panel_split ? CLAY_STRING("Left:") : CLAY_STRING("View:"),
+                CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
+
+            const char *left_name = panel_view_type_name((panel_view_type_t)left_view);
+            bool left_dropdown_open = gui_dropdown_is_open(DROPDOWN_LEFT_VIEW, channel);
+            CLAY(CLAY_IDI("LeftViewBtn", channel), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_FIXED(65), CLAY_SIZING_FIXED(18) },
+                    .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER }
+                },
+                .backgroundColor = to_clay_color(left_dropdown_open ? COLOR_BUTTON_HOVER : COLOR_BUTTON),
+                .cornerRadius = CLAY_CORNER_RADIUS(3)
+            }) {
+                CLAY_TEXT(make_string(left_name),
+                    CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_DROPDOWN_OPT, .textColor = to_clay_color(COLOR_TEXT) }));
+            }
+        }
+
+        // Left view dropdown options
+        if (gui_dropdown_is_open(DROPDOWN_LEFT_VIEW, channel)) {
+            CLAY(CLAY_IDI("LeftViewOpts", channel), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_FIXED(65), CLAY_SIZING_FIT(0) },
+                    .layoutDirection = CLAY_TOP_TO_BOTTOM
+                },
+                .floating = {
+                    .attachTo = CLAY_ATTACH_TO_ELEMENT_WITH_ID,
+                    .parentId = CLAY_IDI("LeftViewBtn", channel).id,
+                    .attachPoints = { .element = CLAY_ATTACH_POINT_LEFT_TOP, .parent = CLAY_ATTACH_POINT_LEFT_BOTTOM }
+                },
+                .backgroundColor = to_clay_color(COLOR_PANEL_BG),
+                .cornerRadius = CLAY_CORNER_RADIUS(3)
+            }) {
+                for (int vt = 0; vt < PANEL_VIEW_COUNT; vt++) {
+                    if (!panel_view_type_available((panel_view_type_t)vt)) continue;
+                    Color opt_color = (left_view == vt) ? COLOR_BUTTON_ACTIVE : COLOR_BUTTON;
+                    // Use channel * 10 + vt to create unique IDs per channel
+                    CLAY(CLAY_IDI("LeftViewOpt", channel * 10 + vt), {
                         .layout = {
                             .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(20) },
                             .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER }
                         },
-                        .backgroundColor = to_clay_color(split_color)
+                        .backgroundColor = to_clay_color(opt_color)
                     }) {
-                        CLAY_TEXT(CLAY_STRING("Split"),
+                        CLAY_TEXT(make_string(panel_view_type_name((panel_view_type_t)vt)),
                             CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_DROPDOWN_OPT, .textColor = to_clay_color(COLOR_TEXT) }));
+                    }
+                }
+            }
+        }
+
+        // Right view row (only shown when split)
+        if (panel_split) {
+            CLAY(CLAY_IDI("RightViewRow", channel), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0) },
+                    .layoutDirection = CLAY_LEFT_TO_RIGHT,
+                    .childAlignment = { .y = CLAY_ALIGN_Y_CENTER },
+                    .childGap = 4
+                }
+            }) {
+                CLAY_TEXT(CLAY_STRING("Right:"),
+                    CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
+
+                const char *right_name = panel_view_type_name((panel_view_type_t)right_view);
+                bool right_dropdown_open = gui_dropdown_is_open(DROPDOWN_RIGHT_VIEW, channel);
+                CLAY(CLAY_IDI("RightViewBtn", channel), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_FIXED(65), CLAY_SIZING_FIXED(18) },
+                        .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER }
+                    },
+                    .backgroundColor = to_clay_color(right_dropdown_open ? COLOR_BUTTON_HOVER : COLOR_BUTTON),
+                    .cornerRadius = CLAY_CORNER_RADIUS(3)
+                }) {
+                    CLAY_TEXT(make_string(right_name),
+                        CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_DROPDOWN_OPT, .textColor = to_clay_color(COLOR_TEXT) }));
+                }
+            }
+
+            // Right view dropdown options
+            if (gui_dropdown_is_open(DROPDOWN_RIGHT_VIEW, channel)) {
+                CLAY(CLAY_IDI("RightViewOpts", channel), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_FIXED(65), CLAY_SIZING_FIT(0) },
+                        .layoutDirection = CLAY_TOP_TO_BOTTOM
+                    },
+                    .floating = {
+                        .attachTo = CLAY_ATTACH_TO_ELEMENT_WITH_ID,
+                        .parentId = CLAY_IDI("RightViewBtn", channel).id,
+                        .attachPoints = { .element = CLAY_ATTACH_POINT_LEFT_TOP, .parent = CLAY_ATTACH_POINT_LEFT_BOTTOM }
+                    },
+                    .backgroundColor = to_clay_color(COLOR_PANEL_BG),
+                    .cornerRadius = CLAY_CORNER_RADIUS(3)
+                }) {
+                    for (int vt = 0; vt < PANEL_VIEW_COUNT; vt++) {
+                        if (!panel_view_type_available((panel_view_type_t)vt)) continue;
+                        Color opt_color = (right_view == vt) ? COLOR_BUTTON_ACTIVE : COLOR_BUTTON;
+                        // Use channel * 10 + vt to create unique IDs per channel
+                        CLAY(CLAY_IDI("RightViewOpt", channel * 10 + vt), {
+                            .layout = {
+                                .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(20) },
+                                .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER }
+                            },
+                            .backgroundColor = to_clay_color(opt_color)
+                        }) {
+                            CLAY_TEXT(make_string(panel_view_type_name((panel_view_type_t)vt)),
+                                CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_DROPDOWN_OPT, .textColor = to_clay_color(COLOR_TEXT) }));
+                        }
                     }
                 }
             }
@@ -1004,36 +1111,93 @@ void gui_handle_interactions(gui_app_t *app) {
                 }
             }
 
-            // Per-channel scope mode dropdown
-            if (Clay_PointerOver(CLAY_IDI("ScopeModeBtn", ch))) {
-                gui_dropdown_toggle(DROPDOWN_SCOPE_MODE, ch);
+            // Get panel config pointer for this channel
+            // Note: panel_config_a/b are inline structs in gui_app_t, access fields directly
+            bool *cfg_split = (ch == 0) ? &app->panel_config_a.split : &app->panel_config_b.split;
+            int *cfg_left_view = (ch == 0) ? &app->panel_config_a.left_view : &app->panel_config_b.left_view;
+            int *cfg_right_view = (ch == 0) ? &app->panel_config_a.right_view : &app->panel_config_b.right_view;
+            void **cfg_left_state = (ch == 0) ? &app->panel_config_a.left_state : &app->panel_config_b.left_state;
+            void **cfg_right_state = (ch == 0) ? &app->panel_config_a.right_state : &app->panel_config_b.right_state;
+
+            // Layout dropdown (Single/Split)
+            if (Clay_PointerOver(CLAY_IDI("LayoutBtn", ch))) {
+                gui_dropdown_toggle(DROPDOWN_LAYOUT, ch);
                 dropdown_clicked = true;
-            } else if (gui_dropdown_is_open(DROPDOWN_SCOPE_MODE, ch)) {
-                if (Clay_PointerOver(CLAY_IDI("ScopeModeOptLine", ch))) {
-                    trig->scope_mode = SCOPE_MODE_LINE;
-                    gui_dropdown_close_all();
-                    dropdown_clicked = true;
-                }
-                if (Clay_PointerOver(CLAY_IDI("ScopeModeOptPhos", ch))) {
-                    trig->scope_mode = SCOPE_MODE_PHOSPHOR;
-                    gui_dropdown_close_all();
-                    dropdown_clicked = true;
-                }
-                if (gui_fft_available() && Clay_PointerOver(CLAY_IDI("ScopeModeOptSplit", ch))) {
-                    trig->scope_mode = SCOPE_MODE_SPLIT;
-                    // Initialize FFT state for this channel if needed
-                    fft_state_t **fft_ptr = (ch == 0) ? &app->fft_a : &app->fft_b;
-                    if (*fft_ptr == NULL) {
-                        *fft_ptr = malloc(sizeof(fft_state_t));
-                        if (*fft_ptr) {
-                            if (!gui_fft_init(*fft_ptr)) {
-                                free(*fft_ptr);
-                                *fft_ptr = NULL;
-                            }
+            } else if (gui_dropdown_is_open(DROPDOWN_LAYOUT, ch)) {
+                if (Clay_PointerOver(CLAY_IDI("LayoutOptSingle", ch))) {
+                    // Switch to single panel
+                    if (*cfg_split) {
+                        *cfg_split = false;
+                        // Destroy right panel state if it exists
+                        if (*cfg_right_state) {
+                            panel_destroy_view_state((panel_view_type_t)*cfg_right_view, *cfg_right_state);
+                            *cfg_right_state = NULL;
                         }
                     }
                     gui_dropdown_close_all();
                     dropdown_clicked = true;
+                }
+                if (Clay_PointerOver(CLAY_IDI("LayoutOptSplit", ch))) {
+                    // Switch to split panel
+                    if (!*cfg_split) {
+                        *cfg_split = true;
+                        // Create right panel state if needed
+                        *cfg_right_state = panel_create_view_state((panel_view_type_t)*cfg_right_view);
+                    }
+                    gui_dropdown_close_all();
+                    dropdown_clicked = true;
+                }
+            }
+
+            // Left view dropdown
+            if (Clay_PointerOver(CLAY_IDI("LeftViewBtn", ch))) {
+                gui_dropdown_toggle(DROPDOWN_LEFT_VIEW, ch);
+                dropdown_clicked = true;
+            } else if (gui_dropdown_is_open(DROPDOWN_LEFT_VIEW, ch)) {
+                for (int vt = 0; vt < PANEL_VIEW_COUNT; vt++) {
+                    if (!panel_view_type_available((panel_view_type_t)vt)) continue;
+                    // Use ch * 10 + vt to match the ID used in rendering
+                    if (Clay_PointerOver(CLAY_IDI("LeftViewOpt", ch * 10 + vt))) {
+                        if (*cfg_left_view != vt) {
+                            // Destroy old state
+                            if (*cfg_left_state) {
+                                panel_destroy_view_state((panel_view_type_t)*cfg_left_view, *cfg_left_state);
+                                *cfg_left_state = NULL;
+                            }
+                            *cfg_left_view = vt;
+                            *cfg_left_state = panel_create_view_state((panel_view_type_t)vt);
+                        }
+                        gui_dropdown_close_all();
+                        dropdown_clicked = true;
+                        break;
+                    }
+                }
+            }
+
+            // Right view dropdown (only when split)
+            if (*cfg_split) {
+                if (Clay_PointerOver(CLAY_IDI("RightViewBtn", ch))) {
+                    gui_dropdown_toggle(DROPDOWN_RIGHT_VIEW, ch);
+                    dropdown_clicked = true;
+                } else if (gui_dropdown_is_open(DROPDOWN_RIGHT_VIEW, ch)) {
+                    for (int vt = 0; vt < PANEL_VIEW_COUNT; vt++) {
+                        if (!panel_view_type_available((panel_view_type_t)vt)) continue;
+                        // Use ch * 10 + vt to match the ID used in rendering
+                        if (Clay_PointerOver(CLAY_IDI("RightViewOpt", ch * 10 + vt))) {
+                            if (*cfg_right_view != vt) {
+                                // Destroy old state
+                                if (*cfg_right_state) {
+                                    panel_destroy_view_state((panel_view_type_t)*cfg_right_view, *cfg_right_state);
+                                    *cfg_right_state = NULL;
+                                }
+                                *cfg_right_view = vt;
+                                *cfg_right_state = panel_create_view_state((panel_view_type_t)vt);
+                            }
+                            gui_dropdown_close_all();
+                            dropdown_clicked = true;
+                            break;
+                        }
+                    }
                 }
             }
         }

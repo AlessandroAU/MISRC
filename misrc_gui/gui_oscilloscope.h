@@ -35,6 +35,15 @@ void gui_oscilloscope_cleanup_resamplers(gui_app_t *app);
 // Oscilloscope Rendering
 //-----------------------------------------------------------------------------
 
+// Draw grid for a single channel with amplitude scale ticks
+// zoom_scale: samples per pixel, sample_rate: samples per second
+// trigger_enabled: if true, use trigger_display_pos as t=0 reference
+// trigger_display_pos: pixel position of trigger point (-1 if not triggered)
+void draw_channel_grid(float x, float y, float width, float height,
+                       const char *label, Color channel_color, bool show_grid,
+                       float zoom_scale, uint32_t sample_rate,
+                       bool trigger_enabled, int trigger_display_pos);
+
 // Render a single channel's waveform with grid and trigger line
 void render_oscilloscope_channel(gui_app_t *app, float x, float y, float width, float height,
                                   int channel, const char *label, Color channel_color);

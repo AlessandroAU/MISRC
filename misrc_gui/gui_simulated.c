@@ -2,7 +2,7 @@
  * MISRC GUI - Simulated Device
  *
  * Provides a simulated capture device for development and testing without hardware.
- * Generates NTSC CVBS video on Channel A and VHS RF head signal on Channel B.
+ * Generates PAL CVBS video on Channel A and VHS RF head signal on Channel B.
  */
 
 //-----------------------------------------------------------------------------
@@ -44,40 +44,55 @@
 #endif
 
 //-----------------------------------------------------------------------------
-// NTSC Timing Constants (in samples at 40 MSPS)
+// PAL Timing Constants (in samples at 40 MSPS)
+// Using PAL-B/G standard (625 lines, 50 Hz, 4.43361875 MHz subcarrier)
 //-----------------------------------------------------------------------------
 
-#define NTSC_LINE_DURATION_US    63.555555  // One horizontal line (1/15734.264 Hz)
-#define NTSC_LINE_SAMPLES        ((int)(NTSC_LINE_DURATION_US * 40.0))  // ~2542 samples per line
-#define NTSC_HALF_LINE_SAMPLES   (NTSC_LINE_SAMPLES / 2)                // ~1271 samples
+#define PAL_LINE_DURATION_US     64.0      // One horizontal line (1/15625 Hz)
+#define PAL_LINE_SAMPLES         ((int)(PAL_LINE_DURATION_US * 40.0))   // 2560 samples per line
+#define PAL_HALF_LINE_SAMPLES    (PAL_LINE_SAMPLES / 2)                 // 1280 samples
 
 // Horizontal timing
-#define NTSC_HSYNC_US            4.7       // H-sync pulse width
-#define NTSC_HSYNC_SAMPLES       ((int)(NTSC_HSYNC_US * 40.0))          // ~188 samples
-#define NTSC_BACK_PORCH_US       4.7       // Back porch (includes colorburst)
-#define NTSC_BACK_PORCH_SAMPLES  ((int)(NTSC_BACK_PORCH_US * 40.0))
-#define NTSC_FRONT_PORCH_US      1.5       // Front porch
-#define NTSC_FRONT_PORCH_SAMPLES ((int)(NTSC_FRONT_PORCH_US * 40.0))
-#define NTSC_COLORBURST_CYCLES   9         // Number of colorburst cycles
-#define NTSC_COLORBURST_FREQ     3579545.0 // 3.579545 MHz color subcarrier
+#define PAL_HSYNC_US             4.7       // H-sync pulse width
+#define PAL_HSYNC_SAMPLES        ((int)(PAL_HSYNC_US * 40.0))           // ~188 samples
+#define PAL_BACK_PORCH_US        5.7       // Back porch (includes colorburst)
+#define PAL_BACK_PORCH_SAMPLES   ((int)(PAL_BACK_PORCH_US * 40.0))
+#define PAL_FRONT_PORCH_US       1.65      // Front porch
+#define PAL_FRONT_PORCH_SAMPLES  ((int)(PAL_FRONT_PORCH_US * 40.0))
+#define PAL_COLORBURST_CYCLES    10        // Number of colorburst cycles
+#define PAL_COLORBURST_FREQ      4433618.75 // 4.43361875 MHz color subcarrier
 
-// Vertical timing (NTSC interlaced)
-#define NTSC_LINES_PER_FRAME     525       // Total lines per frame (both fields)
-#define NTSC_LINES_PER_FIELD     262       // Lines per field (262.5 lines, alternating)
-#define NTSC_FRAME_SAMPLES       ((uint64_t)NTSC_LINE_SAMPLES * NTSC_LINES_PER_FRAME)
+// Vertical timing (PAL interlaced)
+#define PAL_LINES_PER_FRAME      625       // Total lines per frame (both fields)
+#define PAL_LINES_PER_FIELD      312       // Lines per field (312.5 lines, alternating)
+#define PAL_FRAME_SAMPLES        ((uint64_t)PAL_LINE_SAMPLES * PAL_LINES_PER_FRAME)
 
 // Vertical blanking structure (per field)
-#define NTSC_VBLANK_PRE_EQ_LINES      3     // Pre-equalizing (6 half-line pulses)
-#define NTSC_VBLANK_VSYNC_LINES       3     // Vertical sync (6 serrated pulses)
-#define NTSC_VBLANK_POST_EQ_LINES     3     // Post-equalizing (6 half-line pulses)
-#define NTSC_VBLANK_BLANK_LINES       12    // Remaining VBI (black with normal H-sync)
-#define NTSC_FIRST_ACTIVE_LINE        21    // First line with active video (0-indexed)
+#define PAL_VBLANK_PRE_EQ_LINES       2     // Pre-equalizing pulses
+#define PAL_VBLANK_VSYNC_LINES        2     // Vertical sync pulses
+#define PAL_VBLANK_POST_EQ_LINES      2     // Post-equalizing pulses
+#define PAL_VBLANK_BLANK_LINES        17    // Remaining VBI
+#define PAL_FIRST_ACTIVE_LINE         23    // First line with active video (0-indexed)
 
 // Equalizing and serration pulse widths
-#define NTSC_EQ_PULSE_US             2.3    // Equalizing pulse width
-#define NTSC_EQ_PULSE_SAMPLES        ((int)(NTSC_EQ_PULSE_US * 40.0))
-#define NTSC_SERR_PULSE_US           4.7    // Serration pulse width (same as H-sync)
-#define NTSC_SERR_PULSE_SAMPLES      ((int)(NTSC_SERR_PULSE_US * 40.0))
+#define PAL_EQ_PULSE_US              2.35   // Equalizing pulse width
+#define PAL_EQ_PULSE_SAMPLES         ((int)(PAL_EQ_PULSE_US * 40.0))
+#define PAL_SERR_PULSE_US            4.7    // Serration pulse width
+#define PAL_SERR_PULSE_SAMPLES       ((int)(PAL_SERR_PULSE_US * 40.0))
+
+// Use PAL constants throughout (aliased for compatibility with existing code)
+#define LINE_SAMPLES             PAL_LINE_SAMPLES
+#define HALF_LINE_SAMPLES        PAL_HALF_LINE_SAMPLES
+#define HSYNC_SAMPLES            PAL_HSYNC_SAMPLES
+#define BACK_PORCH_SAMPLES       PAL_BACK_PORCH_SAMPLES
+#define FRONT_PORCH_SAMPLES      PAL_FRONT_PORCH_SAMPLES
+#define LINES_PER_FRAME          PAL_LINES_PER_FRAME
+#define LINES_PER_FIELD          PAL_LINES_PER_FIELD
+#define FRAME_SAMPLES            PAL_FRAME_SAMPLES
+#define FIRST_ACTIVE_LINE        PAL_FIRST_ACTIVE_LINE
+#define EQ_PULSE_SAMPLES         PAL_EQ_PULSE_SAMPLES
+#define COLORBURST_FREQ          PAL_COLORBURST_FREQ
+#define COLORBURST_CYCLES        PAL_COLORBURST_CYCLES
 
 //-----------------------------------------------------------------------------
 // Video Signal Levels
@@ -98,11 +113,30 @@
 #define VHS_FM_DEVIATION         (VHS_LUMA_CARRIER_WHITE - VHS_LUMA_CARRIER_SYNC)
 
 //-----------------------------------------------------------------------------
-// Signal Generation State
+// Signal Generation State (based on hacktv approach)
 //-----------------------------------------------------------------------------
 
 static uint64_t s_sim_sample_count = 0;
 static double s_vhs_fm_phase = 0.0;  // FM phase must be accumulated (frequency varies with signal)
+
+// Color carrier lookup table (hacktv approach)
+// The table length equals sample_rate / carrier_freq in lowest terms
+// For 40MHz / 3.579545MHz ≈ 11.177, but we use integer math
+// hacktv uses { 39375000, 11 } = 3579545.4545... Hz exactly
+// At 40 MSPS: lookup_width = 40000000 * 11 / 39375000 = 440000000 / 39375000 ≈ 11.175
+// To get exact integer cycles, we'd need GCD, but for now use a large enough table
+#define COLOR_CARRIER_NUM  39375000   // Numerator (frequency * 11)
+#define COLOR_CARRIER_DEN  11         // Denominator
+// Actual carrier freq = 39375000 / 11 = 3579545.454545... Hz
+
+// Lookup table: stores cos and sin for each sample position in one color cycle period
+// Table width = sample_rate * denominator / numerator = 40000000 * 11 / 39375000
+// Simplified: 440000000 / 39375000 = 8800 / 787.5 ≈ 11.175
+// We'll compute this properly at init time
+static int16_t *s_colour_lookup_i = NULL;  // cos(phase) * 32767
+static int16_t *s_colour_lookup_q = NULL;  // sin(phase) * 32767
+static int s_colour_lookup_width = 0;
+static int s_colour_lookup_offset = 0;
 
 // Simple xorshift PRNG for noise
 static uint32_t s_sim_rng_state = 12345;
@@ -121,10 +155,62 @@ static float sim_noise(void) {
     return ((float)(sim_rand() & 0xFFFF) / 32768.0f) - 1.0f;
 }
 
-// Calculate continuous phase from absolute sample index
-// This ensures phase continuity across line and field boundaries
-static inline double phase_from_sample(uint64_t sample_index, double freq_hz) {
-    return 2.0 * M_PI * freq_hz * ((double)sample_index / (double)SIM_SAMPLE_RATE);
+// Initialize the color carrier lookup table for PAL (call once at startup)
+static void init_colour_lookup(void) {
+    if (s_colour_lookup_i != NULL) return;  // Already initialized
+
+    // PAL carrier: 4.43361875 MHz = 17734475/4 Hz (hacktv uses this rational)
+    // At 40 MSPS: samples per cycle = 40000000 / 4433618.75 ≈ 9.022
+    // For exact repeat: 40000000 * 4 / 17734475 = 160000000 / 17734475
+    // GCD(160000000, 17734475) = 25 -> 6400000 / 709379
+    // This doesn't simplify nicely, so use a large table
+    // hacktv uses: colour_lookup_width = a.num where a = pixel_rate / carrier
+    // For PAL at various sample rates, they compute the exact rational
+
+    // For simplicity, use enough samples to cover many complete cycles
+    // 709379 samples would give exact 6400000 cycles, but that's huge
+    // Instead use a reasonable size that covers several lines worth
+    // At 9.022 samples/cycle, 2560 samples = ~284 cycles (close enough)
+
+    s_colour_lookup_width = 2560;  // One line width for PAL
+    int total_size = s_colour_lookup_width + LINE_SAMPLES;
+
+    s_colour_lookup_i = (int16_t *)malloc(total_size * sizeof(int16_t));
+    s_colour_lookup_q = (int16_t *)malloc(total_size * sizeof(int16_t));
+
+    if (!s_colour_lookup_i || !s_colour_lookup_q) {
+        fprintf(stderr, "[SIM] Failed to allocate color lookup tables\n");
+        return;
+    }
+
+    // Phase increment per sample = 2*PI * (carrier_freq / sample_rate)
+    // PAL: 2*PI * 4433618.75 / 40000000
+    double phase_inc = 2.0 * M_PI * PAL_COLORBURST_FREQ / (double)SIM_SAMPLE_RATE;
+
+    for (int i = 0; i < total_size; i++) {
+        double phase = phase_inc * i;
+        s_colour_lookup_i[i] = (int16_t)round(cos(phase) * 32767.0);
+        s_colour_lookup_q[i] = (int16_t)round(sin(phase) * 32767.0);
+    }
+
+    s_colour_lookup_offset = 0;
+
+    fprintf(stderr, "[SIM] PAL color carrier lookup table initialized: %d samples (%.1f MHz)\n",
+            s_colour_lookup_width, PAL_COLORBURST_FREQ / 1000000.0);
+}
+
+// Cleanup color lookup table
+static void cleanup_colour_lookup(void) {
+    if (s_colour_lookup_i) {
+        free(s_colour_lookup_i);
+        s_colour_lookup_i = NULL;
+    }
+    if (s_colour_lookup_q) {
+        free(s_colour_lookup_q);
+        s_colour_lookup_q = NULL;
+    }
+    s_colour_lookup_width = 0;
+    s_colour_lookup_offset = 0;
 }
 
 //-----------------------------------------------------------------------------
@@ -142,30 +228,30 @@ typedef enum {
 // Get the line type and field information for a given sample position
 static line_type_t sim_get_line_type(uint64_t sample_index, int *out_field, int *out_line_in_field,
                                      int *out_sample_in_line, bool *out_is_half_line) {
-    uint64_t sample_in_frame = sample_index % NTSC_FRAME_SAMPLES;
-    int line_in_frame = (int)(sample_in_frame / NTSC_LINE_SAMPLES);
-    int sample_in_line = (int)(sample_in_frame % NTSC_LINE_SAMPLES);
+    uint64_t sample_in_frame = sample_index % FRAME_SAMPLES;
+    int line_in_frame = (int)(sample_in_frame / LINE_SAMPLES);
+    int sample_in_line = (int)(sample_in_frame % LINE_SAMPLES);
 
     int field, line_in_field;
     bool is_half_line = false;
 
-    if (line_in_frame < NTSC_LINES_PER_FIELD) {
+    if (line_in_frame < LINES_PER_FIELD) {
         field = 0;
         line_in_field = line_in_frame;
-    } else if (line_in_frame == NTSC_LINES_PER_FIELD) {
-        if (sample_in_line < NTSC_HALF_LINE_SAMPLES) {
+    } else if (line_in_frame == LINES_PER_FIELD) {
+        if (sample_in_line < HALF_LINE_SAMPLES) {
             field = 0;
             line_in_field = 262;
             is_half_line = true;
         } else {
             field = 1;
             line_in_field = 0;
-            sample_in_line -= NTSC_HALF_LINE_SAMPLES;
+            sample_in_line -= HALF_LINE_SAMPLES;
             is_half_line = true;
         }
     } else {
         field = 1;
-        line_in_field = line_in_frame - NTSC_LINES_PER_FIELD;
+        line_in_field = line_in_frame - LINES_PER_FIELD;
     }
 
     *out_field = field;
@@ -173,13 +259,13 @@ static line_type_t sim_get_line_type(uint64_t sample_index, int *out_field, int 
     *out_sample_in_line = sample_in_line;
     *out_is_half_line = is_half_line;
 
-    if (line_in_field < NTSC_VBLANK_PRE_EQ_LINES) {
+    if (line_in_field < PAL_VBLANK_PRE_EQ_LINES) {
         return LINE_TYPE_PRE_EQ;
-    } else if (line_in_field < NTSC_VBLANK_PRE_EQ_LINES + NTSC_VBLANK_VSYNC_LINES) {
+    } else if (line_in_field < PAL_VBLANK_PRE_EQ_LINES + PAL_VBLANK_VSYNC_LINES) {
         return LINE_TYPE_VSYNC;
-    } else if (line_in_field < NTSC_VBLANK_PRE_EQ_LINES + NTSC_VBLANK_VSYNC_LINES + NTSC_VBLANK_POST_EQ_LINES) {
+    } else if (line_in_field < PAL_VBLANK_PRE_EQ_LINES + PAL_VBLANK_VSYNC_LINES + PAL_VBLANK_POST_EQ_LINES) {
         return LINE_TYPE_POST_EQ;
-    } else if (line_in_field < NTSC_FIRST_ACTIVE_LINE) {
+    } else if (line_in_field < FIRST_ACTIVE_LINE) {
         return LINE_TYPE_VBLANK;
     } else {
         return LINE_TYPE_ACTIVE;
@@ -192,13 +278,13 @@ static line_type_t sim_get_line_type(uint64_t sample_index, int *out_field, int 
 
 // Generate equalizing pulse signal (2 pulses per line at half-line rate)
 static double sim_generate_eq_pulse(int sample_in_line, bool is_half_line) {
-    int half_line = NTSC_HALF_LINE_SAMPLES;
+    int half_line = HALF_LINE_SAMPLES;
 
-    if (sample_in_line < NTSC_EQ_PULSE_SAMPLES) {
+    if (sample_in_line < EQ_PULSE_SAMPLES) {
         return SYNC_LEVEL;
     }
     if (!is_half_line && sample_in_line >= half_line &&
-        sample_in_line < half_line + NTSC_EQ_PULSE_SAMPLES) {
+        sample_in_line < half_line + EQ_PULSE_SAMPLES) {
         return SYNC_LEVEL;
     }
     return BLANKING_LEVEL;
@@ -206,12 +292,12 @@ static double sim_generate_eq_pulse(int sample_in_line, bool is_half_line) {
 
 // Generate vertical sync with serrations
 static double sim_generate_vsync_serration(int sample_in_line, bool is_half_line) {
-    int serr_start1 = NTSC_HALF_LINE_SAMPLES - NTSC_SERR_PULSE_SAMPLES;
-    if (sample_in_line >= serr_start1 && sample_in_line < NTSC_HALF_LINE_SAMPLES) {
+    int serr_start1 = HALF_LINE_SAMPLES - PAL_SERR_PULSE_SAMPLES;
+    if (sample_in_line >= serr_start1 && sample_in_line < HALF_LINE_SAMPLES) {
         return BLANKING_LEVEL;
     }
     if (!is_half_line) {
-        int serr_start2 = NTSC_LINE_SAMPLES - NTSC_SERR_PULSE_SAMPLES;
+        int serr_start2 = LINE_SAMPLES - PAL_SERR_PULSE_SAMPLES;
         if (sample_in_line >= serr_start2) {
             return BLANKING_LEVEL;
         }
@@ -223,13 +309,13 @@ static double sim_generate_vsync_serration(int sample_in_line, bool is_half_line
 // Color Space Conversion
 //-----------------------------------------------------------------------------
 
-// RGB to YIQ conversion (NTSC color space)
-static inline void rgb_to_yiq(double r, double g, double b,
-                              double *y, double *i, double *q) {
-    // NTSC YIQ matrix
+// RGB to YUV conversion (standard for vhs-decode compatibility)
+// Same formula as hacktv: U = (B-Y) * 0.493, V = (R-Y) * 0.877
+static inline void rgb_to_yuv(double r, double g, double b,
+                              double *y, double *u, double *v) {
     *y = 0.299 * r + 0.587 * g + 0.114 * b;
-    *i = 0.596 * r - 0.274 * g - 0.322 * b;
-    *q = 0.211 * r - 0.523 * g + 0.312 * b;
+    *u = 0.493 * (b - *y);  // (B-Y) scaled - same as hacktv eu_co
+    *v = 0.877 * (r - *y);  // (R-Y) scaled - same as hacktv ev_co
 }
 
 // 75% SMPTE color bars as RGB
@@ -249,53 +335,90 @@ static const double bar_rgb[8][3] = {
 // Test Pattern Generation
 //-----------------------------------------------------------------------------
 
-// Get Y, I, Q values for current bar
-static void sim_get_bar_yiq(int bar, double *y, double *i, double *q) {
+// Test mode: set to 1-7 to output a single solid color bar, 0 for normal bars
+#define TEST_SINGLE_COLOR 1  // 0=normal, 1=yellow, 2=cyan, 3=green, 4=magenta, 5=red, 6=blue
+
+// Get Y, U, V values for current bar
+static void sim_get_bar_yuv(int bar, double *y, double *u, double *v) {
+#if TEST_SINGLE_COLOR > 0
+    bar = TEST_SINGLE_COLOR;  // Force single color for testing
+#else
     bar = bar % 8;
-    rgb_to_yiq(bar_rgb[bar][0], bar_rgb[bar][1], bar_rgb[bar][2], y, i, q);
+#endif
+    rgb_to_yuv(bar_rgb[bar][0], bar_rgb[bar][1], bar_rgb[bar][2], y, u, v);
+
+    // Debug: print YUV values once
+    static int printed = 0;
+    if (!printed) {
+        fprintf(stderr, "[SIM] Color bar %d: Y=%.3f U=%.3f V=%.3f\n", bar, *y, *u, *v);
+        printed = 1;
+    }
 }
 
 static double sim_generate_test_pattern(int pixel_in_line, int field, int active_width) {
     (void)field;
     int bar = (pixel_in_line * 8) / active_width;
 
-    double y, i, q;
-    sim_get_bar_yiq(bar, &y, &i, &q);
-    (void)i; (void)q;  // Luma only for this function
+    double y, u, v;
+    sim_get_bar_yuv(bar, &y, &u, &v);
+    (void)u; (void)v;  // Luma only for this function
 
     return y;
 }
 
 //-----------------------------------------------------------------------------
-// CVBS Signal Generation
+// CVBS Signal Generation (rewritten based on hacktv approach)
 //-----------------------------------------------------------------------------
 
+// Track the current line for lookup table offset management
+static int s_current_line = -1;
+static int s_line_lookup_offset = 0;  // Offset into lookup table for current line
+
+// Called at the start of each line to update the lookup table offset
+static void advance_to_line(int line_in_frame) {
+    if (line_in_frame != s_current_line) {
+        // New line - advance the lookup offset
+        if (s_current_line >= 0 && line_in_frame == s_current_line + 1) {
+            // Sequential line - advance by line width
+            s_line_lookup_offset += LINE_SAMPLES;
+            s_line_lookup_offset %= s_colour_lookup_width;
+        } else {
+            // Non-sequential (frame wrap or init) - compute from line number
+            // Each line adds LINE_SAMPLES to the offset
+            s_line_lookup_offset = (line_in_frame * LINE_SAMPLES) % s_colour_lookup_width;
+        }
+        s_current_line = line_in_frame;
+    }
+}
+
 static double sim_generate_cvbs(uint64_t sample_index, int *out_line_number, int *out_field,
-                                 double *out_chroma_i, double *out_chroma_q) {
+                                 double *out_chroma_u, double *out_chroma_v, double *out_subcarrier_phase) {
     int field, line_in_field, sample_in_line;
     bool is_half_line;
 
     line_type_t line_type = sim_get_line_type(sample_index, &field, &line_in_field,
                                                &sample_in_line, &is_half_line);
 
-    int line_in_frame = (field == 0) ? line_in_field : (NTSC_LINES_PER_FIELD + line_in_field);
+    int line_in_frame = (field == 0) ? line_in_field : (LINES_PER_FIELD + line_in_field);
     if (out_line_number) *out_line_number = line_in_frame;
     if (out_field) *out_field = field;
 
-    // For CVBS output, we need the traditional per-line phase calculation that
-    // NTSC decoders expect. The 227.5 cycles per line means 180° phase shift each line.
-    // Phase within current line (based on sample position within line)
-    double cycles_in_line = NTSC_COLORBURST_FREQ * (double)sample_in_line / (double)SIM_SAMPLE_RATE;
-    double phase_in_line = 2.0 * M_PI * cycles_in_line;
+    // Update lookup table offset for this line
+    advance_to_line(line_in_frame);
 
-    // Line-based phase offset: 180° per line (227.5 cycles = 227 full + 0.5)
-    double line_phase_offset = (line_in_frame % 2) * M_PI;
+    // Get carrier lookup values for this sample position
+    int lut_idx = s_line_lookup_offset + sample_in_line;
+    int16_t carrier_i = s_colour_lookup_i[lut_idx];  // cos(phase)
+    int16_t carrier_q = s_colour_lookup_q[lut_idx];  // sin(phase)
 
-    double subcarrier_phase = phase_in_line + line_phase_offset;
+    // Output subcarrier phase for VHS (approximate from lookup)
+    if (out_subcarrier_phase) {
+        *out_subcarrier_phase = atan2((double)carrier_q, (double)carrier_i);
+    }
 
     double signal = 0.0;
-    double chroma_i = 0.0;  // I component for quadrature modulation
-    double chroma_q = 0.0;  // Q component for quadrature modulation
+    double chroma_u = 0.0;
+    double chroma_v = 0.0;
 
     switch (line_type) {
         case LINE_TYPE_PRE_EQ:
@@ -308,7 +431,7 @@ static double sim_generate_cvbs(uint64_t sample_index, int *out_line_number, int
             break;
 
         case LINE_TYPE_VBLANK:
-            if (sample_in_line < NTSC_HSYNC_SAMPLES) {
+            if (sample_in_line < HSYNC_SAMPLES) {
                 signal = SYNC_LEVEL;
             } else {
                 signal = BLANKING_LEVEL;
@@ -316,44 +439,68 @@ static double sim_generate_cvbs(uint64_t sample_index, int *out_line_number, int
             break;
 
         case LINE_TYPE_ACTIVE: {
-            int active_start = NTSC_HSYNC_SAMPLES + NTSC_BACK_PORCH_SAMPLES;
-            int active_end = NTSC_LINE_SAMPLES - NTSC_FRONT_PORCH_SAMPLES;
+            int active_start = HSYNC_SAMPLES + BACK_PORCH_SAMPLES;
+            int active_end = LINE_SAMPLES - FRONT_PORCH_SAMPLES;
             int active_width = active_end - active_start;
 
-            if (sample_in_line < NTSC_HSYNC_SAMPLES) {
+            if (sample_in_line < HSYNC_SAMPLES) {
                 signal = SYNC_LEVEL;
             }
             else if (sample_in_line < active_start) {
-                int back_porch_pos = sample_in_line - NTSC_HSYNC_SAMPLES;
-                int burst_start = (int)(0.6 * 40);
-                int burst_duration = (int)(NTSC_COLORBURST_CYCLES * 40.0 / (NTSC_COLORBURST_FREQ / 1000000.0));
+                // Back porch - includes color burst
+                int back_porch_pos = sample_in_line - HSYNC_SAMPLES;
+                int burst_start = (int)(0.6 * 40);   // 0.6µs after hsync
+                int burst_duration = (int)(COLORBURST_CYCLES * 40.0 / (COLORBURST_FREQ / 1000000.0));
 
                 if (back_porch_pos >= burst_start && back_porch_pos < burst_start + burst_duration) {
-                    // Colorburst - reference phase for decoder
-                    // NTSC burst is along the -U axis (180° from +U), which is approximately -I
-                    // For simplicity, use a sine burst (reference phase 0)
-                    double burst = 0.15 * sin(subcarrier_phase);
+                    // PAL colorburst: 135° phase (swinging ±45° from line to line)
+                    // cos(135°) = -sqrt(2)/2 ≈ -0.707
+                    // sin(135°) = +sqrt(2)/2 ≈ +0.707
+                    // PAL burst swings between 135° and 225° on alternating lines
+                    // Line n:   phase = 135° -> burst_i = -0.707, burst_q = +0.707
+                    // Line n+1: phase = 225° -> burst_i = -0.707, burst_q = -0.707
+                    // The swing is based on (frame + line) & 1
+
+                    double burst_level = 0.15;  // About 40 IRE peak-to-peak
+                    double burst_i = -0.7071;   // cos(135°) = -sqrt(2)/2
+                    double burst_q = 0.7071;    // sin(135°) = +sqrt(2)/2
+
+                    // PAL burst phase alternation: swing ±45° on alternating lines
+                    // On odd lines (when pal_switch = -1), burst swings to 225°
+                    int pal_switch = ((line_in_frame) & 1) ? -1 : 1;
+                    burst_q *= pal_switch;
+
+                    // Modulation: burst = burst_i * carrier_i + burst_q * carrier_q
+                    //           = burst_i * cos(wt) + burst_q * sin(wt)
+                    double burst = burst_level * (burst_i * ((double)carrier_i / 32767.0)
+                                                + burst_q * ((double)carrier_q / 32767.0));
                     signal = BLANKING_LEVEL + burst;
                 } else {
                     signal = BLANKING_LEVEL;
                 }
             }
             else if (sample_in_line < active_end) {
+                // Active video region
                 int pixel = sample_in_line - active_start;
                 int bar = (pixel * 8) / active_width;
 
-                // Get Y, I, Q from RGB color bars
-                double y, i, q;
-                sim_get_bar_yiq(bar, &y, &i, &q);
+                // Get Y, U, V from RGB color bars
+                double y, u, v;
+                sim_get_bar_yuv(bar, &y, &u, &v);
 
-                // Store I/Q for VHS generation
-                chroma_i = i;
-                chroma_q = q;
+                // Store U/V for VHS generation
+                chroma_u = u;
+                chroma_v = v;
 
-                // Generate NTSC chroma using quadrature modulation: I*cos(wt) + Q*sin(wt)
-                // This is the standard NTSC modulation formula
-                double chroma = i * cos(subcarrier_phase) + q * sin(subcarrier_phase);
+                // PAL chroma modulation with V-axis switching:
+                // Formula: chroma = cos(wt) * V * pal_switch + sin(wt) * U
+                // The V component sign alternates on each line (PAL = Phase Alternation Line)
+                // This is the key difference from NTSC which doesn't alternate
+                int pal_switch = ((line_in_frame) & 1) ? -1 : 1;
+                double chroma = ((double)carrier_i / 32767.0) * v * pal_switch
+                              + ((double)carrier_q / 32767.0) * u;
 
+                // Scale chroma (hacktv doesn't scale here, but we need to match levels)
                 signal = BLACK_LEVEL + y * (WHITE_LEVEL - BLACK_LEVEL) + chroma;
             }
             else {
@@ -363,13 +510,9 @@ static double sim_generate_cvbs(uint64_t sample_index, int *out_line_number, int
         }
     }
 
-    // Output I/Q components for VHS quadrature generation
-    if (out_chroma_i) {
-        *out_chroma_i = chroma_i;
-    }
-    if (out_chroma_q) {
-        *out_chroma_q = chroma_q;
-    }
+    // Output U/V components for VHS generation
+    if (out_chroma_u) *out_chroma_u = chroma_u;
+    if (out_chroma_v) *out_chroma_v = chroma_v;
 
     return signal;
 }
@@ -378,10 +521,9 @@ static double sim_generate_cvbs(uint64_t sample_index, int *out_line_number, int
 // VHS RF Signal Generation
 //-----------------------------------------------------------------------------
 
-// VHS color-under: generate 629 kHz QAM chroma signal from I/Q components
-// VHS color-under is a quadrature signal, not single-axis amplitude+phase
+// VHS color-under: generate 629 kHz QAM chroma signal from U/V components
 
-static double sim_generate_vhs_rf(double cvbs_luma, double chroma_i, double chroma_q,
+static double sim_generate_vhs_rf(double cvbs_luma, double chroma_u, double chroma_v,
                                    int line_in_frame, int field, int sample_in_line) {
     (void)field;
 
@@ -400,13 +542,7 @@ static double sim_generate_vhs_rf(double cvbs_luma, double chroma_i, double chro
 
     // === VHS Color-Under (629 kHz QAM) ===
     // VHS color-under is a quadrature amplitude modulated signal at 629 kHz.
-    // The decoder expects the carrier to have a consistent phase relationship
-    // to the line timing (like NTSC burst provides for 3.58 MHz).
-    //
-    // Use per-line phase calculation so the decoder can lock properly.
-    // VHS also applies a 90° phase rotation on odd lines for crosstalk cancellation.
-
-    // Per-line phase for 629 kHz carrier (same approach as CVBS uses for 3.58 MHz)
+    // Per-line phase for 629 kHz carrier
     double vhs_cycles_in_line = VHS_CHROMA_CARRIER * (double)sample_in_line / (double)SIM_SAMPLE_RATE;
     double vhs_phase = 2.0 * M_PI * vhs_cycles_in_line;
 
@@ -414,16 +550,16 @@ static double sim_generate_vhs_rf(double cvbs_luma, double chroma_i, double chro
     double vhs_line_rotation = (line_in_frame % 2) ? (M_PI / 2.0) : 0.0;
     vhs_phase += vhs_line_rotation;
 
-    // Generate 629 kHz QAM chroma: I*cos(wt) + Q*sin(wt)
-    // This is the same quadrature formula used for NTSC, just at 629 kHz
-    double chroma_under = chroma_i * cos(vhs_phase) + chroma_q * sin(vhs_phase);
+    // Generate 629 kHz QAM chroma: cos(wt)*V + sin(wt)*U
+    // Note: PAL V-axis switching was already applied in the CVBS generation
+    double chroma_under = cos(vhs_phase) * chroma_v + sin(vhs_phase) * chroma_u;
 
     // Scale down VHS chroma (color-under level is lower than NTSC broadcast)
     chroma_under *= 0.5;
 
     double head_noise = 0.0;
 #if SIM_ENABLE_VHS_HEAD_SWITCH
-    int line_in_field = (field == 0) ? line_in_frame : (line_in_frame - NTSC_LINES_PER_FIELD);
+    int line_in_field = (field == 0) ? line_in_frame : (line_in_frame - LINES_PER_FIELD);
     if (line_in_field <= 6) {
         double switch_intensity = 1.0 - (line_in_field / 6.0);
         head_noise = sim_noise() * 0.4 * switch_intensity;
@@ -483,32 +619,30 @@ static int simulated_capture_thread(void *ctx) {
         for (int i = 0; i < SIM_BUFFER_SIZE; i++) {
             int line_in_frame = 0;
             int field = 0;
-            double chroma_i = 0.0;
-            double chroma_q = 0.0;
+            double chroma_u = 0.0;
+            double chroma_v = 0.0;
+            double subcarrier_phase = 0.0;
 
-            // Generate CVBS signal and get I/Q chroma components for VHS
-            double cvbs = sim_generate_cvbs(s_sim_sample_count, &line_in_frame, &field, &chroma_i, &chroma_q);
+            // Generate CVBS signal and get U/V chroma components for VHS
+            double cvbs = sim_generate_cvbs(s_sim_sample_count, &line_in_frame, &field,
+                                            &chroma_u, &chroma_v, &subcarrier_phase);
 #if SIM_ENABLE_CVBS_NOISE
             cvbs += sim_noise() * cvbs_noise;
 #endif
 
             // For VHS, compute luma from CVBS (subtract the chroma we added)
-            // Must use the same phase calculation as sim_generate_cvbs() to correctly extract luma
-            // Get the correct sample_in_line from sim_get_line_type (handles half-lines properly)
+            // Chroma was: cos(phase) * V + sin(phase) * U
+            double chroma_at_sample = cos(subcarrier_phase) * chroma_v
+                                    + sin(subcarrier_phase) * chroma_u;
+            double cvbs_luma = cvbs - chroma_at_sample;
+
+            // Get sample_in_line for VHS RF generation
             int field_tmp, line_in_field_tmp, sample_in_line;
             bool is_half_line_tmp;
             sim_get_line_type(s_sim_sample_count, &field_tmp, &line_in_field_tmp, &sample_in_line, &is_half_line_tmp);
 
-            double cycles_in_line = NTSC_COLORBURST_FREQ * (double)sample_in_line / (double)SIM_SAMPLE_RATE;
-            double phase_in_line = 2.0 * M_PI * cycles_in_line;
-            double line_phase_offset = (line_in_frame % 2) * M_PI;
-            double subcarrier_phase = phase_in_line + line_phase_offset;
-            // Reconstruct the chroma we added using quadrature: I*cos(wt) + Q*sin(wt)
-            double chroma_at_sample = chroma_i * cos(subcarrier_phase) + chroma_q * sin(subcarrier_phase);
-            double cvbs_luma = cvbs - chroma_at_sample;
-
-            // Generate VHS RF with I/Q quadrature chroma at 629 kHz
-            double vhs_rf = sim_generate_vhs_rf(cvbs_luma, chroma_i, chroma_q, line_in_frame, field, sample_in_line);
+            // Generate VHS RF with U/V quadrature chroma at 629 kHz
+            double vhs_rf = sim_generate_vhs_rf(cvbs_luma, chroma_u, chroma_v, line_in_frame, field, sample_in_line);
 #if SIM_ENABLE_VHS_RF_NOISE
             vhs_rf += sim_noise() * rf_noise;
 #endif
@@ -629,9 +763,14 @@ int gui_simulated_start(gui_app_t *app) {
     app->display_samples_available_a = 0;
     app->display_samples_available_b = 0;
 
+    // Initialize color carrier lookup table
+    init_colour_lookup();
+
     // Reset signal generation state
     s_sim_sample_count = 0;
     s_vhs_fm_phase = 0.0;
+    s_current_line = -1;
+    s_line_lookup_offset = 0;
 
     // Start thread
     atomic_store(&app->sim_running, true);

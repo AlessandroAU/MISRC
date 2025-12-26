@@ -11,6 +11,7 @@ typedef struct hsdaoh_dev hsdaoh_dev_t;
 typedef struct sc_handle sc_handle_t;
 typedef struct fft_state fft_state_t;
 typedef struct phosphor_rt phosphor_rt_t;
+typedef struct channel_panel_config channel_panel_config_t;
 
 // Display buffer size (samples per channel for oscilloscope)
 #define DISPLAY_BUFFER_SIZE 4096
@@ -209,6 +210,17 @@ typedef struct gui_app {
     // FFT state for split mode (waterfall/spectrogram display)
     fft_state_t *fft_a;                // FFT state for channel A (NULL if not in split mode)
     fft_state_t *fft_b;                // FFT state for channel B (NULL if not in split mode)
+
+    // Panel configuration (new panel abstraction system)
+    // Note: channel_panel_config_t is defined in gui_panel.h
+    // Using anonymous struct here to avoid circular include
+    struct {
+        bool split;                    // false = single panel, true = split view
+        int left_view;                 // panel_view_type_t for left panel
+        int right_view;                // panel_view_type_t for right panel
+        void *left_state;              // View-specific state
+        void *right_state;             // View-specific state for right panel
+    } panel_config_a, panel_config_b;
 
 } gui_app_t;
 

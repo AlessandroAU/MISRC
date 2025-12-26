@@ -10,6 +10,7 @@
 #include "gui_trigger.h"
 #include "gui_popup.h"
 #include "gui_ui.h"
+#include "gui_panel.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -150,10 +151,10 @@ static void format_time_label(char *buf, size_t buf_size, double seconds) {
 // zoom_scale: samples per pixel, sample_rate: samples per second
 // trigger_enabled: if true, use trigger_display_pos as t=0 reference
 // trigger_display_pos: pixel position of trigger point (-1 if not triggered)
-static void draw_channel_grid(float x, float y, float width, float height,
-                               const char *label, Color channel_color, bool show_grid,
-                               float zoom_scale, uint32_t sample_rate,
-                               bool trigger_enabled, int trigger_display_pos) {
+void draw_channel_grid(float x, float y, float width, float height,
+                       const char *label, Color channel_color, bool show_grid,
+                       float zoom_scale, uint32_t sample_rate,
+                       bool trigger_enabled, int trigger_display_pos) {
     // Background slightly darker than main bg
     DrawRectangle((int)x, (int)y, (int)width, (int)height, (Color){25, 25, 30, 255});
 
@@ -373,156 +374,8 @@ void render_oscilloscope_channel(gui_app_t *app, float x, float y, float width, 
         return;
     }
 
-    int samples_to_draw = (samples_available < (size_t)display_width) ? (int)samples_available : display_width;
-
-    // Render based on per-channel display mode
-    bool is_phosphor_mode = (trig->scope_mode == SCOPE_MODE_PHOSPHOR);
-    bool is_split_mode = (trig->scope_mode == SCOPE_MODE_SPLIT);
-
-    if (is_split_mode) {
-        // Split mode: phosphor waveform on left half, FFT spectrum on right half
-        float half_width = width / 2.0f;
-        float divider_x = x + half_width;
-
-        // Left half: phosphor waveform display
-        int buf_width = (int)half_width;
-        int buf_height = (int)height;
-        int waveform_samples = samples_to_draw / 2;
-        if (waveform_samples > buf_width) waveform_samples = buf_width;
-
-        if (buf_width > 0 && buf_height > 0) {
-            // Get phosphor state for this channel
-            phosphor_rt_t *prt = (channel == 0) ? app->phosphor_a : app->phosphor_b;
-            if (prt) {
-                // Initialize/resize phosphor if needed (no-op if already correct size)
-                phosphor_rt_init(prt, buf_width, buf_height);
-
-                // Update phosphor
-                phosphor_rt_begin_frame(prt);
-                phosphor_rt_draw_waveform(prt, samples, waveform_samples, app->settings.amplitude_scale);
-                phosphor_rt_end_frame(prt);
-
-                // Render phosphor to screen
-                if (trig->phosphor_color == PHOSPHOR_COLOR_OPACITY) {
-                    phosphor_rt_render_opacity(prt, x, y);
-                } else {
-                    phosphor_rt_render(prt, x, y, false);
-                }
-            }
-
-            // Draw line overlay on phosphor (semi-transparent)
-            float waveform_center_y = y + height / 2.0f;
-            float prev_py = waveform_center_y;
-            Color waveform_color = {channel_color.r, channel_color.g, channel_color.b, 200};
-
-            for (int px = 0; px < waveform_samples; px++) {
-                waveform_sample_t *sample = &samples[px];
-                float px_x = x + px;
-                float py = waveform_center_y - sample->value * scale;
-
-                if (py < y) py = y;
-                if (py > y + height) py = y + height;
-
-                if (px > 0) {
-                    DrawLineEx((Vector2){px_x - 1, prev_py}, (Vector2){px_x, py}, 1.0f, waveform_color);
-                }
-                prev_py = py;
-            }
-
-            // Draw time/div label for left half waveform (grid drew it at full width position)
-            if (sample_rate > 0 && trig->zoom_scale > 0) {
-                double time_per_pixel = (double)trig->zoom_scale / (double)sample_rate;
-                double rough_division = time_per_pixel * (double)GRID_MIN_SPACING_PX;
-                double time_division = snap_to_125(rough_division);
-
-                char time_buf[32];
-                format_time_label(time_buf, sizeof(time_buf), time_division);
-                char div_label[48];
-                snprintf(div_label, sizeof(div_label), "%s/div", time_buf);
-                int div_label_w = measure_text_mono(div_label, FONT_SIZE_OSC_DIV);
-                // Position at top-right of left half (not full width)
-                draw_text_mono(div_label, x + half_width - div_label_w - 8, y + 26, FONT_SIZE_OSC_DIV, COLOR_TEXT);
-            }
-
-            // Draw channel label in top-right corner of left half
-            int label_width = measure_text_with_font(label, FONT_SIZE_OSC_LABEL);
-            draw_text_with_font(label, x + half_width - label_width - 8, y + 4, FONT_SIZE_OSC_LABEL, channel_color);
-        }
-
-        // Draw divider line
-        DrawLineEx((Vector2){divider_x, y}, (Vector2){divider_x, y + height}, 2.0f, COLOR_GRID_MAJOR);
-
-        // Right half: FFT spectrum
-        fft_state_t *fft = (channel == 0) ? app->fft_a : app->fft_b;
-        if (fft && fft->initialized) {
-            // Calculate display sample rate (samples per second in display space)
-            // zoom_scale = raw samples per display pixel
-            // sample_rate = raw samples per second
-            // display_sample_rate = display pixels per second = sample_rate / zoom_scale
-            uint32_t sr = atomic_load(&app->sample_rate);
-            float display_sample_rate = (trig->zoom_scale > 0 && sr > 0) ?
-                                        (float)sr / trig->zoom_scale : 0;
-
-            // Process FFT from display samples
-            gui_fft_process_display(fft, samples, samples_available, display_sample_rate);
-
-            // Render FFT spectrum to right half
-            gui_fft_render(fft, divider_x + 2, y, half_width - 4, height, display_sample_rate, channel_color, app->fonts);
-        } else {
-            // FFT not available - show message
-            const char *text = gui_fft_available() ? "FFT Initializing..." : "FFT Not Available";
-            int text_width = measure_text_with_font(text, FONT_SIZE_OSC_MSG);
-            draw_text_with_font(text, divider_x + half_width/2 - text_width/2, y + height/2 - 12,
-                               FONT_SIZE_OSC_MSG, COLOR_TEXT_DIM);
-        }
-    } else if (is_phosphor_mode) {
-        // Phosphor display (digital persistence with heatmap)
-        int buf_width = (int)width;
-        int buf_height = (int)height;
-
-        // Get phosphor state for this channel
-        phosphor_rt_t *prt = (channel == 0) ? app->phosphor_a : app->phosphor_b;
-        if (prt && buf_width > 0 && buf_height > 0) {
-            // Initialize/resize phosphor if needed (no-op if already correct size)
-            phosphor_rt_init(prt, buf_width, buf_height);
-
-            // Update phosphor
-            phosphor_rt_begin_frame(prt);
-            phosphor_rt_draw_waveform(prt, samples, samples_to_draw, app->settings.amplitude_scale);
-            phosphor_rt_end_frame(prt);
-
-            // Render phosphor to screen
-            if (trig->phosphor_color == PHOSPHOR_COLOR_OPACITY) {
-                phosphor_rt_render_opacity(prt, x, y);
-            } else {
-                phosphor_rt_render(prt, x, y, false);
-            }
-        }
-    }
-
-    // Draw resampled waveform as connected line (for line and phosphor modes)
-    if (!is_split_mode) {
-        float prev_py = center_y;
-        Color waveform_color = is_phosphor_mode ?
-            (Color){channel_color.r, channel_color.g, channel_color.b, 200} : channel_color;
-
-        for (int px = 0; px < samples_to_draw; px++) {
-            waveform_sample_t *sample = &samples[px];
-            float px_x = x + px;
-
-            float py = center_y - sample->value * scale;
-
-            // Clamp to channel bounds
-            if (py < y) py = y;
-            if (py > y + height) py = y + height;
-
-            if (px > 0) {
-                DrawLineEx((Vector2){px_x - 1, prev_py}, (Vector2){px_x, py}, 1.0f, waveform_color);
-            }
-
-            prev_py = py;
-        }
-    }
+    // Render panels using the new panel abstraction system
+    render_channel_panels(app, channel, x, y, width, height, channel_color);
 }
 
 //-----------------------------------------------------------------------------

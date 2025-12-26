@@ -13,6 +13,7 @@
 #include "gui_phosphor_rt.h"
 #include "gui_fft.h"
 #include "gui_simulated.h"
+#include "gui_panel.h"
 
 #include <hsdaoh.h>
 #include <hsdaoh_raw.h>
@@ -303,6 +304,19 @@ void gui_app_init(gui_app_t *app) {
     // Initialize FFT state pointers (allocated on demand when split mode is selected)
     app->fft_a = NULL;
     app->fft_b = NULL;
+
+    // Initialize panel configuration (new panel abstraction system)
+    app->panel_config_a.split = false;
+    app->panel_config_a.left_view = PANEL_VIEW_WAVEFORM_PHOSPHOR;
+    app->panel_config_a.right_view = PANEL_VIEW_FFT;
+    app->panel_config_a.left_state = NULL;
+    app->panel_config_a.right_state = NULL;
+
+    app->panel_config_b.split = false;
+    app->panel_config_b.left_view = PANEL_VIEW_WAVEFORM_PHOSPHOR;
+    app->panel_config_b.right_view = PANEL_VIEW_FFT;
+    app->panel_config_b.left_state = NULL;
+    app->panel_config_b.right_state = NULL;
 
     // Initialize capture ringbuffer
     if (!s_rb_initialized) {
