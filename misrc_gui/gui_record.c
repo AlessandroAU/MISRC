@@ -245,10 +245,16 @@ int gui_record_start(gui_app_t *app) {
         return RECORD_PENDING;
     }
 
+    // Build full output paths (output_path + filenames)
+    char path_a[512];
+    char path_b[512];
+    snprintf(path_a, sizeof(path_a), "%s/%s", app->settings.output_path, app->settings.output_filename_a);
+    snprintf(path_b, sizeof(path_b), "%s/%s", app->settings.output_path, app->settings.output_filename_b);
+
     // Check if output files already exist
     struct stat stat_a, stat_b;
-    bool file_a_exists = (stat(app->settings.output_filename_a, &stat_a) == 0);
-    bool file_b_exists = (stat(app->settings.output_filename_b, &stat_b) == 0);
+    bool file_a_exists = app->settings.capture_a && (stat(path_a, &stat_a) == 0);
+    bool file_b_exists = app->settings.capture_b && (stat(path_b, &stat_b) == 0);
 
     if (file_a_exists || file_b_exists) {
         // Build detailed message with file info
@@ -262,13 +268,13 @@ int gui_record_start(gui_app_t *app) {
         if (file_a_exists) {
             format_file_size(stat_a.st_size, size_buf, sizeof(size_buf));
             offset += snprintf(message + offset, sizeof(message) - offset,
-                "CH A: %s (%s)\n", app->settings.output_filename_a, size_buf);
+                "CH A: %s (%s)\n", path_a, size_buf);
         }
 
         if (file_b_exists) {
             format_file_size(stat_b.st_size, size_buf, sizeof(size_buf));
             offset += snprintf(message + offset, sizeof(message) - offset,
-                "CH B: %s (%s)\n", app->settings.output_filename_b, size_buf);
+                "CH B: %s (%s)\n", path_b, size_buf);
         }
 
         // Show confirmation popup with detailed info
@@ -312,6 +318,12 @@ void gui_record_check_popup(gui_app_t *app) {
 // Internal: Start recording after confirmation
 static int gui_record_start_confirmed(gui_app_t *app) {
 
+    // Build full output paths (output_path + filenames)
+    char path_a[512];
+    char path_b[512];
+    snprintf(path_a, sizeof(path_a), "%s/%s", app->settings.output_path, app->settings.output_filename_a);
+    snprintf(path_b, sizeof(path_b), "%s/%s", app->settings.output_path, app->settings.output_filename_b);
+
     // Check if using simulated device (doesn't use extraction thread)
     bool is_simulated = false;
     if (app->device_count > 0 && app->selected_device < app->device_count) {
@@ -350,11 +362,11 @@ static int gui_record_start_confirmed(gui_app_t *app) {
 
 #if LIBFLAC_ENABLED == 1
     if (app->settings.use_flac) {
-        // Open FLAC files
-        s_file_a = fopen(app->settings.output_filename_a, "wb");
-        s_file_b = fopen(app->settings.output_filename_b, "wb");
+        // Open FLAC files (respect per-channel enable)
+        s_file_a = app->settings.capture_a ? fopen(path_a, "wb") : NULL;
+        s_file_b = app->settings.capture_b ? fopen(path_b, "wb") : NULL;
 
-        if (!s_file_a || !s_file_b) {
+        if ((app->settings.capture_a && !s_file_a) || (app->settings.capture_b && !s_file_b)) {
             gui_app_set_status(app, "Failed to open output files");
             if (s_file_a) fclose(s_file_a);
             if (s_file_b) fclose(s_file_b);
@@ -378,39 +390,49 @@ static int gui_record_start_confirmed(gui_app_t *app) {
         // Configure FLAC writers using shared library
         flac_writer_config_t config = flac_writer_default_config();
         config.sample_rate = 40000;
-        config.bits_per_sample = 16;  // TODO: Make configurable for 12-bit support
+        config.bits_per_sample = app->settings.flac_12bit ? 12 : 16;
         config.compression_level = app->settings.flac_level;
-        config.verify = false;
-        config.num_threads = 0;  // Auto-detect
+        config.verify = app->settings.flac_verification;
+        config.num_threads = (app->settings.flac_threads > 0) ? (uint32_t)app->settings.flac_threads : 0;  // 0 = auto
         config.enable_seektable = true;
 
         // Create writer for channel A
         config.error_cb = gui_flac_error_callback;
         config.bytes_cb = gui_flac_bytes_callback;
-        config.callback_user_data = &s_ctx_a;
 
-        s_flac_writer_a = flac_writer_create_stream(s_file_a, &config);
-        if (!s_flac_writer_a) {
-            gui_app_set_status(app, "Failed to create FLAC encoder A");
-            fclose(s_file_a); fclose(s_file_b);
-            s_file_a = s_file_b = NULL;
-            return RECORD_ERROR;
+        if (app->settings.capture_a) {
+            config.callback_user_data = &s_ctx_a;
+            s_flac_writer_a = flac_writer_create_stream(s_file_a, &config);
+            if (!s_flac_writer_a) {
+                gui_app_set_status(app, "Failed to create FLAC encoder A");
+                if (s_file_a) fclose(s_file_a);
+                if (s_file_b) fclose(s_file_b);
+                s_file_a = s_file_b = NULL;
+                return RECORD_ERROR;
+            }
+            s_ctx_a.writer = s_flac_writer_a;
+        } else {
+            s_flac_writer_a = NULL;
+            s_ctx_a.writer = NULL;
         }
-        s_ctx_a.writer = s_flac_writer_a;
 
         // Create writer for channel B
-        config.callback_user_data = &s_ctx_b;
-
-        s_flac_writer_b = flac_writer_create_stream(s_file_b, &config);
-        if (!s_flac_writer_b) {
-            gui_app_set_status(app, "Failed to create FLAC encoder B");
-            flac_writer_abort(s_flac_writer_a);
-            s_flac_writer_a = NULL;
-            fclose(s_file_a); fclose(s_file_b);
-            s_file_a = s_file_b = NULL;
-            return RECORD_ERROR;
+        if (app->settings.capture_b) {
+            config.callback_user_data = &s_ctx_b;
+            s_flac_writer_b = flac_writer_create_stream(s_file_b, &config);
+            if (!s_flac_writer_b) {
+                gui_app_set_status(app, "Failed to create FLAC encoder B");
+                if (s_flac_writer_a) { flac_writer_abort(s_flac_writer_a); s_flac_writer_a = NULL; }
+                if (s_file_a) fclose(s_file_a);
+                if (s_file_b) fclose(s_file_b);
+                s_file_a = s_file_b = NULL;
+                return RECORD_ERROR;
+            }
+            s_ctx_b.writer = s_flac_writer_b;
+        } else {
+            s_flac_writer_b = NULL;
+            s_ctx_b.writer = NULL;
         }
-        s_ctx_b.writer = s_flac_writer_b;
 
         // Capture backpressure stats at recording start
         s_start_wait_count = atomic_load(&app->rb_wait_count);
@@ -423,19 +445,23 @@ static int gui_record_start_confirmed(gui_app_t *app) {
         // Enable recording in extraction thread
         gui_extract_set_recording(true, true);
 
-        thrd_create(&s_writer_thread_a, flac_writer_thread, &s_ctx_a);
-        thrd_create(&s_writer_thread_b, flac_writer_thread, &s_ctx_b);
+        if (app->settings.capture_a) {
+            thrd_create(&s_writer_thread_a, flac_writer_thread, &s_ctx_a);
+        }
+        if (app->settings.capture_b) {
+            thrd_create(&s_writer_thread_b, flac_writer_thread, &s_ctx_b);
+        }
         s_writer_threads_running = true;
 
         gui_app_set_status(app, "Recording (FLAC)...");
     } else
 #endif
     {
-        // RAW recording
-        s_file_a = fopen(app->settings.output_filename_a, "wb");
-        s_file_b = fopen(app->settings.output_filename_b, "wb");
+        // RAW recording (respect per-channel enable)
+        s_file_a = app->settings.capture_a ? fopen(path_a, "wb") : NULL;
+        s_file_b = app->settings.capture_b ? fopen(path_b, "wb") : NULL;
 
-        if (!s_file_a || !s_file_b) {
+        if ((app->settings.capture_a && !s_file_a) || (app->settings.capture_b && !s_file_b)) {
             gui_app_set_status(app, "Failed to open output files");
             if (s_file_a) fclose(s_file_a);
             if (s_file_b) fclose(s_file_b);
@@ -462,8 +488,12 @@ static int gui_record_start_confirmed(gui_app_t *app) {
         // Enable recording in extraction thread
         gui_extract_set_recording(true, false);
 
-        thrd_create(&s_writer_thread_a, raw_writer_thread, &s_ctx_a);
-        thrd_create(&s_writer_thread_b, raw_writer_thread, &s_ctx_b);
+        if (app->settings.capture_a) {
+            thrd_create(&s_writer_thread_a, raw_writer_thread, &s_ctx_a);
+        }
+        if (app->settings.capture_b) {
+            thrd_create(&s_writer_thread_b, raw_writer_thread, &s_ctx_b);
+        }
         s_writer_threads_running = true;
 
         gui_app_set_status(app, "Recording (RAW)...");
@@ -487,8 +517,8 @@ void gui_record_stop(gui_app_t *app) {
 
     // Wait for writer threads to drain and exit
     if (s_writer_threads_running) {
-        thrd_join(s_writer_thread_a, NULL);
-        thrd_join(s_writer_thread_b, NULL);
+        if (app->settings.capture_a) thrd_join(s_writer_thread_a, NULL);
+        if (app->settings.capture_b) thrd_join(s_writer_thread_b, NULL);
         s_writer_threads_running = false;
     }
 

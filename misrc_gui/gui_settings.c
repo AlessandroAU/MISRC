@@ -184,6 +184,15 @@ void gui_settings_save(const gui_settings_t *settings) {
     fprintf(f, "  \"flac_level\": %d,\n", settings->flac_level);
     fprintf(f, "  \"flac_verification\": %s,\n", settings->flac_verification ? "true" : "false");
     fprintf(f, "  \"flac_threads\": %d,\n", settings->flac_threads);
+    fprintf(f, "  \"enable_resample_a\": %s,\n", settings->enable_resample_a ? "true" : "false");
+    fprintf(f, "  \"enable_resample_b\": %s,\n", settings->enable_resample_b ? "true" : "false");
+    fprintf(f, "  \"resample_rate_a\": %.1f,\n", settings->resample_rate_a);
+    fprintf(f, "  \"resample_rate_b\": %.1f,\n", settings->resample_rate_b);
+    fprintf(f, "  \"resample_quality_a\": %d,\n", settings->resample_quality_a);
+    fprintf(f, "  \"resample_quality_b\": %d,\n", settings->resample_quality_b);
+    fprintf(f, "  \"resample_gain_a\": %.1f,\n", settings->resample_gain_a);
+    fprintf(f, "  \"resample_gain_b\": %.1f,\n", settings->resample_gain_b);
+    fprintf(f, "  \"overwrite_files\": %s,\n", settings->overwrite_files ? "true" : "false");
     fprintf(f, "  \"show_grid\": %s,\n", settings->show_grid ? "true" : "false");
     fprintf(f, "  \"time_scale\": %.2f,\n", settings->time_scale);
     fprintf(f, "  \"amplitude_scale\": %.2f\n", settings->amplitude_scale);
@@ -341,9 +350,57 @@ void gui_settings_load(gui_settings_t *settings) {
     if ((value = find_value(content, "use_flac")) != NULL) {
         settings->use_flac = (strcmp(value, "true") == 0);
     }
-    
+
+    if ((value = find_value(content, "flac_12bit")) != NULL) {
+        settings->flac_12bit = (strcmp(value, "true") == 0);
+    }
+
+    if ((value = find_value(content, "flac_verification")) != NULL) {
+        settings->flac_verification = (strcmp(value, "true") == 0);
+    }
+
+    if ((value = find_value(content, "flac_threads")) != NULL) {
+        settings->flac_threads = atoi(value);
+    }
+
     if ((value = find_value(content, "flac_level")) != NULL) {
         settings->flac_level = atoi(value);
+    }
+
+    if ((value = find_value(content, "enable_resample_a")) != NULL) {
+        settings->enable_resample_a = (strcmp(value, "true") == 0);
+    }
+
+    if ((value = find_value(content, "enable_resample_b")) != NULL) {
+        settings->enable_resample_b = (strcmp(value, "true") == 0);
+    }
+
+    if ((value = find_value(content, "resample_rate_a")) != NULL) {
+        settings->resample_rate_a = (float)atof(value);
+    }
+
+    if ((value = find_value(content, "resample_rate_b")) != NULL) {
+        settings->resample_rate_b = (float)atof(value);
+    }
+
+    if ((value = find_value(content, "resample_quality_a")) != NULL) {
+        settings->resample_quality_a = atoi(value);
+    }
+
+    if ((value = find_value(content, "resample_quality_b")) != NULL) {
+        settings->resample_quality_b = atoi(value);
+    }
+
+    if ((value = find_value(content, "resample_gain_a")) != NULL) {
+        settings->resample_gain_a = (float)atof(value);
+    }
+
+    if ((value = find_value(content, "resample_gain_b")) != NULL) {
+        settings->resample_gain_b = (float)atof(value);
+    }
+
+    if ((value = find_value(content, "overwrite_files")) != NULL) {
+        settings->overwrite_files = (strcmp(value, "true") == 0);
     }
     
     if ((value = find_value(content, "show_grid")) != NULL) {
