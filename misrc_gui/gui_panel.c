@@ -8,7 +8,6 @@
 #include "gui_app.h"
 #include "gui_oscilloscope.h"
 #include "gui_fft.h"
-#include "gui_phosphor_rt.h"
 #include "gui_ui.h"
 #include <stdlib.h>
 #include <stdatomic.h>
@@ -126,134 +125,23 @@ panel_render_fn panel_get_render_fn(panel_view_type_t type) {
 }
 
 //-----------------------------------------------------------------------------
-// Waveform Panel Rendering (Line Mode)
+// Waveform Panel Rendering (Line Mode) - Thin wrapper for panel dispatch
 //-----------------------------------------------------------------------------
 
 static void render_waveform_line_panel(gui_app_t *app, int channel,
     float x, float y, float w, float h, void *state, Color color) {
-    (void)state;  // Line mode doesn't use phosphor state
-
-    channel_trigger_t *trig = (channel == 0) ? &app->trigger_a : &app->trigger_b;
-    const char *label = (channel == 0) ? "CH A" : "CH B";
-
-    // Draw grid with labels first
-    uint32_t sample_rate = atomic_load(&app->sample_rate);
-    draw_channel_grid(x, y, w, h, label, color, app->settings.show_grid,
-                      trig->zoom_scale, sample_rate,
-                      trig->enabled, trig->trigger_display_pos);
-
-    // Get display samples
-    waveform_sample_t *samples;
-    size_t samples_available;
-    if (channel == 0) {
-        samples = app->display_samples_a;
-        samples_available = app->display_samples_available_a;
-    } else {
-        samples = app->display_samples_b;
-        samples_available = app->display_samples_available_b;
-    }
-
-    if (samples_available == 0) return;
-
-    int display_width = (int)w;
-    if (display_width > DISPLAY_BUFFER_SIZE) display_width = DISPLAY_BUFFER_SIZE;
-    int samples_to_draw = (samples_available < (size_t)display_width) ?
-                          (int)samples_available : display_width;
-
-    float center_y = y + h / 2.0f;
-    float scale = (h / 2.0f) * app->settings.amplitude_scale;
-
-    // Draw waveform as connected line
-    float prev_py = center_y;
-    for (int px = 0; px < samples_to_draw; px++) {
-        float px_x = x + px;
-        float py = center_y - samples[px].value * scale;
-
-        // Clamp to bounds
-        if (py < y) py = y;
-        if (py > y + h) py = y + h;
-
-        if (px > 0) {
-            DrawLineEx((Vector2){px_x - 1, prev_py}, (Vector2){px_x, py}, 1.0f, color);
-        }
-        prev_py = py;
-    }
+    (void)state;  // Line mode doesn't use per-panel state
+    render_waveform_line(app, channel, x, y, w, h, color);
 }
 
 //-----------------------------------------------------------------------------
-// Waveform Panel Rendering (Phosphor Mode)
+// Waveform Panel Rendering (Phosphor Mode) - Thin wrapper for panel dispatch
 //-----------------------------------------------------------------------------
 
 static void render_waveform_phosphor_panel(gui_app_t *app, int channel,
     float x, float y, float w, float h, void *state, Color color) {
     (void)state;  // Uses shared phosphor from app
-
-    channel_trigger_t *trig = (channel == 0) ? &app->trigger_a : &app->trigger_b;
-    const char *label = (channel == 0) ? "CH A" : "CH B";
-
-    // Draw grid with labels first
-    uint32_t sample_rate = atomic_load(&app->sample_rate);
-    draw_channel_grid(x, y, w, h, label, color, app->settings.show_grid,
-                      trig->zoom_scale, sample_rate,
-                      trig->enabled, trig->trigger_display_pos);
-
-    // Get display samples
-    waveform_sample_t *samples;
-    size_t samples_available;
-    if (channel == 0) {
-        samples = app->display_samples_a;
-        samples_available = app->display_samples_available_a;
-    } else {
-        samples = app->display_samples_b;
-        samples_available = app->display_samples_available_b;
-    }
-
-    if (samples_available == 0) return;
-
-    int buf_width = (int)w;
-    int buf_height = (int)h;
-    if (buf_width <= 0 || buf_height <= 0) return;
-
-    int samples_to_draw = (samples_available < (size_t)buf_width) ?
-                          (int)samples_available : buf_width;
-
-    // Get phosphor state for this channel
-    phosphor_rt_t *prt = (channel == 0) ? app->phosphor_a : app->phosphor_b;
-    if (prt) {
-        // Initialize/resize phosphor if needed
-        phosphor_rt_init(prt, buf_width, buf_height);
-
-        // Update phosphor
-        phosphor_rt_begin_frame(prt);
-        phosphor_rt_draw_waveform(prt, samples, samples_to_draw, app->settings.amplitude_scale);
-        phosphor_rt_end_frame(prt);
-
-        // Render phosphor to screen
-        if (trig->phosphor_color == PHOSPHOR_COLOR_OPACITY) {
-            phosphor_rt_render_opacity(prt, x, y);
-        } else {
-            phosphor_rt_render(prt, x, y, false);
-        }
-    }
-
-    // Draw line overlay on phosphor (semi-transparent)
-    float center_y = y + h / 2.0f;
-    float scale = (h / 2.0f) * app->settings.amplitude_scale;
-    float prev_py = center_y;
-    Color waveform_color = {color.r, color.g, color.b, 200};
-
-    for (int px = 0; px < samples_to_draw; px++) {
-        float px_x = x + px;
-        float py = center_y - samples[px].value * scale;
-
-        if (py < y) py = y;
-        if (py > y + h) py = y + h;
-
-        if (px > 0) {
-            DrawLineEx((Vector2){px_x - 1, prev_py}, (Vector2){px_x, py}, 1.0f, waveform_color);
-        }
-        prev_py = py;
-    }
+    render_waveform_phosphor(app, channel, x, y, w, h, color);
 }
 
 //-----------------------------------------------------------------------------

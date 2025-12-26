@@ -278,18 +278,203 @@ void draw_channel_grid(float x, float y, float width, float height,
 }
 
 //-----------------------------------------------------------------------------
+// Trigger Marker Drawing (shared by waveform panels)
+//-----------------------------------------------------------------------------
+
+static void draw_trigger_markers(float x, float y, float w, float h,
+                                  channel_trigger_t *trig, float amplitude_scale, Color color) {
+    if (!trig->enabled) return;
+
+    float center_y = y + h / 2.0f;
+    float scale = (h / 2.0f) * amplitude_scale;
+
+    // Convert trigger level (-2048 to +2047) to normalized (-1 to +1)
+    float level_norm = trig->level / 2048.0f;
+    float level_y = center_y - level_norm * scale;
+
+    // Clamp to panel bounds
+    if (level_y < y) level_y = y;
+    if (level_y > y + h) level_y = y + h;
+
+    // Draw dashed trigger level line (semi-transparent channel color)
+    Color trig_color = { color.r, color.g, color.b, 128 };
+    float dash_len = 8.0f;
+    float gap_len = 4.0f;
+    for (float dx = 0; dx < w; dx += dash_len + gap_len) {
+        float dash_end = dx + dash_len;
+        if (dash_end > w) dash_end = w;
+        DrawLineEx((Vector2){x + dx, level_y}, (Vector2){x + dash_end, level_y}, 1.0f, trig_color);
+    }
+
+    // Draw small trigger arrow on the left edge
+    float arrow_size = 6.0f;
+    Vector2 arrow_tip = { x + 2, level_y };
+    Vector2 arrow_top = { x + 2 + arrow_size, level_y - arrow_size/2 };
+    Vector2 arrow_bot = { x + 2 + arrow_size, level_y + arrow_size/2 };
+    DrawTriangle(arrow_tip, arrow_bot, arrow_top, trig_color);
+
+    // Draw vertical trigger position marker at actual trigger position (if triggered)
+    if (trig->trigger_display_pos >= 0 && trig->trigger_display_pos < (int)w) {
+        float trigger_x = x + (float)trig->trigger_display_pos;
+
+        Color marker_color = { color.r, color.g, color.b, 80 };
+        DrawLineEx((Vector2){trigger_x, y}, (Vector2){trigger_x, y + h}, 1.0f, marker_color);
+
+        // Draw small "T" marker at the trigger intersection
+        Color t_marker_color = { color.r, color.g, color.b, 200 };
+        DrawLineEx((Vector2){trigger_x - 4, level_y - 8}, (Vector2){trigger_x + 4, level_y - 8}, 2.0f, t_marker_color);
+        DrawLineEx((Vector2){trigger_x, level_y - 8}, (Vector2){trigger_x, level_y - 2}, 2.0f, t_marker_color);
+    }
+}
+
+//-----------------------------------------------------------------------------
+// Waveform Panel Rendering (Line Mode)
+//-----------------------------------------------------------------------------
+
+void render_waveform_line(gui_app_t *app, int channel,
+                          float x, float y, float w, float h, Color color) {
+    channel_trigger_t *trig = (channel == 0) ? &app->trigger_a : &app->trigger_b;
+    const char *label = (channel == 0) ? "CH A" : "CH B";
+
+    // Draw grid with labels first
+    uint32_t sample_rate = atomic_load(&app->sample_rate);
+    draw_channel_grid(x, y, w, h, label, color, app->settings.show_grid,
+                      trig->zoom_scale, sample_rate,
+                      trig->enabled, trig->trigger_display_pos);
+
+    // Draw trigger level and position markers
+    draw_trigger_markers(x, y, w, h, trig, app->settings.amplitude_scale, color);
+
+    // Get display samples
+    waveform_sample_t *samples;
+    size_t samples_available;
+    if (channel == 0) {
+        samples = app->display_samples_a;
+        samples_available = app->display_samples_available_a;
+    } else {
+        samples = app->display_samples_b;
+        samples_available = app->display_samples_available_b;
+    }
+
+    if (samples_available == 0) return;
+
+    int display_width = (int)w;
+    if (display_width > DISPLAY_BUFFER_SIZE) display_width = DISPLAY_BUFFER_SIZE;
+    int samples_to_draw = (samples_available < (size_t)display_width) ?
+                          (int)samples_available : display_width;
+
+    float center_y = y + h / 2.0f;
+    float scale = (h / 2.0f) * app->settings.amplitude_scale;
+
+    // Draw waveform as connected line
+    float prev_py = center_y;
+    for (int px = 0; px < samples_to_draw; px++) {
+        float px_x = x + px;
+        float py = center_y - samples[px].value * scale;
+
+        // Clamp to bounds
+        if (py < y) py = y;
+        if (py > y + h) py = y + h;
+
+        if (px > 0) {
+            DrawLineEx((Vector2){px_x - 1, prev_py}, (Vector2){px_x, py}, 1.0f, color);
+        }
+        prev_py = py;
+    }
+}
+
+//-----------------------------------------------------------------------------
+// Waveform Panel Rendering (Phosphor Mode)
+//-----------------------------------------------------------------------------
+
+void render_waveform_phosphor(gui_app_t *app, int channel,
+                              float x, float y, float w, float h, Color color) {
+    channel_trigger_t *trig = (channel == 0) ? &app->trigger_a : &app->trigger_b;
+    const char *label = (channel == 0) ? "CH A" : "CH B";
+
+    // Draw grid with labels first
+    uint32_t sample_rate = atomic_load(&app->sample_rate);
+    draw_channel_grid(x, y, w, h, label, color, app->settings.show_grid,
+                      trig->zoom_scale, sample_rate,
+                      trig->enabled, trig->trigger_display_pos);
+
+    // Draw trigger level and position markers
+    draw_trigger_markers(x, y, w, h, trig, app->settings.amplitude_scale, color);
+
+    // Get display samples
+    waveform_sample_t *samples;
+    size_t samples_available;
+    if (channel == 0) {
+        samples = app->display_samples_a;
+        samples_available = app->display_samples_available_a;
+    } else {
+        samples = app->display_samples_b;
+        samples_available = app->display_samples_available_b;
+    }
+
+    if (samples_available == 0) return;
+
+    int buf_width = (int)w;
+    int buf_height = (int)h;
+    if (buf_width <= 0 || buf_height <= 0) return;
+
+    int samples_to_draw = (samples_available < (size_t)buf_width) ?
+                          (int)samples_available : buf_width;
+
+    // Get phosphor state for this channel
+    phosphor_rt_t *prt = (channel == 0) ? app->phosphor_a : app->phosphor_b;
+    if (prt) {
+        // Initialize/resize phosphor if needed
+        phosphor_rt_init(prt, buf_width, buf_height);
+
+        // Update phosphor
+        phosphor_rt_begin_frame(prt);
+        phosphor_rt_draw_waveform(prt, samples, samples_to_draw, app->settings.amplitude_scale);
+        phosphor_rt_end_frame(prt);
+
+        // Render phosphor to screen
+        if (trig->phosphor_color == PHOSPHOR_COLOR_OPACITY) {
+            phosphor_rt_render_opacity(prt, x, y);
+        } else {
+            phosphor_rt_render(prt, x, y, false);
+        }
+    }
+
+    // Draw line overlay on phosphor (semi-transparent)
+    float center_y = y + h / 2.0f;
+    float scale = (h / 2.0f) * app->settings.amplitude_scale;
+    float prev_py = center_y;
+    Color waveform_color = {color.r, color.g, color.b, 200};
+
+    for (int px = 0; px < samples_to_draw; px++) {
+        float px_x = x + px;
+        float py = center_y - samples[px].value * scale;
+
+        if (py < y) py = y;
+        if (py > y + h) py = y + h;
+
+        if (px > 0) {
+            DrawLineEx((Vector2){px_x - 1, prev_py}, (Vector2){px_x, py}, 1.0f, waveform_color);
+        }
+        prev_py = py;
+    }
+}
+
+//-----------------------------------------------------------------------------
 // Oscilloscope Rendering
 //-----------------------------------------------------------------------------
 
 void render_oscilloscope_channel(gui_app_t *app, float x, float y, float width, float height,
                                   int channel, const char *label, Color channel_color) {
+    (void)label;  // Label is now drawn by individual panel renderers
+
     // Store app pointer for font access
     s_osc_app = app;
 
     // Get trigger state for this channel
     channel_trigger_t *trig = (channel == 0) ? &app->trigger_a : &app->trigger_b;
 
-    // Store bounds for mouse interaction
+    // Store bounds for mouse interaction (full channel area for drag-to-trigger)
     if (channel >= 0 && channel < 2) {
         s_osc_bounds[channel] = (Rectangle){x, y, width, height};
         s_osc_bounds_valid[channel] = true;
@@ -301,80 +486,8 @@ void render_oscilloscope_channel(gui_app_t *app, float x, float y, float width, 
         atomic_store(&trig->display_width, new_display_width);
     }
 
-    // Draw channel grid with time-based divisions
-    uint32_t sample_rate = atomic_load(&app->sample_rate);
-    draw_channel_grid(x, y, width, height, label, channel_color, app->settings.show_grid,
-                      trig->zoom_scale, sample_rate,
-                      trig->enabled, trig->trigger_display_pos);
-
-    float center_y = y + height / 2.0f;
-    float scale = (height / 2.0f) * app->settings.amplitude_scale;
-
-    // Draw trigger level line and position marker if enabled for this channel
-    if (trig->enabled) {
-        // Convert trigger level (-2048 to +2047) to normalized (-1 to +1)
-        float level_norm = trig->level / 2048.0f;
-        float level_y = center_y - level_norm * scale;
-
-        // Clamp to channel bounds
-        if (level_y < y) level_y = y;
-        if (level_y > y + height) level_y = y + height;
-
-        // Draw dashed trigger level line (semi-transparent channel color)
-        Color trig_color = { channel_color.r, channel_color.g, channel_color.b, 128 };
-        float dash_len = 8.0f;
-        float gap_len = 4.0f;
-        for (float dx = 0; dx < width; dx += dash_len + gap_len) {
-            float dash_end = dx + dash_len;
-            if (dash_end > width) dash_end = width;
-            DrawLineEx((Vector2){x + dx, level_y}, (Vector2){x + dash_end, level_y}, 1.0f, trig_color);
-        }
-
-        // Draw small trigger arrow on the left edge
-        float arrow_size = 6.0f;
-        Vector2 arrow_tip = { x + 2, level_y };
-        Vector2 arrow_top = { x + 2 + arrow_size, level_y - arrow_size/2 };
-        Vector2 arrow_bot = { x + 2 + arrow_size, level_y + arrow_size/2 };
-        DrawTriangle(arrow_tip, arrow_bot, arrow_top, trig_color);
-
-        // Draw vertical trigger position marker at actual trigger position (if triggered)
-        if (trig->trigger_display_pos >= 0 && trig->trigger_display_pos < (int)width) {
-            float trigger_x = x + (float)trig->trigger_display_pos;
-
-            Color marker_color = { channel_color.r, channel_color.g, channel_color.b, 80 };
-            DrawLineEx((Vector2){trigger_x, y}, (Vector2){trigger_x, y + height}, 1.0f, marker_color);
-
-            // Draw small "T" marker at the trigger intersection
-            Color t_marker_color = { channel_color.r, channel_color.g, channel_color.b, 200 };
-            DrawLineEx((Vector2){trigger_x - 4, level_y - 8}, (Vector2){trigger_x + 4, level_y - 8}, 2.0f, t_marker_color);
-            DrawLineEx((Vector2){trigger_x, level_y - 8}, (Vector2){trigger_x, level_y - 2}, 2.0f, t_marker_color);
-        }
-    }
-
-    int display_width = (int)width;
-    if (display_width > DISPLAY_BUFFER_SIZE) {
-        display_width = DISPLAY_BUFFER_SIZE;
-    }
-
-    // Get per-channel display buffer and sample count
-    waveform_sample_t *samples;
-    size_t samples_available;
-    if (channel == 0) {
-        samples = app->display_samples_a;
-        samples_available = app->display_samples_available_a;
-    } else {
-        samples = app->display_samples_b;
-        samples_available = app->display_samples_available_b;
-    }
-
-    if (samples_available == 0) {
-        const char *text = "No Signal";
-        int text_width = measure_text_with_font(text, FONT_SIZE_OSC_MSG);
-        draw_text_with_font(text, x + width/2 - text_width/2, y + height/2 - 12, FONT_SIZE_OSC_MSG, COLOR_TEXT_DIM);
-        return;
-    }
-
-    // Render panels using the new panel abstraction system
+    // Render panels using the panel abstraction system
+    // Each panel draws its own grid, waveform, and labels
     render_channel_panels(app, channel, x, y, width, height, channel_color);
 }
 
@@ -524,9 +637,9 @@ static soxr_t ensure_resampler(channel_trigger_t *trig, float decimation) {
 
     // Create new resampler for this decimation ratio
     // in_rate:out_rate = decimation:1
-    printf("Creating soxr resampler for decimation %.3f\n", decimation);
-    double in_rate = (double)decimation;
-    double out_rate = 1.0;
+    // printf("Creating soxr resampler for decimation %.3f\n", decimation);
+    const double in_rate = (double)decimation;
+    const double out_rate = 1.0;
 
     soxr_error_t soxr_err = NULL;
     soxr_io_spec_t io_spec = soxr_io_spec(SOXR_FLOAT32_I, SOXR_FLOAT32_I);

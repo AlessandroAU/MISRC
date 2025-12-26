@@ -44,6 +44,14 @@ void draw_channel_grid(float x, float y, float width, float height,
                        float zoom_scale, uint32_t sample_rate,
                        bool trigger_enabled, int trigger_display_pos);
 
+// Render waveform in line mode (simple connected line)
+void render_waveform_line(gui_app_t *app, int channel,
+                          float x, float y, float w, float h, Color color);
+
+// Render waveform in phosphor mode (with persistence/decay effect)
+void render_waveform_phosphor(gui_app_t *app, int channel,
+                              float x, float y, float w, float h, Color color);
+
 // Render a single channel's waveform with grid and trigger line
 void render_oscilloscope_channel(gui_app_t *app, float x, float y, float width, float height,
                                   int channel, const char *label, Color channel_color);
