@@ -443,6 +443,10 @@ void render_oscilloscope_channel(gui_app_t *app, float x, float y, float width, 
                 // Position at top-right of left half (not full width)
                 draw_text_mono(div_label, x + half_width - div_label_w - 8, y + 26, FONT_SIZE_OSC_DIV, COLOR_TEXT);
             }
+
+            // Draw channel label in top-right corner of left half
+            int label_width = measure_text_with_font(label, FONT_SIZE_OSC_LABEL);
+            draw_text_with_font(label, x + half_width - label_width - 8, y + 4, FONT_SIZE_OSC_LABEL, channel_color);
         }
 
         // Draw divider line
