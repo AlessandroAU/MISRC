@@ -181,6 +181,7 @@ if raylib_dep.found()
     '../misrc_gui/gui_panel.c',
     '../misrc_gui/gui_text.c',
     '../misrc_gui/gui_vu_meter.c',
+    '../misrc_gui/gui_cvbs.c',
     '../misrc_gui/clay_renderer_raylib.c',
     '../misrc_common/extract.c',
     '../misrc_common/ringbuffer.c',
@@ -222,7 +223,7 @@ if raylib_dep.found()
     sources_gui += 'simple_capture/simple_capture_v4l2.c'
   elif host_system == 'darwin'
     gui_ldflags += ['-Wl,-framework,OpenGL', '-Wl,-framework,Cocoa', '-Wl,-framework,IOKit', '-Wl,-framework,CoreAudio', '-Wl,-framework,CoreVideo']
-    gui_ldflags += ['-Wl,-framework,AVFoundation', '-Wl,-framework,CoreMedia']
+    gui_ldflags += ['-Wl,-framework,AVFoundation', '-Wl,-framework,CoreMedia', '-Wl,-framework,Security']
     sources_gui += 'simple_capture/simple_capture_avfoundation.m'
   endif
 

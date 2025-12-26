@@ -10,6 +10,7 @@
 
 #include "gui_app.h"
 #include "raylib.h"
+#include <sys/types.h>
 
 //-----------------------------------------------------------------------------
 // Oscilloscope Phosphor Parameters
