@@ -809,23 +809,10 @@ bool process_channel_display(gui_app_t *app, const int16_t *buf, size_t num_samp
     }
 
     // Get decimation factor from zoom_scale (samples per pixel)
+    // Clamp to valid range
     float decimation = trig->zoom_scale;
-
-    // Calculate max zoom out based on available data
-    // We need: display_width * decimation <= num_samples
-    float max_decimation = (float)num_samples / (float)display_width;
-    if (max_decimation > ZOOM_SCALE_MAX) max_decimation = ZOOM_SCALE_MAX;
-
-    // Clamp decimation to valid range
-    if (decimation < ZOOM_SCALE_MIN) {
-        decimation = ZOOM_SCALE_MIN;
-        trig->zoom_scale = decimation;  // Write back to snap to 1.0
-    }
-    if (decimation > max_decimation) {
-        decimation = max_decimation;
-        // Don't write back - this is a temporary limit based on available data,
-        // not a user preference change. Let the user's zoom level persist.
-    }
+    if (decimation < ZOOM_SCALE_MIN) decimation = ZOOM_SCALE_MIN;
+    if (decimation > ZOOM_SCALE_MAX) decimation = ZOOM_SCALE_MAX;
 
     // How many raw samples we need for the full display at this zoom
     float display_window = (float)display_width * decimation;
