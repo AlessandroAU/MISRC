@@ -1,39 +1,15 @@
 /*
  * MISRC GUI - Custom Rendering
  *
- * VU meter rendering and custom element callbacks
+ * VU meter rendering
  */
 
 #include "gui_render.h"
-#include "gui_custom_elements.h"
-#include "gui_oscilloscope.h"
+#include "gui_text.h"
 #include "gui_ui.h"
 #include "raylib.h"
 #include <math.h>
 #include <stdio.h>
-
-// Forward declaration of app pointer storage (for font access)
-static gui_app_t *g_render_app = NULL;
-
-// Helper to draw text using the app's font
-static void draw_text_with_font(const char *text, float x, float y, int fontSize, Color color) {
-    if (g_render_app && g_render_app->fonts) {
-        Font font = g_render_app->fonts[0];
-        DrawTextEx(font, text, (Vector2){x, y}, (float)fontSize, 1.0f, color);
-    } else {
-        DrawText(text, (int)x, (int)y, fontSize, color);
-    }
-}
-
-// Helper to measure text using the app's font
-static int measure_text_with_font(const char *text, int fontSize) {
-    if (g_render_app && g_render_app->fonts) {
-        Font font = g_render_app->fonts[0];
-        Vector2 size = MeasureTextEx(font, text, (float)fontSize, 1.0f);
-        return (int)size.x;
-    }
-    return MeasureText(text, fontSize);
-}
 
 // Helper to draw one direction of the meter bar with gradient
 static void draw_meter_bar(float meter_x, float meter_width, float center_y,
@@ -142,8 +118,8 @@ void render_vu_meter(float x, float y, float width, float height,
         DrawLineEx((Vector2){meter_x, tick_y}, (Vector2){meter_x + 3, tick_y}, 1.0f, COLOR_GRID_MAJOR);
         DrawLineEx((Vector2){meter_x + meter_width - 3, tick_y}, (Vector2){meter_x + meter_width, tick_y}, 1.0f, COLOR_GRID_MAJOR);
         // Label centered inside meter
-        int tw = measure_text_with_font(tick_labels[i], FONT_SIZE_VU_SCALE);
-        draw_text_with_font(tick_labels[i], meter_x + meter_width/2 - tw/2, tick_y - 5, FONT_SIZE_VU_SCALE, COLOR_TEXT_DIM);
+        int tw = gui_text_measure(tick_labels[i], FONT_SIZE_VU_SCALE);
+        gui_text_draw(tick_labels[i], meter_x + meter_width/2 - tw/2, tick_y - 5, FONT_SIZE_VU_SCALE, COLOR_TEXT_DIM);
     }
 
     // Positive clip indicator (top)
@@ -153,8 +129,8 @@ void render_vu_meter(float x, float y, float width, float height,
     DrawRectangle((int)meter_x, (int)pos_clip_y, (int)meter_width, (int)clip_box_height, pos_clip_bg);
     DrawRectangleLinesEx((Rectangle){meter_x, pos_clip_y, meter_width, clip_box_height}, 1, pos_clip_border);
     const char *pos_text = is_clipping_pos ? "+CLIP" : "+";
-    int pos_tw = measure_text_with_font(pos_text, FONT_SIZE_VU_CLIP);
-    draw_text_with_font(pos_text, meter_x + meter_width/2 - pos_tw/2, pos_clip_y + 2, FONT_SIZE_VU_CLIP,
+    int pos_tw = gui_text_measure(pos_text, FONT_SIZE_VU_CLIP);
+    gui_text_draw(pos_text, meter_x + meter_width/2 - pos_tw/2, pos_clip_y + 2, FONT_SIZE_VU_CLIP,
              is_clipping_pos ? WHITE : (Color){120, 80, 80, 255});
 
     // Negative clip indicator (bottom)
@@ -164,34 +140,12 @@ void render_vu_meter(float x, float y, float width, float height,
     DrawRectangle((int)meter_x, (int)neg_clip_y, (int)meter_width, (int)clip_box_height, neg_clip_bg);
     DrawRectangleLinesEx((Rectangle){meter_x, neg_clip_y, meter_width, clip_box_height}, 1, neg_clip_border);
     const char *neg_text = is_clipping_neg ? "-CLIP" : "-";
-    int neg_tw = measure_text_with_font(neg_text, FONT_SIZE_VU_CLIP);
-    draw_text_with_font(neg_text, meter_x + meter_width/2 - neg_tw/2, neg_clip_y + 2, FONT_SIZE_VU_CLIP,
+    int neg_tw = gui_text_measure(neg_text, FONT_SIZE_VU_CLIP);
+    gui_text_draw(neg_text, meter_x + meter_width/2 - neg_tw/2, neg_clip_y + 2, FONT_SIZE_VU_CLIP,
              is_clipping_neg ? WHITE : (Color){80, 80, 120, 255});
 }
 
-// Set the app reference for custom rendering (used by font helpers)
+// Set the app reference for custom rendering (initializes text helpers)
 void set_render_app(gui_app_t *app) {
-    g_render_app = app;
-}
-
-//-----------------------------------------------------------------------------
-// Custom Element Rendering (called from clay_renderer_raylib.c)
-//-----------------------------------------------------------------------------
-
-void gui_render_oscilloscope(float x, float y, float width, float height,
-                             CustomLayoutElement_Oscilloscope *data) {
-    if (!data || !data->app) return;
-
-    Color color = (data->channel == 0) ? COLOR_CHANNEL_A : COLOR_CHANNEL_B;
-
-    render_oscilloscope_channel(data->app, x, y, width, height,
-                                data->channel, NULL, color);
-}
-
-void gui_render_vu_meter(float x, float y, float width, float height,
-                         CustomLayoutElement_VUMeter *data) {
-    if (!data) return;
-
-    render_vu_meter(x, y, width, height, data->meter, data->label,
-                    data->is_clipping_pos, data->is_clipping_neg, data->channel_color);
+    gui_text_set_app(app);
 }

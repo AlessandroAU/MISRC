@@ -4,9 +4,7 @@
 #include "gui_app.h"
 #include "gui_ui.h"  // For color definitions
 
-// Direct rendering functions for use in main render pass
-void render_oscilloscope_channel(gui_app_t *app, float x, float y, float width, float height,
-                                  int channel, const char *label, Color channel_color);
+// Render VU meter
 void render_vu_meter(float x, float y, float width, float height,
                      vu_meter_state_t *meter, const char *label,
                      bool is_clipping_pos, bool is_clipping_neg, Color channel_color);

@@ -6,6 +6,8 @@
 #include <clay.h>
 #include "raylib.h"
 #include "gui_custom_elements.h"
+#include "gui_oscilloscope.h"
+#include "gui_render.h"
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
@@ -177,15 +179,21 @@ void Clay_Raylib_Render(Clay_RenderCommandArray renderCommands, Font* fonts)
                 if (!customElement) continue;
                 switch (customElement->type) {
                     case CUSTOM_LAYOUT_ELEMENT_TYPE_OSCILLOSCOPE: {
-                        gui_render_oscilloscope(boundingBox.x, boundingBox.y,
-                                                boundingBox.width, boundingBox.height,
-                                                &customElement->customData.oscilloscope);
+                        CustomLayoutElement_Oscilloscope *osc = &customElement->customData.oscilloscope;
+                        if (osc->app) {
+                            Color color = (osc->channel == 0) ? COLOR_CHANNEL_A : COLOR_CHANNEL_B;
+                            render_oscilloscope_channel(osc->app, boundingBox.x, boundingBox.y,
+                                                        boundingBox.width, boundingBox.height,
+                                                        osc->channel, NULL, color);
+                        }
                         break;
                     }
                     case CUSTOM_LAYOUT_ELEMENT_TYPE_VU_METER: {
-                        gui_render_vu_meter(boundingBox.x, boundingBox.y,
-                                            boundingBox.width, boundingBox.height,
-                                            &customElement->customData.vu_meter);
+                        CustomLayoutElement_VUMeter *vu = &customElement->customData.vu_meter;
+                        render_vu_meter(boundingBox.x, boundingBox.y,
+                                        boundingBox.width, boundingBox.height,
+                                        vu->meter, vu->label, vu->is_clipping_pos,
+                                        vu->is_clipping_neg, vu->channel_color);
                         break;
                     }
                     default: break;

@@ -49,20 +49,4 @@ typedef struct {
     } customData;
 } CustomLayoutElement;
 
-//-----------------------------------------------------------------------------
-// Custom Element Rendering (called from clay_renderer_raylib.c)
-//-----------------------------------------------------------------------------
-
-// Render oscilloscope channel panel(s)
-// bounds: Clay bounding box for the element
-// data: pointer to CustomLayoutElement_Oscilloscope
-void gui_render_oscilloscope(float x, float y, float width, float height,
-                             CustomLayoutElement_Oscilloscope *data);
-
-// Render VU meter
-// bounds: Clay bounding box for the element
-// data: pointer to CustomLayoutElement_VUMeter
-void gui_render_vu_meter(float x, float y, float width, float height,
-                         CustomLayoutElement_VUMeter *data);
-
 #endif // GUI_CUSTOM_ELEMENTS_H

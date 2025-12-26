@@ -9,6 +9,7 @@
 #include "gui_fft.h"
 #include "gui_trigger.h"
 #include "gui_popup.h"
+#include "gui_text.h"
 #include "gui_ui.h"
 #include "gui_panel.h"
 #include <math.h>
@@ -33,9 +34,6 @@ static void gui_oscilloscope_cleanup_resampler(channel_trigger_t *trig);
 //-----------------------------------------------------------------------------
 // Static State
 //-----------------------------------------------------------------------------
-
-// App pointer for font access
-static gui_app_t *s_osc_app = NULL;
 
 // Waveform panel bounds for mouse interaction (stored per channel)
 // In split mode, there can be up to 2 waveform panels per channel (left + right)
@@ -90,51 +88,6 @@ void gui_oscilloscope_cleanup_resamplers(gui_app_t *app) {
 //-----------------------------------------------------------------------------
 // Internal Helper Functions
 //-----------------------------------------------------------------------------
-
-// Set the app reference (called from set_render_app in gui_render.c)
-void gui_oscilloscope_set_app(gui_app_t *app) {
-    s_osc_app = app;
-}
-
-// Helper to draw text using the app's font (Inter - for labels)
-static void draw_text_with_font(const char *text, float x, float y, int fontSize, Color color) {
-    if (s_osc_app && s_osc_app->fonts) {
-        Font font = s_osc_app->fonts[0];
-        DrawTextEx(font, text, (Vector2){x, y}, (float)fontSize, 1.0f, color);
-    } else {
-        DrawText(text, (int)x, (int)y, fontSize, color);
-    }
-}
-
-// Helper to draw text using monospace font (Space Mono - for numbers)
-static void draw_text_mono(const char *text, float x, float y, int fontSize, Color color) {
-    if (s_osc_app && s_osc_app->fonts) {
-        Font font = s_osc_app->fonts[1];  // Index 1 = Space Mono
-        DrawTextEx(font, text, (Vector2){x, y}, (float)fontSize, 1.0f, color);
-    } else {
-        DrawText(text, (int)x, (int)y, fontSize, color);
-    }
-}
-
-// Helper to measure text using the app's font
-static int measure_text_with_font(const char *text, int fontSize) {
-    if (s_osc_app && s_osc_app->fonts) {
-        Font font = s_osc_app->fonts[0];
-        Vector2 size = MeasureTextEx(font, text, (float)fontSize, 1.0f);
-        return (int)size.x;
-    }
-    return MeasureText(text, fontSize);
-}
-
-// Helper to measure text using monospace font
-static int measure_text_mono(const char *text, int fontSize) {
-    if (s_osc_app && s_osc_app->fonts) {
-        Font font = s_osc_app->fonts[1];  // Index 1 = Space Mono
-        Vector2 size = MeasureTextEx(font, text, (float)fontSize, 1.0f);
-        return (int)size.x;
-    }
-    return MeasureText(text, fontSize);
-}
 
 // Snap to 1-2-5 log scale sequence
 // Given a rough time division, find the nearest "nice" value in the sequence:
@@ -243,12 +196,12 @@ void draw_channel_grid(float x, float y, float width, float height,
                 if (gx > x + 40 && gx < x + width - 40) {
                     if (is_zero) {
                         // Draw "0" for the trigger point
-                        int label_w = measure_text_mono("0", FONT_SIZE_OSC_SCALE);
-                        draw_text_mono("0", gx - label_w / 2, y + height - 16, FONT_SIZE_OSC_SCALE, COLOR_TEXT);
+                        int label_w = gui_text_measure_mono("0", FONT_SIZE_OSC_SCALE);
+                        gui_text_draw_mono("0", gx - label_w / 2, y + height - 16, FONT_SIZE_OSC_SCALE, COLOR_TEXT);
                     } else {
                         format_time_label(time_buf, sizeof(time_buf), fabs(t));
-                        int label_w = measure_text_mono(time_buf, FONT_SIZE_OSC_SCALE);
-                        draw_text_mono(time_buf, gx - label_w / 2, y + height - 16, FONT_SIZE_OSC_SCALE, COLOR_TEXT_DIM);
+                        int label_w = gui_text_measure_mono(time_buf, FONT_SIZE_OSC_SCALE);
+                        gui_text_draw_mono(time_buf, gx - label_w / 2, y + height - 16, FONT_SIZE_OSC_SCALE, COLOR_TEXT_DIM);
                     }
                 }
                 division_count++;
@@ -258,8 +211,8 @@ void draw_channel_grid(float x, float y, float width, float height,
             format_time_label(time_buf, sizeof(time_buf), time_division);
             char div_label[48];
             snprintf(div_label, sizeof(div_label), "%s/div", time_buf);
-            int div_label_w = measure_text_mono(div_label, FONT_SIZE_OSC_DIV);
-            draw_text_mono(div_label, x + width - div_label_w - 8, y + 26, FONT_SIZE_OSC_DIV, COLOR_TEXT);
+            int div_label_w = gui_text_measure_mono(div_label, FONT_SIZE_OSC_DIV);
+            gui_text_draw_mono(div_label, x + width - div_label_w - 8, y + 26, FONT_SIZE_OSC_DIV, COLOR_TEXT);
         } else {
             // Fallback: fixed divisions when no sample rate available
             const int fixed_divisions = 10;
@@ -290,12 +243,12 @@ void draw_channel_grid(float x, float y, float width, float height,
         // Tick mark
         DrawLineEx((Vector2){x, tick_y}, (Vector2){x + 4, tick_y}, 1.0f, COLOR_GRID_MAJOR);
         // Label (offset to not overlap with border)
-        draw_text_mono(tick_labels[i], x + 6, tick_y - 7, FONT_SIZE_OSC_SCALE, COLOR_TEXT_DIM);
+        gui_text_draw_mono(tick_labels[i], x + 6, tick_y - 7, FONT_SIZE_OSC_SCALE, COLOR_TEXT_DIM);
     }
 
     // Channel label in top-right corner
-    int label_width = measure_text_with_font(label, FONT_SIZE_OSC_LABEL);
-    draw_text_with_font(label, x + width - label_width - 8, y + 4, FONT_SIZE_OSC_LABEL, channel_color);
+    int label_width = gui_text_measure(label, FONT_SIZE_OSC_LABEL);
+    gui_text_draw(label, x + width - label_width - 8, y + 4, FONT_SIZE_OSC_LABEL, channel_color);
 }
 
 //-----------------------------------------------------------------------------
@@ -495,8 +448,8 @@ void render_oscilloscope_channel(gui_app_t *app, float x, float y, float width, 
                                   int channel, const char *label, Color channel_color) {
     (void)label;  // Label is now drawn by individual panel renderers
 
-    // Store app pointer for font access
-    s_osc_app = app;
+    // Initialize text helpers with app (for font access)
+    gui_text_set_app(app);
 
     // Get trigger state for this channel
     channel_trigger_t *trig = (channel == 0) ? &app->trigger_a : &app->trigger_b;
