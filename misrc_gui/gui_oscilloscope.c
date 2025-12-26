@@ -37,10 +37,38 @@ static void gui_oscilloscope_cleanup_resampler(channel_trigger_t *trig);
 // App pointer for font access
 static gui_app_t *s_osc_app = NULL;
 
-// Oscilloscope bounds for mouse interaction (stored per channel)
-static Rectangle s_osc_bounds[2] = {0};
-static bool s_osc_bounds_valid[2] = {false, false};
+// Waveform panel bounds for mouse interaction (stored per channel)
+// In split mode, there can be up to 2 waveform panels per channel (left + right)
+// We track bounds for waveform panels specifically, not FFT panels
+typedef struct {
+    Rectangle bounds;
+    bool valid;
+} panel_bounds_t;
+
+static panel_bounds_t s_waveform_bounds[2][2] = {0};  // [channel][panel_index]
+static int s_waveform_panel_count[2] = {0, 0};        // How many waveform panels per channel
 static int s_dragging_channel = -1;  // Which channel is being dragged (-1 = none)
+
+// Clear waveform bounds for a channel (call before rendering panels)
+void gui_oscilloscope_clear_bounds(int channel) {
+    if (channel >= 0 && channel < 2) {
+        s_waveform_panel_count[channel] = 0;
+        s_waveform_bounds[channel][0].valid = false;
+        s_waveform_bounds[channel][1].valid = false;
+    }
+}
+
+// Register waveform panel bounds (call from waveform renderers)
+static void register_waveform_bounds(int channel, float x, float y, float w, float h) {
+    if (channel >= 0 && channel < 2) {
+        int idx = s_waveform_panel_count[channel];
+        if (idx < 2) {
+            s_waveform_bounds[channel][idx].bounds = (Rectangle){x, y, w, h};
+            s_waveform_bounds[channel][idx].valid = true;
+            s_waveform_panel_count[channel]++;
+        }
+    }
+}
 
 // Cleanup oscilloscope resources (static state)
 void gui_oscilloscope_cleanup(void) {
@@ -336,6 +364,9 @@ void render_waveform_line(gui_app_t *app, int channel,
     channel_trigger_t *trig = (channel == 0) ? &app->trigger_a : &app->trigger_b;
     const char *label = (channel == 0) ? "CH A" : "CH B";
 
+    // Register bounds for mouse interaction (trigger level drag)
+    register_waveform_bounds(channel, x, y, w, h);
+
     // Draw grid with labels first
     uint32_t sample_rate = atomic_load(&app->sample_rate);
     draw_channel_grid(x, y, w, h, label, color, app->settings.show_grid,
@@ -391,6 +422,9 @@ void render_waveform_phosphor(gui_app_t *app, int channel,
                               float x, float y, float w, float h, Color color) {
     channel_trigger_t *trig = (channel == 0) ? &app->trigger_a : &app->trigger_b;
     const char *label = (channel == 0) ? "CH A" : "CH B";
+
+    // Register bounds for mouse interaction (trigger level drag)
+    register_waveform_bounds(channel, x, y, w, h);
 
     // Draw grid with labels first
     uint32_t sample_rate = atomic_load(&app->sample_rate);
@@ -474,12 +508,11 @@ void render_oscilloscope_channel(gui_app_t *app, float x, float y, float width, 
     // Get trigger state for this channel
     channel_trigger_t *trig = (channel == 0) ? &app->trigger_a : &app->trigger_b;
 
-    // Store bounds for mouse interaction (full channel area for drag-to-trigger)
-    if (channel >= 0 && channel < 2) {
-        s_osc_bounds[channel] = (Rectangle){x, y, width, height};
-        s_osc_bounds_valid[channel] = true;
+    // Clear waveform bounds before rendering (waveform renderers will register their bounds)
+    gui_oscilloscope_clear_bounds(channel);
 
-        // Store actual display width for the processing thread (atomic for thread safety)
+    // Store actual display width for the processing thread (atomic for thread safety)
+    if (channel >= 0 && channel < 2) {
         int new_display_width = (int)width;
         if (new_display_width < 100) new_display_width = 100;  // Minimum reasonable width
         if (new_display_width > DISPLAY_BUFFER_SIZE) new_display_width = DISPLAY_BUFFER_SIZE;
@@ -488,6 +521,7 @@ void render_oscilloscope_channel(gui_app_t *app, float x, float y, float width, 
 
     // Render panels using the panel abstraction system
     // Each panel draws its own grid, waveform, and labels
+    // Waveform panels will register their bounds for mouse interaction
     render_channel_panels(app, channel, x, y, width, height, channel_color);
 }
 
@@ -506,20 +540,23 @@ void handle_oscilloscope_interaction(gui_app_t *app) {
     bool mouse_pressed = IsMouseButtonPressed(MOUSE_LEFT_BUTTON);
     bool mouse_released = IsMouseButtonReleased(MOUSE_LEFT_BUTTON);
 
-    // Check if mouse is over either oscilloscope
+    // Check if mouse is over a waveform panel (not FFT)
     int hover_channel = -1;
     for (int ch = 0; ch < 2; ch++) {
-        if (s_osc_bounds_valid[ch]) {
-            Rectangle bounds = s_osc_bounds[ch];
-            if (mouse.x >= bounds.x && mouse.x < bounds.x + bounds.width &&
-                mouse.y >= bounds.y && mouse.y < bounds.y + bounds.height) {
-                hover_channel = ch;
-                break;
+        for (int p = 0; p < s_waveform_panel_count[ch]; p++) {
+            if (s_waveform_bounds[ch][p].valid) {
+                Rectangle bounds = s_waveform_bounds[ch][p].bounds;
+                if (mouse.x >= bounds.x && mouse.x < bounds.x + bounds.width &&
+                    mouse.y >= bounds.y && mouse.y < bounds.y + bounds.height) {
+                    hover_channel = ch;
+                    break;
+                }
             }
         }
+        if (hover_channel >= 0) break;
     }
 
-    // Start dragging on mouse press over oscilloscope
+    // Start dragging on mouse press over waveform panel
     if (mouse_pressed && hover_channel >= 0) {
         s_dragging_channel = hover_channel;
         // Enable trigger when starting to drag
@@ -530,8 +567,9 @@ void handle_oscilloscope_interaction(gui_app_t *app) {
     // Update trigger level while dragging
     if (mouse_down && s_dragging_channel >= 0) {
         int ch = s_dragging_channel;
-        if (s_osc_bounds_valid[ch]) {
-            Rectangle bounds = s_osc_bounds[ch];
+        // Use the first waveform panel bounds for this channel (they all share the same height)
+        if (s_waveform_panel_count[ch] > 0 && s_waveform_bounds[ch][0].valid) {
+            Rectangle bounds = s_waveform_bounds[ch][0].bounds;
             channel_trigger_t *trig = (ch == 0) ? &app->trigger_a : &app->trigger_b;
 
             // Convert mouse Y to trigger level
@@ -559,7 +597,7 @@ void handle_oscilloscope_interaction(gui_app_t *app) {
         s_dragging_channel = -1;
     }
 
-    // Mouse wheel zoom when hovering over oscilloscope
+    // Mouse wheel zoom when hovering over waveform panel
     if (hover_channel >= 0) {
         float wheel = GetMouseWheelMove();
         if (wheel != 0.0f) {
