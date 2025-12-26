@@ -45,6 +45,9 @@
 void gui_render_layout(gui_app_t *app);
 void gui_handle_interactions(gui_app_t *app);
 
+// Check if UI consumed the current frame's click (prevents click-through to oscilloscope)
+bool gui_ui_click_consumed(void);
+
 // Text measurement function (from clay_renderer_raylib.c)
 Clay_Dimensions Raylib_MeasureText(Clay_StringSlice text, Clay_TextElementConfig *config, void *userData);
 

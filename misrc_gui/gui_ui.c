@@ -24,6 +24,13 @@
 #define DROPDOWN_SCOPE_MODE   "ScopeMode"
 #define DROPDOWN_TRIGGER_MODE "TriggerMode"
 
+// Track if UI consumed the current frame's click (prevents click-through)
+static bool s_ui_consumed_click = false;
+
+bool gui_ui_click_consumed(void) {
+    return s_ui_consumed_click;
+}
+
 // Color conversions
 static inline Clay_Color to_clay_color(Color c) {
     return (Clay_Color){ c.r, c.g, c.b, c.a };
@@ -894,8 +901,12 @@ void gui_render_layout(gui_app_t *app) {
 
 // Handle UI interactions
 void gui_handle_interactions(gui_app_t *app) {
+    // Reset click consumed flag at start of each frame
+    s_ui_consumed_click = false;
+
     // Handle popup interactions first (modal behavior)
     if (gui_popup_handle_interactions()) {
+        s_ui_consumed_click = true;
         return;  // Popup consumed the interaction
     }
 
@@ -1030,6 +1041,9 @@ void gui_handle_interactions(gui_app_t *app) {
         // Close all dropdowns if clicked elsewhere
         if (!dropdown_clicked) {
             gui_dropdown_close_all();
+        } else {
+            // Dropdown consumed the click - prevent click-through
+            s_ui_consumed_click = true;
         }
     }
 }

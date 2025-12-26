@@ -528,6 +528,9 @@ void render_oscilloscope_channel(gui_app_t *app, float x, float y, float width, 
 void handle_oscilloscope_interaction(gui_app_t *app) {
     if (!app) return;
 
+    // Don't process clicks if UI already consumed them (dropdown, popup, etc.)
+    if (gui_ui_click_consumed()) return;
+
     Vector2 mouse = GetMousePosition();
     bool mouse_down = IsMouseButtonDown(MOUSE_LEFT_BUTTON);
     bool mouse_pressed = IsMouseButtonPressed(MOUSE_LEFT_BUTTON);
