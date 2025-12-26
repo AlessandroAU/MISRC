@@ -166,8 +166,12 @@ static void render_toolbar(gui_app_t *app) {
 #define STAT_ROW_LAYOUT { \
     .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0) }, \
     .layoutDirection = CLAY_LEFT_TO_RIGHT, \
+    .childAlignment = { .y = CLAY_ALIGN_Y_CENTER }, \
     .childGap = 4 \
 }
+
+// Fixed width for labels to ensure alignment
+#define LABEL_WIDTH 50
 
 // Trigger level buffers
 static char trig_level_a_buf[16];
@@ -242,8 +246,10 @@ static void render_channel_stats(gui_app_t *app, int channel) {
 
         // Peak row (shows both + and -)
         CLAY(CLAY_IDI("StatPeak", channel), { .layout = STAT_ROW_LAYOUT }) {
-            CLAY_TEXT(CLAY_STRING("Peak:"),
-                CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
+            CLAY(CLAY_IDI("LblPeak", channel), { .layout = { .sizing = { CLAY_SIZING_FIXED(LABEL_WIDTH), CLAY_SIZING_FIT(0) } } }) {
+                CLAY_TEXT(CLAY_STRING("Peak:"),
+                    CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
+            }
             CLAY_TEXT(make_string(buf_peak_pos),
                 CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(peak_pos > 0.95f ? COLOR_CLIP_RED : COLOR_TEXT) }));
             CLAY_TEXT(make_string(buf_peak_neg),
@@ -252,8 +258,10 @@ static void render_channel_stats(gui_app_t *app, int channel) {
 
         // Clip row (shows both + and -)
         CLAY(CLAY_IDI("StatClip", channel), { .layout = STAT_ROW_LAYOUT }) {
-            CLAY_TEXT(CLAY_STRING("Clip:"),
-                CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
+            CLAY(CLAY_IDI("LblClip", channel), { .layout = { .sizing = { CLAY_SIZING_FIXED(LABEL_WIDTH), CLAY_SIZING_FIT(0) } } }) {
+                CLAY_TEXT(CLAY_STRING("Clip:"),
+                    CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
+            }
             CLAY_TEXT(make_string(buf_clip_pos),
                 CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(clip_pos > 0 ? COLOR_CLIP_RED : COLOR_TEXT) }));
             CLAY_TEXT(make_string(buf_clip_neg),
@@ -262,8 +270,10 @@ static void render_channel_stats(gui_app_t *app, int channel) {
 
         // Errors row
         CLAY(CLAY_IDI("StatErrors", channel), { .layout = STAT_ROW_LAYOUT }) {
-            CLAY_TEXT(CLAY_STRING("Errors:"),
-                CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
+            CLAY(CLAY_IDI("LblErrors", channel), { .layout = { .sizing = { CLAY_SIZING_FIXED(LABEL_WIDTH), CLAY_SIZING_FIT(0) } } }) {
+                CLAY_TEXT(CLAY_STRING("Errors:"),
+                    CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
+            }
             CLAY_TEXT(make_string(buf_errors),
                 CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(errors > 0 ? COLOR_CLIP_RED : COLOR_TEXT) }));
         }
@@ -275,16 +285,11 @@ static void render_channel_stats(gui_app_t *app, int channel) {
         }) {}
 
         // Trigger row with combined mode/off dropdown
-        CLAY(CLAY_IDI("TrigRow", channel), {
-            .layout = {
-                .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0) },
-                .layoutDirection = CLAY_LEFT_TO_RIGHT,
-                .childAlignment = { .y = CLAY_ALIGN_Y_CENTER },
-                .childGap = 4
+        CLAY(CLAY_IDI("TrigRow", channel), { .layout = STAT_ROW_LAYOUT }) {
+            CLAY(CLAY_IDI("LblTrig", channel), { .layout = { .sizing = { CLAY_SIZING_FIXED(LABEL_WIDTH), CLAY_SIZING_FIT(0) } } }) {
+                CLAY_TEXT(CLAY_STRING("Trigger:"),
+                    CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
             }
-        }) {
-            CLAY_TEXT(CLAY_STRING("Trigger:"),
-                CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
 
             // Trigger mode dropdown button (includes Off option)
             const char *trig_mode_name;
@@ -300,17 +305,18 @@ static void render_channel_stats(gui_app_t *app, int channel) {
             }
             bool trig_dropdown_open = gui_dropdown_is_open(DROPDOWN_TRIGGER_MODE, channel);
             Color btn_color = trig->enabled ? channel_color : COLOR_BUTTON;
+            Color btn_text_color = trig->enabled ? (Color){0, 0, 0, 255} : COLOR_TEXT;
             if (trig_dropdown_open) btn_color = COLOR_BUTTON_HOVER;
             CLAY(CLAY_IDI("TrigModeBtn", channel), {
                 .layout = {
-                    .sizing = { CLAY_SIZING_FIXED(60), CLAY_SIZING_FIXED(18) },
+                    .sizing = { CLAY_SIZING_FIXED(65), CLAY_SIZING_FIXED(18) },
                     .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER }
                 },
                 .backgroundColor = to_clay_color(btn_color),
                 .cornerRadius = CLAY_CORNER_RADIUS(3)
             }) {
                 CLAY_TEXT(make_string(trig_mode_name),
-                    CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_DROPDOWN_OPT, .textColor = to_clay_color(COLOR_TEXT) }));
+                    CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_DROPDOWN_OPT, .textColor = to_clay_color(btn_text_color) }));
             }
         }
 
@@ -318,7 +324,7 @@ static void render_channel_stats(gui_app_t *app, int channel) {
         if (gui_dropdown_is_open(DROPDOWN_TRIGGER_MODE, channel)) {
             CLAY(CLAY_IDI("TrigModeOpts", channel), {
                 .layout = {
-                    .sizing = { CLAY_SIZING_FIXED(60), CLAY_SIZING_FIT(0) },
+                    .sizing = { CLAY_SIZING_FIXED(65), CLAY_SIZING_FIT(0) },
                     .layoutDirection = CLAY_TOP_TO_BOTTOM
                 },
                 .floating = {
@@ -399,22 +405,17 @@ static void render_channel_stats(gui_app_t *app, int channel) {
         int right_view = (channel == 0) ? app->panel_config_a.right_view : app->panel_config_b.right_view;
 
         // Layout row (Single/Split toggle)
-        CLAY(CLAY_IDI("LayoutRow", channel), {
-            .layout = {
-                .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0) },
-                .layoutDirection = CLAY_LEFT_TO_RIGHT,
-                .childAlignment = { .y = CLAY_ALIGN_Y_CENTER },
-                .childGap = 4
+        CLAY(CLAY_IDI("LayoutRow", channel), { .layout = STAT_ROW_LAYOUT }) {
+            CLAY(CLAY_IDI("LblLayout", channel), { .layout = { .sizing = { CLAY_SIZING_FIXED(LABEL_WIDTH), CLAY_SIZING_FIT(0) } } }) {
+                CLAY_TEXT(CLAY_STRING("Layout:"),
+                    CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
             }
-        }) {
-            CLAY_TEXT(CLAY_STRING("Layout:"),
-                CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
 
             const char *layout_name = panel_split ? "Split" : "Single";
             bool layout_dropdown_open = gui_dropdown_is_open(DROPDOWN_LAYOUT, channel);
             CLAY(CLAY_IDI("LayoutBtn", channel), {
                 .layout = {
-                    .sizing = { CLAY_SIZING_FIXED(55), CLAY_SIZING_FIXED(18) },
+                    .sizing = { CLAY_SIZING_FIXED(65), CLAY_SIZING_FIXED(18) },
                     .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER }
                 },
                 .backgroundColor = to_clay_color(layout_dropdown_open ? COLOR_BUTTON_HOVER : COLOR_BUTTON),
@@ -429,7 +430,7 @@ static void render_channel_stats(gui_app_t *app, int channel) {
         if (gui_dropdown_is_open(DROPDOWN_LAYOUT, channel)) {
             CLAY(CLAY_IDI("LayoutOpts", channel), {
                 .layout = {
-                    .sizing = { CLAY_SIZING_FIXED(55), CLAY_SIZING_FIT(0) },
+                    .sizing = { CLAY_SIZING_FIXED(65), CLAY_SIZING_FIT(0) },
                     .layoutDirection = CLAY_TOP_TO_BOTTOM
                 },
                 .floating = {
@@ -469,16 +470,11 @@ static void render_channel_stats(gui_app_t *app, int channel) {
         }
 
         // Left view row (always shown)
-        CLAY(CLAY_IDI("LeftViewRow", channel), {
-            .layout = {
-                .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0) },
-                .layoutDirection = CLAY_LEFT_TO_RIGHT,
-                .childAlignment = { .y = CLAY_ALIGN_Y_CENTER },
-                .childGap = 4
+        CLAY(CLAY_IDI("LeftViewRow", channel), { .layout = STAT_ROW_LAYOUT }) {
+            CLAY(CLAY_IDI("LblLeft", channel), { .layout = { .sizing = { CLAY_SIZING_FIXED(LABEL_WIDTH), CLAY_SIZING_FIT(0) } } }) {
+                CLAY_TEXT(panel_split ? CLAY_STRING("Left:") : CLAY_STRING("View:"),
+                    CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
             }
-        }) {
-            CLAY_TEXT(panel_split ? CLAY_STRING("Left:") : CLAY_STRING("View:"),
-                CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
 
             const char *left_name = panel_view_type_name((panel_view_type_t)left_view);
             bool left_dropdown_open = gui_dropdown_is_open(DROPDOWN_LEFT_VIEW, channel);
@@ -531,16 +527,11 @@ static void render_channel_stats(gui_app_t *app, int channel) {
 
         // Right view row (only shown when split)
         if (panel_split) {
-            CLAY(CLAY_IDI("RightViewRow", channel), {
-                .layout = {
-                    .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0) },
-                    .layoutDirection = CLAY_LEFT_TO_RIGHT,
-                    .childAlignment = { .y = CLAY_ALIGN_Y_CENTER },
-                    .childGap = 4
+            CLAY(CLAY_IDI("RightViewRow", channel), { .layout = STAT_ROW_LAYOUT }) {
+                CLAY(CLAY_IDI("LblRight", channel), { .layout = { .sizing = { CLAY_SIZING_FIXED(LABEL_WIDTH), CLAY_SIZING_FIT(0) } } }) {
+                    CLAY_TEXT(CLAY_STRING("Right:"),
+                        CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
                 }
-            }) {
-                CLAY_TEXT(CLAY_STRING("Right:"),
-                    CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
 
                 const char *right_name = panel_view_type_name((panel_view_type_t)right_view);
                 bool right_dropdown_open = gui_dropdown_is_open(DROPDOWN_RIGHT_VIEW, channel);

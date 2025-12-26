@@ -65,7 +65,7 @@ int main(int argc, char **argv) {
 
     // Initialize raylib window
     SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_MSAA_4X_HINT | FLAG_VSYNC_HINT);
-    InitWindow(1280, 768, "MISRC Capture");
+    InitWindow(1280, 720, "MISRC Capture");
     SetTraceLogLevel(LOG_INFO);  // Enable debug logging (phosphor perf traces)
     SetTargetFPS(60);
     SetExitKey(0);  // Disable escape key auto-close
