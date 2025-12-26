@@ -121,6 +121,12 @@ static float sim_noise(void) {
     return ((float)(sim_rand() & 0xFFFF) / 32768.0f) - 1.0f;
 }
 
+// Calculate continuous phase from absolute sample index
+// This ensures phase continuity across line and field boundaries
+static inline double phase_from_sample(uint64_t sample_index, double freq_hz) {
+    return 2.0 * M_PI * freq_hz * ((double)sample_index / (double)SIM_SAMPLE_RATE);
+}
+
 //-----------------------------------------------------------------------------
 // NTSC Line Type Classification
 //-----------------------------------------------------------------------------
@@ -214,22 +220,50 @@ static double sim_generate_vsync_serration(int sample_in_line, bool is_half_line
 }
 
 //-----------------------------------------------------------------------------
+// Color Space Conversion
+//-----------------------------------------------------------------------------
+
+// RGB to YIQ conversion (NTSC color space)
+static inline void rgb_to_yiq(double r, double g, double b,
+                              double *y, double *i, double *q) {
+    // NTSC YIQ matrix
+    *y = 0.299 * r + 0.587 * g + 0.114 * b;
+    *i = 0.596 * r - 0.274 * g - 0.322 * b;
+    *q = 0.211 * r - 0.523 * g + 0.312 * b;
+}
+
+// 75% SMPTE color bars as RGB
+// Order: white, yellow, cyan, green, magenta, red, blue, black
+static const double bar_rgb[8][3] = {
+    {0.75, 0.75, 0.75},  // white
+    {0.75, 0.75, 0.00},  // yellow
+    {0.00, 0.75, 0.75},  // cyan
+    {0.00, 0.75, 0.00},  // green
+    {0.75, 0.00, 0.75},  // magenta
+    {0.75, 0.00, 0.00},  // red
+    {0.00, 0.00, 0.75},  // blue
+    {0.00, 0.00, 0.00},  // black
+};
+
+//-----------------------------------------------------------------------------
 // Test Pattern Generation
 //-----------------------------------------------------------------------------
+
+// Get Y, I, Q values for current bar
+static void sim_get_bar_yiq(int bar, double *y, double *i, double *q) {
+    bar = bar % 8;
+    rgb_to_yiq(bar_rgb[bar][0], bar_rgb[bar][1], bar_rgb[bar][2], y, i, q);
+}
 
 static double sim_generate_test_pattern(int pixel_in_line, int field, int active_width) {
     (void)field;
     int bar = (pixel_in_line * 8) / active_width;
 
-    // SMPTE color bars luminance: white, yellow, cyan, green, magenta, red, blue, black
-    static const double bar_luma[] = {1.0, 0.89, 0.70, 0.59, 0.41, 0.30, 0.11, 0.0};
-    double luma = bar_luma[bar % 8];
+    double y, i, q;
+    sim_get_bar_yiq(bar, &y, &i, &q);
+    (void)i; (void)q;  // Luma only for this function
 
-    // Add subtle horizontal gradient
-    double h_pos = (double)pixel_in_line / (double)active_width;
-    luma *= (0.9 + 0.1 * sin(h_pos * M_PI * 4.0));
-
-    return luma;
+    return y;
 }
 
 //-----------------------------------------------------------------------------
@@ -237,7 +271,7 @@ static double sim_generate_test_pattern(int pixel_in_line, int field, int active
 //-----------------------------------------------------------------------------
 
 static double sim_generate_cvbs(uint64_t sample_index, int *out_line_number, int *out_field,
-                                 double *out_chroma_amp, double *out_chroma_phase) {
+                                 double *out_chroma_i, double *out_chroma_q) {
     int field, line_in_field, sample_in_line;
     bool is_half_line;
 
@@ -248,23 +282,20 @@ static double sim_generate_cvbs(uint64_t sample_index, int *out_line_number, int
     if (out_line_number) *out_line_number = line_in_frame;
     if (out_field) *out_field = field;
 
-    // NTSC color subcarrier is exactly 227.5 cycles per line (not an integer!)
-    // This means the phase shifts by 180° (π radians) every line.
-    // We compute phase relative to line start, then add the line-based phase offset.
-
+    // For CVBS output, we need the traditional per-line phase calculation that
+    // NTSC decoders expect. The 227.5 cycles per line means 180° phase shift each line.
     // Phase within current line (based on sample position within line)
     double cycles_in_line = NTSC_COLORBURST_FREQ * (double)sample_in_line / (double)SIM_SAMPLE_RATE;
     double phase_in_line = 2.0 * M_PI * cycles_in_line;
 
     // Line-based phase offset: 180° per line (227.5 cycles = 227 full + 0.5)
-    // Odd lines have 180° offset from even lines
     double line_phase_offset = (line_in_frame % 2) * M_PI;
 
     double subcarrier_phase = phase_in_line + line_phase_offset;
 
     double signal = 0.0;
-    double chroma_amp = 0.0;   // Chroma amplitude (for VHS direct generation)
-    double chroma_phase = 0.0; // Chroma phase offset (for VHS direct generation)
+    double chroma_i = 0.0;  // I component for quadrature modulation
+    double chroma_q = 0.0;  // Q component for quadrature modulation
 
     switch (line_type) {
         case LINE_TYPE_PRE_EQ:
@@ -298,31 +329,32 @@ static double sim_generate_cvbs(uint64_t sample_index, int *out_line_number, int
                 int burst_duration = (int)(NTSC_COLORBURST_CYCLES * 40.0 / (NTSC_COLORBURST_FREQ / 1000000.0));
 
                 if (back_porch_pos >= burst_start && back_porch_pos < burst_start + burst_duration) {
-                    // Colorburst - this is the phase reference for chroma (phase 0)
-                    chroma_amp = 0.15;
-                    chroma_phase = 0.0;
-                    double chroma = chroma_amp * sin(subcarrier_phase + chroma_phase);
-                    signal = BLANKING_LEVEL + chroma;
+                    // Colorburst - reference phase for decoder
+                    // NTSC burst is along the -U axis (180° from +U), which is approximately -I
+                    // For simplicity, use a sine burst (reference phase 0)
+                    double burst = 0.15 * sin(subcarrier_phase);
+                    signal = BLANKING_LEVEL + burst;
                 } else {
                     signal = BLANKING_LEVEL;
                 }
             }
             else if (sample_in_line < active_end) {
                 int pixel = sample_in_line - active_start;
-                double luma = sim_generate_test_pattern(pixel, field, active_width);
-
                 int bar = (pixel * 8) / active_width;
 
-                static const double bar_chroma_phase_deg[] = {0, 167, 283, 241, 61, 103, 347, 0};
-                static const double bar_chroma_amp_100[] = {0, 0.44, 0.63, 0.59, 0.59, 0.63, 0.44, 0};
+                // Get Y, I, Q from RGB color bars
+                double y, i, q;
+                sim_get_bar_yiq(bar, &y, &i, &q);
 
-                chroma_phase = bar_chroma_phase_deg[bar % 8] * M_PI / 180.0;
-                chroma_amp = bar_chroma_amp_100[bar % 8] * 0.75;  // 75% color bars
+                // Store I/Q for VHS generation
+                chroma_i = i;
+                chroma_q = q;
 
-                // Generate chroma at 3.58 MHz subcarrier
-                double chroma = chroma_amp * sin(subcarrier_phase + chroma_phase);
+                // Generate NTSC chroma using quadrature modulation: I*cos(wt) + Q*sin(wt)
+                // This is the standard NTSC modulation formula
+                double chroma = i * cos(subcarrier_phase) + q * sin(subcarrier_phase);
 
-                signal = BLACK_LEVEL + luma * (WHITE_LEVEL - BLACK_LEVEL) + chroma;
+                signal = BLACK_LEVEL + y * (WHITE_LEVEL - BLACK_LEVEL) + chroma;
             }
             else {
                 signal = BLANKING_LEVEL;
@@ -331,12 +363,12 @@ static double sim_generate_cvbs(uint64_t sample_index, int *out_line_number, int
         }
     }
 
-    // Output chroma amplitude and phase for VHS direct 629 kHz generation
-    if (out_chroma_amp) {
-        *out_chroma_amp = chroma_amp;
+    // Output I/Q components for VHS quadrature generation
+    if (out_chroma_i) {
+        *out_chroma_i = chroma_i;
     }
-    if (out_chroma_phase) {
-        *out_chroma_phase = chroma_phase;
+    if (out_chroma_q) {
+        *out_chroma_q = chroma_q;
     }
 
     return signal;
@@ -346,11 +378,10 @@ static double sim_generate_cvbs(uint64_t sample_index, int *out_line_number, int
 // VHS RF Signal Generation
 //-----------------------------------------------------------------------------
 
-// VHS color-under: directly generate the 629 kHz chroma signal
-// Instead of simulating heterodyne mixing (which produces sum+difference frequencies),
-// we directly generate the ideal 629 kHz signal with the correct amplitude and phase.
+// VHS color-under: generate 629 kHz QAM chroma signal from I/Q components
+// VHS color-under is a quadrature signal, not single-axis amplitude+phase
 
-static double sim_generate_vhs_rf(double cvbs_luma, double chroma_amp, double chroma_phase,
+static double sim_generate_vhs_rf(double cvbs_luma, double chroma_i, double chroma_q,
                                    int line_in_frame, int field, int sample_in_line) {
     (void)field;
 
@@ -367,35 +398,28 @@ static double sim_generate_vhs_rf(double cvbs_luma, double chroma_amp, double ch
     s_vhs_fm_phase += 2.0 * M_PI * fm_freq / SIM_SAMPLE_RATE;
     if (s_vhs_fm_phase > 2.0 * M_PI) s_vhs_fm_phase -= 2.0 * M_PI;
 
-    // === Chroma Down-conversion (Heterodyne) ===
-    // VHS uses heterodyne to convert the 3.58 MHz NTSC chroma down to 629 kHz.
-    // We need to regenerate the 3.58 MHz chroma signal and mix it with the LO.
+    // === VHS Color-Under (629 kHz QAM) ===
+    // VHS color-under is a quadrature amplitude modulated signal at 629 kHz.
+    // The decoder expects the carrier to have a consistent phase relationship
+    // to the line timing (like NTSC burst provides for 3.58 MHz).
     //
-    // The heterodyne oscillator frequency: f_osc = 3.579545 MHz + 0.629 MHz = 4.208545 MHz
-    // When mixed: cos(A)*cos(B) = 0.5*[cos(A-B) + cos(A+B)]
-    // The low-pass filter keeps the difference frequency (629 kHz)
+    // Use per-line phase calculation so the decoder can lock properly.
+    // VHS also applies a 90° phase rotation on odd lines for crosstalk cancellation.
 
-    #define VHS_HETERODYNE_OSC  (NTSC_COLORBURST_FREQ + VHS_CHROMA_CARRIER)
+    // Per-line phase for 629 kHz carrier (same approach as CVBS uses for 3.58 MHz)
+    double vhs_cycles_in_line = VHS_CHROMA_CARRIER * (double)sample_in_line / (double)SIM_SAMPLE_RATE;
+    double vhs_phase = 2.0 * M_PI * vhs_cycles_in_line;
 
-    // Regenerate the 3.58 MHz chroma signal from amplitude and phase
-    // Need to include the NTSC line phase offset (180° per line)
-    double ntsc_cycles_in_line = NTSC_COLORBURST_FREQ * (double)sample_in_line / (double)SIM_SAMPLE_RATE;
-    double ntsc_phase = 2.0 * M_PI * ntsc_cycles_in_line + (line_in_frame % 2) * M_PI;
-    double chroma_3_58 = chroma_amp * sin(ntsc_phase + chroma_phase);
+    // VHS 90° phase rotation on odd lines for crosstalk cancellation
+    double vhs_line_rotation = (line_in_frame % 2) ? (M_PI / 2.0) : 0.0;
+    vhs_phase += vhs_line_rotation;
 
-    // Calculate the heterodyne oscillator phase
-    double osc_cycles_in_line = VHS_HETERODYNE_OSC * (double)sample_in_line / (double)SIM_SAMPLE_RATE;
-    double osc_phase = 2.0 * M_PI * osc_cycles_in_line;
+    // Generate 629 kHz QAM chroma: I*cos(wt) + Q*sin(wt)
+    // This is the same quadrature formula used for NTSC, just at 629 kHz
+    double chroma_under = chroma_i * cos(vhs_phase) + chroma_q * sin(vhs_phase);
 
-    // VHS NTSC uses a phase rotation on the heterodyne oscillator to reduce crosstalk
-    // between adjacent tracks. The pattern cycles every 2 lines with 90° steps.
-    if (line_in_frame % 2 == 1) {
-        osc_phase += M_PI / 2.0;  // +90° on odd lines
-    }
-
-    // Perform the heterodyne mixing (multiplication)
-    double lo_signal = cos(osc_phase);
-    double chroma_downconverted = chroma_3_58 * lo_signal * 2.0;  // *2 compensates for mixing loss
+    // Scale down VHS chroma (color-under level is lower than NTSC broadcast)
+    chroma_under *= 0.5;
 
     double head_noise = 0.0;
 #if SIM_ENABLE_VHS_HEAD_SWITCH
@@ -415,7 +439,7 @@ static double sim_generate_vhs_rf(double cvbs_luma, double chroma_amp, double ch
     tracking_noise = sim_noise() * 0.02 * (field == 0 ? 1.0 : 1.1);
 #endif
 
-    return fm_signal + chroma_downconverted + head_noise + tracking_noise;
+    return fm_signal + chroma_under + head_noise + tracking_noise;
 }
 
 //-----------------------------------------------------------------------------
@@ -459,22 +483,32 @@ static int simulated_capture_thread(void *ctx) {
         for (int i = 0; i < SIM_BUFFER_SIZE; i++) {
             int line_in_frame = 0;
             int field = 0;
-            double chroma_amp = 0.0;
-            double chroma_phase = 0.0;
+            double chroma_i = 0.0;
+            double chroma_q = 0.0;
 
-            // Generate CVBS signal and get chroma amplitude/phase for VHS
-            double cvbs = sim_generate_cvbs(s_sim_sample_count, &line_in_frame, &field, &chroma_amp, &chroma_phase);
+            // Generate CVBS signal and get I/Q chroma components for VHS
+            double cvbs = sim_generate_cvbs(s_sim_sample_count, &line_in_frame, &field, &chroma_i, &chroma_q);
 #if SIM_ENABLE_CVBS_NOISE
             cvbs += sim_noise() * cvbs_noise;
 #endif
 
-            int sample_in_line = (int)(s_sim_sample_count % NTSC_LINE_SAMPLES);
-
             // For VHS, compute luma from CVBS (subtract the chroma we added)
-            double chroma_at_sample = chroma_amp * sin(2.0 * M_PI * NTSC_COLORBURST_FREQ * sample_in_line / SIM_SAMPLE_RATE
-                                                        + (line_in_frame % 2) * M_PI + chroma_phase);
+            // Must use the same phase calculation as sim_generate_cvbs() to correctly extract luma
+            // Get the correct sample_in_line from sim_get_line_type (handles half-lines properly)
+            int field_tmp, line_in_field_tmp, sample_in_line;
+            bool is_half_line_tmp;
+            sim_get_line_type(s_sim_sample_count, &field_tmp, &line_in_field_tmp, &sample_in_line, &is_half_line_tmp);
+
+            double cycles_in_line = NTSC_COLORBURST_FREQ * (double)sample_in_line / (double)SIM_SAMPLE_RATE;
+            double phase_in_line = 2.0 * M_PI * cycles_in_line;
+            double line_phase_offset = (line_in_frame % 2) * M_PI;
+            double subcarrier_phase = phase_in_line + line_phase_offset;
+            // Reconstruct the chroma we added using quadrature: I*cos(wt) + Q*sin(wt)
+            double chroma_at_sample = chroma_i * cos(subcarrier_phase) + chroma_q * sin(subcarrier_phase);
             double cvbs_luma = cvbs - chroma_at_sample;
-            double vhs_rf = sim_generate_vhs_rf(cvbs_luma, chroma_amp, chroma_phase, line_in_frame, field, sample_in_line);
+
+            // Generate VHS RF with I/Q quadrature chroma at 629 kHz
+            double vhs_rf = sim_generate_vhs_rf(cvbs_luma, chroma_i, chroma_q, line_in_frame, field, sample_in_line);
 #if SIM_ENABLE_VHS_RF_NOISE
             vhs_rf += sim_noise() * rf_noise;
 #endif

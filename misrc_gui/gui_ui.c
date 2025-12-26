@@ -880,10 +880,8 @@ void gui_render_layout(gui_app_t *app) {
                     },
                     .backgroundColor = to_clay_color(item_color)
                 }) {
-                    // Use a static buffer for device name - each iteration overwrites
-                    static char dev_name_buf[64];
-                    snprintf(dev_name_buf, sizeof(dev_name_buf), "%s", app->devices[i].name);
-                    CLAY_TEXT(make_string(dev_name_buf),
+                    // Use device name directly - it's already in persistent storage
+                    CLAY_TEXT(make_string(app->devices[i].name),
                         CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_DROPDOWN, .textColor = to_clay_color(COLOR_TEXT) }));
                 }
             }
@@ -943,7 +941,17 @@ void gui_handle_interactions(gui_app_t *app) {
             // Check device options
             for (int i = 0; i < app->device_count; i++) {
                 if (Clay_PointerOver(CLAY_IDI("DeviceOption", i))) {
-                    app->selected_device = i;
+                    if (i != app->selected_device) {
+                        // Switch to a different device - stop current and start new
+                        bool was_capturing = app->is_capturing;
+                        if (was_capturing) {
+                            gui_app_stop_capture(app);
+                        }
+                        app->selected_device = i;
+                        if (was_capturing) {
+                            gui_app_start_capture(app);
+                        }
+                    }
                     gui_dropdown_close_all();
                     dropdown_clicked = true;
                     break;
