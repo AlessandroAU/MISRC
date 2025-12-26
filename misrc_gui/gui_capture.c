@@ -14,6 +14,7 @@
 #include "gui_fft.h"
 #include "gui_simulated.h"
 #include "gui_panel.h"
+#include "gui_cvbs.h"
 
 #include <hsdaoh.h>
 #include <hsdaoh_raw.h>
@@ -318,6 +319,10 @@ void gui_app_init(gui_app_t *app) {
     app->panel_config_b.left_state = NULL;
     app->panel_config_b.right_state = panel_create_view_state(PANEL_VIEW_FFT);
 
+    // CVBS decoders (allocated on demand)
+    app->cvbs_a = NULL;
+    app->cvbs_b = NULL;
+
     // Initialize capture ringbuffer
     if (!s_rb_initialized) {
         int r = rb_init(&s_capture_rb, "gui_capture", BUFFER_TOTAL_SIZE);
@@ -378,6 +383,18 @@ void gui_app_cleanup(gui_app_t *app) {
         gui_fft_cleanup(app->fft_b);
         free(app->fft_b);
         app->fft_b = NULL;
+    }
+
+    // Cleanup CVBS decoders
+    if (app->cvbs_a) {
+        gui_cvbs_cleanup(app->cvbs_a);
+        free(app->cvbs_a);
+        app->cvbs_a = NULL;
+    }
+    if (app->cvbs_b) {
+        gui_cvbs_cleanup(app->cvbs_b);
+        free(app->cvbs_b);
+        app->cvbs_b = NULL;
     }
 
     // Cleanup oscilloscope resources (static state and resamplers)

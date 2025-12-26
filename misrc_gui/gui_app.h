@@ -11,6 +11,7 @@ typedef struct hsdaoh_dev hsdaoh_dev_t;
 typedef struct sc_handle sc_handle_t;
 typedef struct fft_state fft_state_t;
 typedef struct phosphor_rt phosphor_rt_t;
+typedef struct cvbs_decoder cvbs_decoder_t;
 
 //-----------------------------------------------------------------------------
 // Panel View Types (defined here to avoid circular includes)
@@ -59,6 +60,7 @@ typedef enum {
     SCOPE_MODE_LINE,      // Basic line waveform (fast, simple)
     SCOPE_MODE_PHOSPHOR,  // Digital phosphor with heatmap persistence
     SCOPE_MODE_SPLIT,     // Split view: waveform left, FFT waterfall right
+    SCOPE_MODE_CVBS,      // CVBS luma decoder view
     SCOPE_MODE_COUNT      // Number of modes (for cycling)
 } scope_display_mode_t;
 
@@ -279,6 +281,10 @@ typedef struct gui_app {
 
     // Panel configuration (new panel abstraction system)
     channel_panel_config_t panel_config_a, panel_config_b;
+
+    // CVBS decoder state (allocated on demand when CVBS mode is selected)
+    cvbs_decoder_t *cvbs_a;
+    cvbs_decoder_t *cvbs_b;
 
 } gui_app_t;
 
