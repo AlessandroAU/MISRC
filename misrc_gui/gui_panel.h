@@ -10,37 +10,7 @@
 
 #include "raylib.h"
 #include <stdbool.h>
-
-// Forward declarations
-typedef struct gui_app gui_app_t;
-typedef struct fft_state fft_state_t;
-
-//-----------------------------------------------------------------------------
-// Panel View Types
-//-----------------------------------------------------------------------------
-
-typedef enum {
-    PANEL_VIEW_WAVEFORM_LINE,      // Simple line oscilloscope (fast)
-    PANEL_VIEW_WAVEFORM_PHOSPHOR,  // Digital phosphor with persistence
-    PANEL_VIEW_FFT,                // FFT spectrum analysis
-    PANEL_VIEW_COUNT
-    // Future: PANEL_VIEW_XY, PANEL_VIEW_SPECTROGRAM
-} panel_view_type_t;
-
-//-----------------------------------------------------------------------------
-// Per-Channel Panel Configuration
-//-----------------------------------------------------------------------------
-
-// Note: The actual panel config is stored inline in gui_app_t to avoid
-// circular includes. This typedef is for use by panel functions that
-// take the config as a parameter.
-typedef struct channel_panel_config {
-    bool split;                    // false = single panel, true = split view
-    panel_view_type_t left_view;   // View for left panel (or only panel if not split)
-    panel_view_type_t right_view;  // View for right panel (only used if split)
-    void *left_state;              // View-specific state (e.g., fft_state_t*)
-    void *right_state;             // View-specific state for right panel
-} channel_panel_config_t;
+#include "gui_app.h"  // For panel_view_type_t and channel_panel_config_t
 
 //-----------------------------------------------------------------------------
 // Panel Render Function Type

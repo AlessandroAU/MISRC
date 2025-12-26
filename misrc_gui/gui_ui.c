@@ -10,6 +10,7 @@
 #include "gui_popup.h"
 #include "gui_fft.h"
 #include "gui_panel.h"
+#include "gui_custom_elements.h"
 #include "version.h"
 #include <clay.h>
 #include <stdio.h>
@@ -59,34 +60,6 @@ static char stat_b_errors[16];
 static Clay_String make_string(const char *str) {
     return (Clay_String){ .isStaticallyAllocated = false, .length = (int32_t)strlen(str), .chars = str };
 }
-
-// Custom element type enum (must match clay_renderer_raylib.c)
-typedef enum {
-    CUSTOM_LAYOUT_ELEMENT_TYPE_OSCILLOSCOPE,
-    CUSTOM_LAYOUT_ELEMENT_TYPE_VU_METER
-} CustomLayoutElementType;
-
-// Custom element data structures (must match clay_renderer_raylib.c)
-typedef struct {
-    gui_app_t *app;
-    int channel;
-} CustomLayoutElement_Oscilloscope;
-
-typedef struct {
-    vu_meter_state_t *meter;
-    const char *label;
-    bool is_clipping_pos;
-    bool is_clipping_neg;
-    Color channel_color;
-} CustomLayoutElement_VUMeter;
-
-typedef struct {
-    CustomLayoutElementType type;
-    union {
-        CustomLayoutElement_Oscilloscope oscilloscope;
-        CustomLayoutElement_VUMeter vu_meter;
-    } customData;
-} CustomLayoutElement;
 
 // Static storage for custom element data (persists during render)
 static CustomLayoutElement s_osc_a_element;

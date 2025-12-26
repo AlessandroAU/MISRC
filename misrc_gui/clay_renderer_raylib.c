@@ -5,6 +5,7 @@
 
 #include <clay.h>
 #include "raylib.h"
+#include "gui_custom_elements.h"
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
@@ -13,40 +14,6 @@
 
 #define CLAY_RECTANGLE_TO_RAYLIB_RECTANGLE(rectangle) (Rectangle) { .x = rectangle.x, .y = rectangle.y, .width = rectangle.width, .height = rectangle.height }
 #define CLAY_COLOR_TO_RAYLIB_COLOR(color) (Color) { .r = (unsigned char)roundf(color.r), .g = (unsigned char)roundf(color.g), .b = (unsigned char)roundf(color.b), .a = (unsigned char)roundf(color.a) }
-
-typedef enum
-{
-    CUSTOM_LAYOUT_ELEMENT_TYPE_OSCILLOSCOPE,
-    CUSTOM_LAYOUT_ELEMENT_TYPE_VU_METER
-} CustomLayoutElementType;
-
-// Forward declarations for custom element data
-typedef struct gui_app gui_app_t;
-typedef struct vu_meter_state vu_meter_state_t;
-
-typedef struct
-{
-    gui_app_t *app;
-    int channel;  // 0 = both, 1 = A only, 2 = B only
-} CustomLayoutElement_Oscilloscope;
-
-typedef struct
-{
-    vu_meter_state_t *meter;
-    const char *label;
-    bool is_clipping_pos;
-    bool is_clipping_neg;
-    Color channel_color;
-} CustomLayoutElement_VUMeter;
-
-typedef struct
-{
-    CustomLayoutElementType type;
-    union {
-        CustomLayoutElement_Oscilloscope oscilloscope;
-        CustomLayoutElement_VUMeter vu_meter;
-    } customData;
-} CustomLayoutElement;
 
 
 Clay_Dimensions Raylib_MeasureText(Clay_StringSlice text, Clay_TextElementConfig *config, void *userData) {
@@ -110,10 +77,6 @@ void Clay_Raylib_Close()
 
     CloseWindow();
 }
-
-// Forward declarations for custom element data (from gui_render.h)
-void render_oscilloscope_custom(Clay_BoundingBox bounds, void *osc_data);
-void render_vu_meter_custom(Clay_BoundingBox bounds, void *vu_data);
 
 void Clay_Raylib_Render(Clay_RenderCommandArray renderCommands, Font* fonts)
 {
@@ -214,11 +177,15 @@ void Clay_Raylib_Render(Clay_RenderCommandArray renderCommands, Font* fonts)
                 if (!customElement) continue;
                 switch (customElement->type) {
                     case CUSTOM_LAYOUT_ELEMENT_TYPE_OSCILLOSCOPE: {
-                        render_oscilloscope_custom(boundingBox, &customElement->customData.oscilloscope);
+                        gui_render_oscilloscope(boundingBox.x, boundingBox.y,
+                                                boundingBox.width, boundingBox.height,
+                                                &customElement->customData.oscilloscope);
                         break;
                     }
                     case CUSTOM_LAYOUT_ELEMENT_TYPE_VU_METER: {
-                        render_vu_meter_custom(boundingBox, &customElement->customData.vu_meter);
+                        gui_render_vu_meter(boundingBox.x, boundingBox.y,
+                                            boundingBox.width, boundingBox.height,
+                                            &customElement->customData.vu_meter);
                         break;
                     }
                     default: break;

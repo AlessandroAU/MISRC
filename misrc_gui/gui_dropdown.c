@@ -139,34 +139,19 @@ static bool handle_trigger_mode_dropdown(gui_app_t *app, int ch) {
 // Handle layout selection for a channel
 static bool handle_layout_dropdown(gui_app_t *app, int ch) {
     bool clicked = false;
-
-    // Get panel config pointers for this channel
-    bool *cfg_split = (ch == 0) ? &app->panel_config_a.split : &app->panel_config_b.split;
-    int *cfg_right_view = (ch == 0) ? &app->panel_config_a.right_view : &app->panel_config_b.right_view;
-    void **cfg_right_state = (ch == 0) ? &app->panel_config_a.right_state : &app->panel_config_b.right_state;
+    channel_panel_config_t *config = (ch == 0) ? &app->panel_config_a : &app->panel_config_b;
 
     if (Clay_PointerOver(CLAY_IDI("LayoutBtn", ch))) {
         gui_dropdown_toggle(DROPDOWN_LAYOUT, ch);
         clicked = true;
     } else if (gui_dropdown_is_open(DROPDOWN_LAYOUT, ch)) {
         if (Clay_PointerOver(CLAY_IDI("LayoutOptSingle", ch))) {
-            if (*cfg_split) {
-                *cfg_split = false;
-                // Destroy right panel state if it exists
-                if (*cfg_right_state) {
-                    panel_destroy_view_state((panel_view_type_t)*cfg_right_view, *cfg_right_state);
-                    *cfg_right_state = NULL;
-                }
-            }
+            panel_config_set_split(config, false);
             gui_dropdown_close_all();
             clicked = true;
         }
         if (Clay_PointerOver(CLAY_IDI("LayoutOptSplit", ch))) {
-            if (!*cfg_split) {
-                *cfg_split = true;
-                // Create right panel state if needed
-                *cfg_right_state = panel_create_view_state((panel_view_type_t)*cfg_right_view);
-            }
+            panel_config_set_split(config, true);
             gui_dropdown_close_all();
             clicked = true;
         }
@@ -178,9 +163,7 @@ static bool handle_layout_dropdown(gui_app_t *app, int ch) {
 // Handle left view selection for a channel
 static bool handle_left_view_dropdown(gui_app_t *app, int ch) {
     bool clicked = false;
-
-    int *cfg_left_view = (ch == 0) ? &app->panel_config_a.left_view : &app->panel_config_b.left_view;
-    void **cfg_left_state = (ch == 0) ? &app->panel_config_a.left_state : &app->panel_config_b.left_state;
+    channel_panel_config_t *config = (ch == 0) ? &app->panel_config_a : &app->panel_config_b;
 
     if (Clay_PointerOver(CLAY_IDI("LeftViewBtn", ch))) {
         gui_dropdown_toggle(DROPDOWN_LEFT_VIEW, ch);
@@ -190,15 +173,7 @@ static bool handle_left_view_dropdown(gui_app_t *app, int ch) {
             if (!panel_view_type_available((panel_view_type_t)vt)) continue;
             // Use ch * 10 + vt to match the ID used in rendering
             if (Clay_PointerOver(CLAY_IDI("LeftViewOpt", ch * 10 + vt))) {
-                if (*cfg_left_view != vt) {
-                    // Destroy old state
-                    if (*cfg_left_state) {
-                        panel_destroy_view_state((panel_view_type_t)*cfg_left_view, *cfg_left_state);
-                        *cfg_left_state = NULL;
-                    }
-                    *cfg_left_view = vt;
-                    *cfg_left_state = panel_create_view_state((panel_view_type_t)vt);
-                }
+                panel_config_set_left_view(config, (panel_view_type_t)vt);
                 gui_dropdown_close_all();
                 clicked = true;
                 break;
@@ -212,12 +187,9 @@ static bool handle_left_view_dropdown(gui_app_t *app, int ch) {
 // Handle right view selection for a channel
 static bool handle_right_view_dropdown(gui_app_t *app, int ch) {
     bool clicked = false;
+    channel_panel_config_t *config = (ch == 0) ? &app->panel_config_a : &app->panel_config_b;
 
-    bool cfg_split = (ch == 0) ? app->panel_config_a.split : app->panel_config_b.split;
-    if (!cfg_split) return false;  // Right view only visible when split
-
-    int *cfg_right_view = (ch == 0) ? &app->panel_config_a.right_view : &app->panel_config_b.right_view;
-    void **cfg_right_state = (ch == 0) ? &app->panel_config_a.right_state : &app->panel_config_b.right_state;
+    if (!config->split) return false;  // Right view only visible when split
 
     if (Clay_PointerOver(CLAY_IDI("RightViewBtn", ch))) {
         gui_dropdown_toggle(DROPDOWN_RIGHT_VIEW, ch);
@@ -227,15 +199,7 @@ static bool handle_right_view_dropdown(gui_app_t *app, int ch) {
             if (!panel_view_type_available((panel_view_type_t)vt)) continue;
             // Use ch * 10 + vt to match the ID used in rendering
             if (Clay_PointerOver(CLAY_IDI("RightViewOpt", ch * 10 + vt))) {
-                if (*cfg_right_view != vt) {
-                    // Destroy old state
-                    if (*cfg_right_state) {
-                        panel_destroy_view_state((panel_view_type_t)*cfg_right_view, *cfg_right_state);
-                        *cfg_right_state = NULL;
-                    }
-                    *cfg_right_view = vt;
-                    *cfg_right_state = panel_create_view_state((panel_view_type_t)vt);
-                }
+                panel_config_set_right_view(config, (panel_view_type_t)vt);
                 gui_dropdown_close_all();
                 clicked = true;
                 break;
