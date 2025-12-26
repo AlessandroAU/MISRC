@@ -21,9 +21,9 @@
 #define COLOR_GRID            (Color){ 90, 90, 110, 130 }
 #define COLOR_GRID_MAJOR      (Color){ 130, 130, 160, 180 }
 #define COLOR_METER_BG        (Color){ 25, 25, 30, 255 }
-#define COLOR_METER_GREEN     (Color){ 50, 200, 80, 255 }
-#define COLOR_METER_YELLOW    (Color){ 220, 200, 50, 255 }
-#define COLOR_METER_RED       (Color){ 220, 50, 50, 255 }
+#define COLOR_METER_GREEN     (Color){ 0, 255, 0, 255 }
+#define COLOR_METER_YELLOW    (Color){ 255, 230, 0, 255 }
+#define COLOR_METER_RED       (Color){ 255, 0, 0, 255 }
 
 // Font sizes - adjust these to change all UI text sizes
 #define FONT_SIZE_TITLE        26    // Main title "MISRC Capture"

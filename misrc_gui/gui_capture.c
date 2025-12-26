@@ -306,17 +306,17 @@ void gui_app_init(gui_app_t *app) {
     app->fft_b = NULL;
 
     // Initialize panel configuration (new panel abstraction system)
-    app->panel_config_a.split = false;
+    app->panel_config_a.split = true;
     app->panel_config_a.left_view = PANEL_VIEW_WAVEFORM_PHOSPHOR;
     app->panel_config_a.right_view = PANEL_VIEW_FFT;
     app->panel_config_a.left_state = NULL;
-    app->panel_config_a.right_state = NULL;
+    app->panel_config_a.right_state = panel_create_view_state(PANEL_VIEW_FFT);
 
-    app->panel_config_b.split = false;
+    app->panel_config_b.split = true;
     app->panel_config_b.left_view = PANEL_VIEW_WAVEFORM_PHOSPHOR;
     app->panel_config_b.right_view = PANEL_VIEW_FFT;
     app->panel_config_b.left_state = NULL;
-    app->panel_config_b.right_state = NULL;
+    app->panel_config_b.right_state = panel_create_view_state(PANEL_VIEW_FFT);
 
     // Initialize capture ringbuffer
     if (!s_rb_initialized) {

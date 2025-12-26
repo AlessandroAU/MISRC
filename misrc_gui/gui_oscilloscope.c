@@ -236,9 +236,9 @@ void draw_channel_grid(float x, float y, float width, float height,
     DrawRectangleLinesEx((Rectangle){x, y, width, height}, 1, COLOR_GRID_MAJOR);
 
     // Amplitude scale ticks on left side (use mono font for numbers)
-    const char *tick_labels[] = { "+1", "+0.5", "0", "-0.5", "-1" };
-    float tick_positions[] = { 0.0f, 0.25f, 0.5f, 0.75f, 1.0f };
-    for (int i = 0; i < 5; i++) {
+    const char *tick_labels[] = { "+0.5", "0", "-0.5" };
+    float tick_positions[] = { 0.25f, 0.5f, 0.75f };
+    for (int i = 0; i < 3; i++) {
         float tick_y = y + height * tick_positions[i];
         // Tick mark
         DrawLineEx((Vector2){x, tick_y}, (Vector2){x + 4, tick_y}, 1.0f, COLOR_GRID_MAJOR);

@@ -37,29 +37,24 @@ static Color meter_gradient_color(float t) {
     return lerp_color(COLOR_METER_YELLOW, COLOR_METER_RED, lt);
 }
 
-// Draw one direction of the meter with many thin slices for a smooth gradient
+// Draw one direction of the meter with a continuous vertical gradient
 static void draw_meter_bar(float meter_x, float meter_width, float center_y,
                            float half_height, float level, bool going_up) {
     level = clamp01(level);
     float bar_extent = level * half_height;
     if (bar_extent < 1.0f) return;
 
-    const int slices = 48; // small rectangles to fake a gradient
-    float slice_h = bar_extent / (float)slices;
     float x = meter_x + 1.0f;
     float w = meter_width - 2.0f;
+    Color inner = meter_gradient_color(0.0f);    // at center
+    Color outer = meter_gradient_color(level);    // at bar edge
 
-    for (int i = 0; i < slices; i++) {
-        float t = (float)(i + 0.5f) / (float)slices; // 0 (center) -> 1 (edge)
-        Color c = meter_gradient_color(t);
-        float h = slice_h + 0.5f; // tiny overlap to avoid gaps
-        if (going_up) {
-            float y = center_y - (float)(i + 1) * slice_h;
-            DrawRectangle((int)x, (int)y, (int)w, (int)h, c);
-        } else {
-            float y = center_y + (float)i * slice_h;
-            DrawRectangle((int)x, (int)y, (int)w, (int)h, c);
-        }
+    if (going_up) {
+        float y = center_y - bar_extent;
+        DrawRectangleGradientV((int)x, (int)y, (int)w, (int)bar_extent, outer, inner);
+    } else {
+        float y = center_y;
+        DrawRectangleGradientV((int)x, (int)y, (int)w, (int)bar_extent, inner, outer);
     }
 }
 
@@ -72,10 +67,12 @@ void render_vu_meter(float x, float y, float width, float height,
     (void)is_clipping_pos;
     (void)is_clipping_neg;
 
-    float padding = 6.0f;
+    float padding = 0.0f;
 
-    float meter_x = x + padding;
-    float meter_width = width - 2 * padding;
+    // Use half the available width and center the meter horizontally for a slimmer look
+    float available_w = width - 2 * padding;
+    float meter_width = available_w * 0.5f;
+    float meter_x = x + padding + (available_w - meter_width) * 0.5f;
     float meter_y = y + padding;
     float meter_height = height - 2 * padding;
 
@@ -110,17 +107,13 @@ void render_vu_meter(float x, float y, float width, float height,
     // Border
     DrawRectangleLinesEx((Rectangle){meter_x, meter_y, meter_width, meter_height}, 1, COLOR_GRID_MAJOR);
 
-    // Scale ticks and labels inside the meter, center aligned
-    const char *tick_labels[] = { "+1", "+.5", "0", "-.5", "-1" };
-    float tick_positions[] = { 0.0f, 0.25f, 0.5f, 0.75f, 1.0f };
-    for (int i = 0; i < 5; i++) {
+    // Scale ticks inside the meter
+    float tick_positions[] = { 0.25f, 0.5f, 0.75f };
+    for (int i = 0; i < 3; i++) {
         float tick_y = meter_y + meter_height * tick_positions[i];
         // Tick marks on both sides
-        DrawLineEx((Vector2){meter_x, tick_y}, (Vector2){meter_x + 3, tick_y}, 1.0f, COLOR_GRID_MAJOR);
-        DrawLineEx((Vector2){meter_x + meter_width - 3, tick_y}, (Vector2){meter_x + meter_width, tick_y}, 1.0f, COLOR_GRID_MAJOR);
-        // Label centered inside meter
-        int tw = gui_text_measure(tick_labels[i], FONT_SIZE_VU_SCALE);
-        gui_text_draw(tick_labels[i], meter_x + meter_width/2 - tw/2, tick_y - 5, FONT_SIZE_VU_SCALE, COLOR_TEXT_DIM);
+        DrawLineEx((Vector2){meter_x, tick_y}, (Vector2){meter_x + 3, tick_y}, 1.5f, COLOR_GRID_MAJOR);
+        DrawLineEx((Vector2){meter_x + meter_width - 3, tick_y}, (Vector2){meter_x + meter_width, tick_y}, 1.5f, COLOR_GRID_MAJOR);
     }
 
 }
