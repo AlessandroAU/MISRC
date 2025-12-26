@@ -263,6 +263,6 @@ void gui_app_set_status(gui_app_t *app, const char *message);
 #define PEAK_HOLD_DURATION 2.0f   // 2 second peak hold
 #define PEAK_DECAY_RATE 0.5f      // Decay rate after hold
 
-// Note: Color definitions are in gui_ui.h and gui_render.h
+// Note: Color definitions are in gui_ui.h
 
 #endif // GUI_APP_H

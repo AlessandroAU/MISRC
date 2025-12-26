@@ -17,7 +17,7 @@
 
 #include "gui_app.h"
 #include "gui_ui.h"
-#include "gui_render.h"
+#include "gui_text.h"
 #include "gui_capture.h"
 #include "gui_oscilloscope.h"
 #include "gui_dropdown.h"
@@ -107,8 +107,8 @@ int main(int argc, char **argv) {
     // Initialize application
     gui_app_init(&app);
 
-    // Set render app for custom element font access
-    set_render_app(&app);
+    // Set app for text rendering font access
+    gui_text_set_app(&app);
 
     // Enumerate available devices
     gui_app_enumerate_devices(&app);

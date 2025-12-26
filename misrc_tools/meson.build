@@ -168,7 +168,6 @@ if raylib_dep.found()
   sources_gui = [
     '../misrc_gui/misrc_gui.c',
     '../misrc_gui/gui_ui.c',
-    '../misrc_gui/gui_render.c',
     '../misrc_gui/gui_oscilloscope.c',
     '../misrc_gui/gui_phosphor_rt.c',
     '../misrc_gui/gui_fft.c',
@@ -181,6 +180,7 @@ if raylib_dep.found()
     '../misrc_gui/gui_simulated.c',
     '../misrc_gui/gui_panel.c',
     '../misrc_gui/gui_text.c',
+    '../misrc_gui/gui_vu_meter.c',
     '../misrc_gui/clay_renderer_raylib.c',
     '../misrc_common/extract.c',
     '../misrc_common/ringbuffer.c',

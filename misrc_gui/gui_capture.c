@@ -6,7 +6,7 @@
 
 #include "gui_capture.h"
 #include "gui_app.h"
-#include "gui_render.h"
+#include "gui_text.h"
 #include "gui_record.h"
 #include "gui_extract.h"
 #include "gui_oscilloscope.h"
@@ -337,8 +337,8 @@ void gui_app_init(gui_app_t *app) {
     s_capture_handler.sync_event_cb = gui_sync_event_cb;
     s_capture_handler.user_ctx = app;
 
-    // Set render app for custom rendering
-    set_render_app(app);
+    // Set app for text rendering
+    gui_text_set_app(app);
 }
 
 // Cleanup application

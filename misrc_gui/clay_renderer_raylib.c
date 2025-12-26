@@ -7,7 +7,8 @@
 #include "raylib.h"
 #include "gui_custom_elements.h"
 #include "gui_oscilloscope.h"
-#include "gui_render.h"
+#include "gui_vu_meter.h"
+#include "gui_ui.h"
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
