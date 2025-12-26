@@ -309,6 +309,9 @@ void gui_settings_save(const gui_settings_t *settings);
 void gui_settings_init_defaults(gui_settings_t *settings);
 const char* gui_settings_get_desktop_path(void);
 
+// Best-effort folder picker for output_path. Returns true if changed.
+bool gui_settings_choose_output_folder(gui_settings_t *settings);
+
 // Constants for VU meter
 #define VU_ATTACK_TIME 0.01f      // 10ms attack
 #define VU_RELEASE_TIME 0.3f      // 300ms release

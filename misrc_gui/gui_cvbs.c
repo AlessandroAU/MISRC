@@ -7,7 +7,6 @@
 
 #include "gui_cvbs.h"
 #include "gui_trigger.h"
-#include "gui_phosphor.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -230,9 +229,26 @@ bool gui_cvbs_init(cvbs_decoder_t *decoder) {
     decoder->frame_image.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
     decoder->texture_valid = false;
 
-    // Initialize phosphor texture using shared GPU shader
-    decoder->phosphor_valid = gui_phosphor_init_external_texture(
-        &decoder->phosphor_texture, CVBS_PHOSPHOR_WIDTH, CVBS_PHOSPHOR_HEIGHT);
+    // Initialize phosphor texture (CPU-updated RGBA texture)
+    decoder->phosphor_pixels = (Color *)calloc(phosphor_size, sizeof(Color));
+    if (!decoder->phosphor_pixels) {
+        free(decoder->frame_buffer);
+        free(decoder->display_buffer);
+        free(decoder->phosphor_buffer);
+        free(decoder->frame_image.data);
+        decoder->frame_buffer = NULL;
+        decoder->display_buffer = NULL;
+        decoder->phosphor_buffer = NULL;
+        decoder->frame_image.data = NULL;
+        return false;
+    }
+
+    decoder->phosphor_image.data = decoder->phosphor_pixels;
+    decoder->phosphor_image.width = decoder->phosphor_width;
+    decoder->phosphor_image.height = decoder->phosphor_height;
+    decoder->phosphor_image.mipmaps = 1;
+    decoder->phosphor_image.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
+    decoder->phosphor_valid = false;
 
     // Allocate sample accumulation buffer for cross-buffer line detection
     decoder->accum_buffer = (int16_t *)calloc(CVBS_ACCUM_SIZE, sizeof(int16_t));
@@ -298,10 +314,15 @@ void gui_cvbs_cleanup(cvbs_decoder_t *decoder) {
         decoder->frame_image.data = NULL;
     }
 
+    // Free phosphor image data (we allocated it ourselves)
+    if (decoder->phosphor_image.data) {
+        free(decoder->phosphor_image.data);
+        decoder->phosphor_image.data = NULL;
+    }
+
     free(decoder->frame_buffer);
     free(decoder->display_buffer);
     free(decoder->phosphor_buffer);
-    free(decoder->phosphor_pixels);
     free(decoder->accum_buffer);
 
     decoder->frame_buffer = NULL;
@@ -808,11 +829,31 @@ void gui_cvbs_render_phosphor(cvbs_decoder_t *decoder,
     float center_y_line = y + height / 2;
     DrawLine((int)x, (int)center_y_line, (int)(x + width), (int)center_y_line, (Color){60, 60, 80, 255});
 
-    // Draw phosphor using shared GPU shader rendering (also handles decay)
-    if (decoder->phosphor_valid) {
-        gui_phosphor_render_buffer(decoder->phosphor_buffer, &decoder->phosphor_texture,
-                                   phos_w, phos_h, x, y, width, height);
+    // Lazy-create phosphor texture
+    if (!decoder->phosphor_valid) {
+        decoder->phosphor_texture = LoadTextureFromImage(decoder->phosphor_image);
+        SetTextureFilter(decoder->phosphor_texture, TEXTURE_FILTER_BILINEAR);
+        decoder->phosphor_valid = true;
     }
+
+    // Convert intensity buffer to RGBA (simple green phosphor)
+    // Note: keep this cheap; CVBS phosphor is primarily a debug visualization.
+    Color *dst = decoder->phosphor_pixels;
+    size_t n = (size_t)phos_w * (size_t)phos_h;
+    for (size_t i = 0; i < n; i++) {
+        float v = decoder->phosphor_buffer[i];
+        if (v < 0.0f) v = 0.0f;
+        if (v > 1.0f) v = 1.0f;
+        unsigned char g = (unsigned char)(v * 255.0f);
+        dst[i] = (Color){0, g, 0, g};
+    }
+
+    UpdateTexture(decoder->phosphor_texture, decoder->phosphor_image.data);
+
+    // Draw scaled
+    Rectangle srcp = {0, 0, (float)phos_w, (float)phos_h};
+    Rectangle dstp = {x, y, width, height};
+    DrawTexturePro(decoder->phosphor_texture, srcp, dstp, (Vector2){0, 0}, 0, WHITE);
 
     // Draw sync level indicator if we have valid levels
     if (decoder->levels.range > 100) {
@@ -829,9 +870,15 @@ void gui_cvbs_render_phosphor(cvbs_decoder_t *decoder,
 }
 
 void gui_cvbs_decay_phosphor(cvbs_decoder_t *decoder) {
-    // Decay is now handled inside gui_phosphor_render_buffer()
-    // This function is kept for API compatibility
-    (void)decoder;
+    if (!decoder || !decoder->phosphor_buffer) return;
+
+    // Simple decay for CPU phosphor buffer
+    size_t n = (size_t)decoder->phosphor_width * (size_t)decoder->phosphor_height;
+    const float decay = 0.92f;
+    for (size_t i = 0; i < n; i++) {
+        decoder->phosphor_buffer[i] *= decay;
+        if (decoder->phosphor_buffer[i] < 0.0001f) decoder->phosphor_buffer[i] = 0.0f;
+    }
 }
 
 //-----------------------------------------------------------------------------

@@ -234,6 +234,50 @@ static char* find_value(const char* content, const char* key) {
     }
 }
 
+// macOS folder picker using osascript. Returns true if output_path changed.
+bool gui_settings_choose_output_folder(gui_settings_t *settings) {
+    if (!settings) return false;
+
+#ifdef __APPLE__
+    // Use AppleScript choose folder dialog and return POSIX path.
+    // Note: This will prompt the user and block until a selection is made.
+    const char *cmd = "osascript -e 'POSIX path of (choose folder with prompt \"Select output folder for MISRC captures\")'";
+    FILE *fp = popen(cmd, "r");
+    if (!fp) return false;
+
+    char buf[512] = {0};
+    if (!fgets(buf, sizeof(buf), fp)) {
+        pclose(fp);
+        return false;
+    }
+    int rc = pclose(fp);
+    (void)rc;
+
+    // Trim newline
+    size_t len = strlen(buf);
+    while (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == '\r')) {
+        buf[--len] = '\0';
+    }
+    if (len == 0) return false;
+
+    // Remove trailing slash
+    while (len > 1 && buf[len - 1] == '/') {
+        buf[--len] = '\0';
+    }
+
+    if (strncmp(settings->output_path, buf, MAX_FILENAME_LEN) == 0) {
+        return false; // no change
+    }
+
+    strncpy(settings->output_path, buf, MAX_FILENAME_LEN - 1);
+    settings->output_path[MAX_FILENAME_LEN - 1] = '\0';
+    return true;
+#else
+    (void)settings;
+    return false;
+#endif
+}
+
 void gui_settings_load(gui_settings_t *settings) {
     if (!settings) return;
     

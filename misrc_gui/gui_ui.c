@@ -66,6 +66,158 @@ static CustomLayoutElement s_osc_b_element;
 static CustomLayoutElement s_vu_a_element;
 static CustomLayoutElement s_vu_b_element;
 
+// Render settings panel (floating modal)
+static void render_settings_panel(gui_app_t *app) {
+    if (!app->settings_panel_open) return;
+
+    // Backdrop
+    CLAY(CLAY_ID("SettingsBackdrop"), {
+        .layout = {
+            .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0) }
+        },
+        .floating = {
+            .attachTo = CLAY_ATTACH_TO_ROOT,
+            .attachPoints = { .element = CLAY_ATTACH_POINT_LEFT_TOP, .parent = CLAY_ATTACH_POINT_LEFT_TOP }
+        },
+        .backgroundColor = (Clay_Color){0, 0, 0, 140}
+    }) {}
+
+    // Panel
+    CLAY(CLAY_ID("SettingsPanel"), {
+        .layout = {
+            .sizing = { CLAY_SIZING_FIXED(520), CLAY_SIZING_FIT(0) },
+            .layoutDirection = CLAY_TOP_TO_BOTTOM,
+            .padding = { 14, 14, 14, 14 },
+            .childGap = 10
+        },
+        .floating = {
+            .attachTo = CLAY_ATTACH_TO_ROOT,
+            .attachPoints = { .element = CLAY_ATTACH_POINT_CENTER_CENTER, .parent = CLAY_ATTACH_POINT_CENTER_CENTER }
+        },
+        .backgroundColor = to_clay_color(COLOR_PANEL_BG),
+        .cornerRadius = CLAY_CORNER_RADIUS(8)
+    }) {
+        // Header row
+        CLAY(CLAY_ID("SettingsHeader"), {
+            .layout = {
+                .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0) },
+                .layoutDirection = CLAY_LEFT_TO_RIGHT,
+                .childAlignment = { .y = CLAY_ALIGN_Y_CENTER },
+                .childGap = 8
+            }
+        }) {
+            CLAY_TEXT(CLAY_STRING("Settings"),
+                CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_TITLE, .textColor = to_clay_color(COLOR_TEXT) }));
+
+            CLAY(CLAY_ID("SettingsHeaderSpacer"), {
+                .layout = { .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0) } }
+            }) {}
+
+            CLAY(CLAY_ID("SettingsCloseButton"), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_FIXED(28), CLAY_SIZING_FIXED(28) },
+                    .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER }
+                },
+                .backgroundColor = to_clay_color(COLOR_BUTTON),
+                .cornerRadius = CLAY_CORNER_RADIUS(4)
+            }) {
+                CLAY_TEXT(CLAY_STRING("X"),
+                    CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_NORMAL, .textColor = to_clay_color(COLOR_TEXT) }));
+            }
+        }
+
+        // Output path display + choose button
+        CLAY(CLAY_ID("SettingsOutputPath"), {
+            .layout = {
+                .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0) },
+                .layoutDirection = CLAY_TOP_TO_BOTTOM,
+                .childGap = 6
+            }
+        }) {
+            CLAY_TEXT(CLAY_STRING("Output folder:"),
+                CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_NORMAL, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
+
+            CLAY(CLAY_ID("OutputPathRow"), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(32) },
+                    .layoutDirection = CLAY_LEFT_TO_RIGHT,
+                    .childAlignment = { .y = CLAY_ALIGN_Y_CENTER },
+                    .childGap = 8
+                }
+            }) {
+                CLAY(CLAY_ID("OutputPathBox"), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(32) },
+                        .childAlignment = { .x = CLAY_ALIGN_X_LEFT, .y = CLAY_ALIGN_Y_CENTER },
+                        .padding = { 10, 10, 0, 0 }
+                    },
+                    .backgroundColor = to_clay_color((Color){25, 25, 30, 255}),
+                    .cornerRadius = CLAY_CORNER_RADIUS(4)
+                }) {
+                    CLAY_TEXT(make_string(app->settings.output_path),
+                        CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_NORMAL, .textColor = to_clay_color(COLOR_TEXT) }));
+                }
+
+                CLAY(CLAY_ID("ChooseOutputFolderButton"), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_FIXED(170), CLAY_SIZING_FIXED(32) },
+                        .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER }
+                    },
+                    .backgroundColor = to_clay_color(COLOR_BUTTON),
+                    .cornerRadius = CLAY_CORNER_RADIUS(4)
+                }) {
+                    CLAY_TEXT(CLAY_STRING("Choose folder..."),
+                        CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_NORMAL, .textColor = to_clay_color(COLOR_TEXT) }));
+                }
+            }
+        }
+
+        // Simple toggles
+        CLAY(CLAY_ID("SettingsToggles"), {
+            .layout = {
+                .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0) },
+                .layoutDirection = CLAY_TOP_TO_BOTTOM,
+                .childGap = 8
+            }
+        }) {
+            // helper-like rows
+            CLAY_TEXT(CLAY_STRING("Quick options:"),
+                CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_NORMAL, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
+
+            CLAY(CLAY_ID("ToggleRowCaptureA"), { .layout = { .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28) }, .layoutDirection = CLAY_LEFT_TO_RIGHT, .childAlignment = { .y = CLAY_ALIGN_Y_CENTER }, .childGap = 10 } }) {
+                CLAY(CLAY_ID("ToggleCaptureA"), { .layout = { .sizing = { CLAY_SIZING_FIXED(80), CLAY_SIZING_FIXED(28) }, .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER } }, .backgroundColor = to_clay_color(app->settings.capture_a ? COLOR_BUTTON_ACTIVE : COLOR_BUTTON), .cornerRadius = CLAY_CORNER_RADIUS(4) }) {
+                    CLAY_TEXT(app->settings.capture_a ? CLAY_STRING("ON") : CLAY_STRING("OFF"), CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_NORMAL, .textColor = to_clay_color(COLOR_TEXT) }));
+                }
+                CLAY_TEXT(CLAY_STRING("Capture RF ADC A"), CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_NORMAL, .textColor = to_clay_color(COLOR_TEXT) }));
+            }
+
+            CLAY(CLAY_ID("ToggleRowCaptureB"), { .layout = { .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28) }, .layoutDirection = CLAY_LEFT_TO_RIGHT, .childAlignment = { .y = CLAY_ALIGN_Y_CENTER }, .childGap = 10 } }) {
+                CLAY(CLAY_ID("ToggleCaptureB"), { .layout = { .sizing = { CLAY_SIZING_FIXED(80), CLAY_SIZING_FIXED(28) }, .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER } }, .backgroundColor = to_clay_color(app->settings.capture_b ? COLOR_BUTTON_ACTIVE : COLOR_BUTTON), .cornerRadius = CLAY_CORNER_RADIUS(4) }) {
+                    CLAY_TEXT(app->settings.capture_b ? CLAY_STRING("ON") : CLAY_STRING("OFF"), CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_NORMAL, .textColor = to_clay_color(COLOR_TEXT) }));
+                }
+                CLAY_TEXT(CLAY_STRING("Capture RF ADC B"), CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_NORMAL, .textColor = to_clay_color(COLOR_TEXT) }));
+            }
+
+            CLAY(CLAY_ID("ToggleRowFlac"), { .layout = { .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28) }, .layoutDirection = CLAY_LEFT_TO_RIGHT, .childAlignment = { .y = CLAY_ALIGN_Y_CENTER }, .childGap = 10 } }) {
+                CLAY(CLAY_ID("ToggleUseFlac"), { .layout = { .sizing = { CLAY_SIZING_FIXED(80), CLAY_SIZING_FIXED(28) }, .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER } }, .backgroundColor = to_clay_color(app->settings.use_flac ? COLOR_BUTTON_ACTIVE : COLOR_BUTTON), .cornerRadius = CLAY_CORNER_RADIUS(4) }) {
+                    CLAY_TEXT(app->settings.use_flac ? CLAY_STRING("ON") : CLAY_STRING("OFF"), CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_NORMAL, .textColor = to_clay_color(COLOR_TEXT) }));
+                }
+                CLAY_TEXT(CLAY_STRING("RF FLAC compression"), CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_NORMAL, .textColor = to_clay_color(COLOR_TEXT) }));
+            }
+
+            CLAY(CLAY_ID("ToggleRowOverwrite"), { .layout = { .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28) }, .layoutDirection = CLAY_LEFT_TO_RIGHT, .childAlignment = { .y = CLAY_ALIGN_Y_CENTER }, .childGap = 10 } }) {
+                CLAY(CLAY_ID("ToggleOverwrite"), { .layout = { .sizing = { CLAY_SIZING_FIXED(80), CLAY_SIZING_FIXED(28) }, .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER } }, .backgroundColor = to_clay_color(app->settings.overwrite_files ? COLOR_BUTTON_ACTIVE : COLOR_BUTTON), .cornerRadius = CLAY_CORNER_RADIUS(4) }) {
+                    CLAY_TEXT(app->settings.overwrite_files ? CLAY_STRING("ON") : CLAY_STRING("OFF"), CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_NORMAL, .textColor = to_clay_color(COLOR_TEXT) }));
+                }
+                CLAY_TEXT(CLAY_STRING("Overwrite output files"), CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_NORMAL, .textColor = to_clay_color(COLOR_TEXT) }));
+            }
+        }
+
+        CLAY_TEXT(CLAY_STRING("Changes are saved automatically."),
+            CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
+    }
+}
+
 // Render the toolbar
 static void render_toolbar(gui_app_t *app) {
     CLAY(CLAY_ID("Toolbar"), {
@@ -931,6 +1083,9 @@ void gui_render_layout(gui_app_t *app) {
         render_status_bar(app);
     }
 
+    // Settings panel overlay (if open)
+    render_settings_panel(app);
+
     // Device dropdown overlay (if open)
     if (gui_dropdown_is_open(DROPDOWN_DEVICE, 0) && app->device_count > 0) {
         CLAY(CLAY_ID("DeviceDropdownOverlay"), {
@@ -1004,11 +1159,39 @@ void gui_handle_interactions(gui_app_t *app) {
         // Check settings button
         if (Clay_PointerOver(CLAY_ID("SettingsButton"))) {
             app->settings_panel_open = !app->settings_panel_open;
-            // Settings panel not yet implemented - show status message
-            if (app->settings_panel_open) {
-                gui_app_set_status(app, "Settings panel coming soon. Press * again to close.");
-            } else {
-                gui_app_set_status(app, "Ready.");
+            gui_settings_save(&app->settings);
+        }
+
+        // Settings panel interactions
+        if (app->settings_panel_open) {
+            if (Clay_PointerOver(CLAY_ID("SettingsBackdrop")) || Clay_PointerOver(CLAY_ID("SettingsCloseButton"))) {
+                app->settings_panel_open = false;
+                gui_settings_save(&app->settings);
+                return;
+            }
+
+            if (Clay_PointerOver(CLAY_ID("ToggleCaptureA"))) {
+                app->settings.capture_a = !app->settings.capture_a;
+                gui_settings_save(&app->settings);
+            }
+            if (Clay_PointerOver(CLAY_ID("ToggleCaptureB"))) {
+                app->settings.capture_b = !app->settings.capture_b;
+                gui_settings_save(&app->settings);
+            }
+            if (Clay_PointerOver(CLAY_ID("ToggleUseFlac"))) {
+                app->settings.use_flac = !app->settings.use_flac;
+                gui_settings_save(&app->settings);
+            }
+            if (Clay_PointerOver(CLAY_ID("ToggleOverwrite"))) {
+                app->settings.overwrite_files = !app->settings.overwrite_files;
+                gui_settings_save(&app->settings);
+            }
+
+            if (Clay_PointerOver(CLAY_ID("ChooseOutputFolderButton"))) {
+                // Best-effort folder picker (macOS via osascript). If unavailable, no-op.
+                if (gui_settings_choose_output_folder(&app->settings)) {
+                    gui_settings_save(&app->settings);
+                }
             }
         }
 
