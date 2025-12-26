@@ -18,8 +18,8 @@
 #define COLOR_SYNC_GREEN      (Color){ 50, 200, 80, 255 }
 #define COLOR_SYNC_RED        (Color){ 200, 60, 60, 255 }
 #define COLOR_CLIP_RED        (Color){ 255, 50, 50, 255 }
-#define COLOR_GRID            (Color){ 60, 60, 70, 100 }
-#define COLOR_GRID_MAJOR      (Color){ 80, 80, 95, 150 }
+#define COLOR_GRID            (Color){ 90, 90, 110, 130 }
+#define COLOR_GRID_MAJOR      (Color){ 130, 130, 160, 180 }
 #define COLOR_METER_BG        (Color){ 25, 25, 30, 255 }
 #define COLOR_METER_GREEN     (Color){ 50, 200, 80, 255 }
 #define COLOR_METER_YELLOW    (Color){ 220, 200, 50, 255 }

@@ -224,7 +224,7 @@ void draw_channel_grid(float x, float y, float width, float height,
             }
 
             // Draw vertical grid lines at time intervals
-            char time_buf[32];
+            char time_buf[8];
             int division_count = 0;
             for (double t = first_grid_time; division_count < GRID_MAX_DIVISIONS; t += time_division) {
                 // Convert time to pixel position
@@ -247,15 +247,8 @@ void draw_channel_grid(float x, float y, float width, float height,
                         draw_text_mono("0", gx - label_w / 2, y + height - 16, FONT_SIZE_OSC_SCALE, COLOR_TEXT);
                     } else {
                         format_time_label(time_buf, sizeof(time_buf), fabs(t));
-                        // Add sign prefix for negative times
-                        char signed_buf[36];
-                        if (t < 0) {
-                            snprintf(signed_buf, sizeof(signed_buf), "-%s", time_buf);
-                        } else {
-                            snprintf(signed_buf, sizeof(signed_buf), "+%s", time_buf);
-                        }
-                        int label_w = measure_text_mono(signed_buf, FONT_SIZE_OSC_SCALE);
-                        draw_text_mono(signed_buf, gx - label_w / 2, y + height - 16, FONT_SIZE_OSC_SCALE, COLOR_TEXT_DIM);
+                        int label_w = measure_text_mono(time_buf, FONT_SIZE_OSC_SCALE);
+                        draw_text_mono(time_buf, gx - label_w / 2, y + height - 16, FONT_SIZE_OSC_SCALE, COLOR_TEXT_DIM);
                     }
                 }
                 division_count++;

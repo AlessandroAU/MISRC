@@ -40,6 +40,13 @@ static inline Clay_Color to_clay_color(Color c) {
     return (Clay_Color){ c.r, c.g, c.b, c.a };
 }
 
+// Helper: Get dropdown option color based on selection and hover state
+static inline Color dropdown_option_color(bool is_selected, bool is_hovered) {
+    if (is_selected) return COLOR_BUTTON_ACTIVE;
+    if (is_hovered) return COLOR_BUTTON_HOVER;
+    return COLOR_BUTTON;
+}
+
 // Format helpers - use separate buffers to avoid overwriting
 static char temp_buf1[64];
 static char temp_buf2[64];
@@ -366,7 +373,8 @@ static void render_channel_stats(gui_app_t *app, int channel) {
                 .cornerRadius = CLAY_CORNER_RADIUS(3)
             }) {
                 // Off option
-                Color off_color = !trig->enabled ? COLOR_BUTTON_ACTIVE : COLOR_BUTTON;
+                bool off_hover = Clay_PointerOver(CLAY_IDI("TrigModeOptOff", channel));
+                Color off_color = dropdown_option_color(!trig->enabled, off_hover);
                 CLAY(CLAY_IDI("TrigModeOptOff", channel), {
                     .layout = {
                         .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(20) },
@@ -379,7 +387,8 @@ static void render_channel_stats(gui_app_t *app, int channel) {
                 }
 
                 // Rising edge option
-                Color rising_color = (trig->enabled && trig->trigger_mode == TRIGGER_MODE_RISING) ? COLOR_BUTTON_ACTIVE : COLOR_BUTTON;
+                bool rising_hover = Clay_PointerOver(CLAY_IDI("TrigModeOptRising", channel));
+                Color rising_color = dropdown_option_color(trig->enabled && trig->trigger_mode == TRIGGER_MODE_RISING, rising_hover);
                 CLAY(CLAY_IDI("TrigModeOptRising", channel), {
                     .layout = {
                         .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(20) },
@@ -392,7 +401,8 @@ static void render_channel_stats(gui_app_t *app, int channel) {
                 }
 
                 // Falling edge option
-                Color falling_color = (trig->enabled && trig->trigger_mode == TRIGGER_MODE_FALLING) ? COLOR_BUTTON_ACTIVE : COLOR_BUTTON;
+                bool falling_hover = Clay_PointerOver(CLAY_IDI("TrigModeOptFalling", channel));
+                Color falling_color = dropdown_option_color(trig->enabled && trig->trigger_mode == TRIGGER_MODE_FALLING, falling_hover);
                 CLAY(CLAY_IDI("TrigModeOptFalling", channel), {
                     .layout = {
                         .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(20) },
@@ -405,7 +415,8 @@ static void render_channel_stats(gui_app_t *app, int channel) {
                 }
 
                 // CVBS H-Sync option
-                Color cvbs_color = (trig->enabled && trig->trigger_mode == TRIGGER_MODE_CVBS_HSYNC) ? COLOR_BUTTON_ACTIVE : COLOR_BUTTON;
+                bool cvbs_hover = Clay_PointerOver(CLAY_IDI("TrigModeOptCVBS", channel));
+                Color cvbs_color = dropdown_option_color(trig->enabled && trig->trigger_mode == TRIGGER_MODE_CVBS_HSYNC, cvbs_hover);
                 CLAY(CLAY_IDI("TrigModeOptCVBS", channel), {
                     .layout = {
                         .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(20) },
@@ -472,7 +483,8 @@ static void render_channel_stats(gui_app_t *app, int channel) {
                 .backgroundColor = to_clay_color(COLOR_PANEL_BG),
                 .cornerRadius = CLAY_CORNER_RADIUS(3)
             }) {
-                Color single_color = !panel_split ? COLOR_BUTTON_ACTIVE : COLOR_BUTTON;
+                bool single_hover = Clay_PointerOver(CLAY_IDI("LayoutOptSingle", channel));
+                Color single_color = dropdown_option_color(!panel_split, single_hover);
                 CLAY(CLAY_IDI("LayoutOptSingle", channel), {
                     .layout = {
                         .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(20) },
@@ -484,7 +496,8 @@ static void render_channel_stats(gui_app_t *app, int channel) {
                         CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_DROPDOWN_OPT, .textColor = to_clay_color(COLOR_TEXT) }));
                 }
 
-                Color split_color = panel_split ? COLOR_BUTTON_ACTIVE : COLOR_BUTTON;
+                bool split_hover = Clay_PointerOver(CLAY_IDI("LayoutOptSplit", channel));
+                Color split_color = dropdown_option_color(panel_split, split_hover);
                 CLAY(CLAY_IDI("LayoutOptSplit", channel), {
                     .layout = {
                         .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(20) },
@@ -542,8 +555,9 @@ static void render_channel_stats(gui_app_t *app, int channel) {
             }) {
                 for (int vt = 0; vt < PANEL_VIEW_COUNT; vt++) {
                     if (!panel_view_type_available((panel_view_type_t)vt)) continue;
-                    Color opt_color = (left_view == vt) ? COLOR_BUTTON_ACTIVE : COLOR_BUTTON;
                     // Use channel * 10 + vt to create unique IDs per channel
+                    bool opt_hover = Clay_PointerOver(CLAY_IDI("LeftViewOpt", channel * 10 + vt));
+                    Color opt_color = dropdown_option_color(left_view == vt, opt_hover);
                     CLAY(CLAY_IDI("LeftViewOpt", channel * 10 + vt), {
                         .layout = {
                             .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(20) },
@@ -603,8 +617,9 @@ static void render_channel_stats(gui_app_t *app, int channel) {
                 }) {
                     for (int vt = 0; vt < PANEL_VIEW_COUNT; vt++) {
                         if (!panel_view_type_available((panel_view_type_t)vt)) continue;
-                        Color opt_color = (right_view == vt) ? COLOR_BUTTON_ACTIVE : COLOR_BUTTON;
                         // Use channel * 10 + vt to create unique IDs per channel
+                        bool opt_hover = Clay_PointerOver(CLAY_IDI("RightViewOpt", channel * 10 + vt));
+                        Color opt_color = dropdown_option_color(right_view == vt, opt_hover);
                         CLAY(CLAY_IDI("RightViewOpt", channel * 10 + vt), {
                             .layout = {
                                 .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(20) },
@@ -984,7 +999,8 @@ void gui_render_layout(gui_app_t *app) {
             .cornerRadius = CLAY_CORNER_RADIUS(4)
         }) {
             for (int i = 0; i < app->device_count; i++) {
-                Color item_color = (i == app->selected_device) ? COLOR_BUTTON_ACTIVE : COLOR_BUTTON;
+                bool opt_hover = Clay_PointerOver(CLAY_IDI("DeviceOption", i));
+                Color item_color = dropdown_option_color(i == app->selected_device, opt_hover);
 
                 CLAY(CLAY_IDI("DeviceOption", i), {
                     .layout = {
