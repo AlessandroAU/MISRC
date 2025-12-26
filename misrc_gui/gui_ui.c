@@ -20,14 +20,6 @@
 #define MIRSC_TOOLS_VERSION "dev"
 #endif
 
-// Dropdown identifiers
-#define DROPDOWN_DEVICE       "Device"
-#define DROPDOWN_SCOPE_MODE   "ScopeMode"
-#define DROPDOWN_TRIGGER_MODE "TriggerMode"
-#define DROPDOWN_LAYOUT       "Layout"
-#define DROPDOWN_LEFT_VIEW    "LeftView"
-#define DROPDOWN_RIGHT_VIEW   "RightView"
-
 // Track if UI consumed the current frame's click (prevents click-through)
 static bool s_ui_consumed_click = false;
 
@@ -38,13 +30,6 @@ bool gui_ui_click_consumed(void) {
 // Color conversions
 static inline Clay_Color to_clay_color(Color c) {
     return (Clay_Color){ c.r, c.g, c.b, c.a };
-}
-
-// Helper: Get dropdown option color based on selection and hover state
-static inline Color dropdown_option_color(bool is_selected, bool is_hovered) {
-    if (is_selected) return COLOR_BUTTON_ACTIVE;
-    if (is_hovered) return COLOR_BUTTON_HOVER;
-    return COLOR_BUTTON;
 }
 
 // Format helpers - use separate buffers to avoid overwriting
@@ -374,7 +359,7 @@ static void render_channel_stats(gui_app_t *app, int channel) {
             }) {
                 // Off option
                 bool off_hover = Clay_PointerOver(CLAY_IDI("TrigModeOptOff", channel));
-                Color off_color = dropdown_option_color(!trig->enabled, off_hover);
+                Color off_color = gui_dropdown_option_color(!trig->enabled, off_hover);
                 CLAY(CLAY_IDI("TrigModeOptOff", channel), {
                     .layout = {
                         .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(20) },
@@ -388,7 +373,7 @@ static void render_channel_stats(gui_app_t *app, int channel) {
 
                 // Rising edge option
                 bool rising_hover = Clay_PointerOver(CLAY_IDI("TrigModeOptRising", channel));
-                Color rising_color = dropdown_option_color(trig->enabled && trig->trigger_mode == TRIGGER_MODE_RISING, rising_hover);
+                Color rising_color = gui_dropdown_option_color(trig->enabled && trig->trigger_mode == TRIGGER_MODE_RISING, rising_hover);
                 CLAY(CLAY_IDI("TrigModeOptRising", channel), {
                     .layout = {
                         .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(20) },
@@ -402,7 +387,7 @@ static void render_channel_stats(gui_app_t *app, int channel) {
 
                 // Falling edge option
                 bool falling_hover = Clay_PointerOver(CLAY_IDI("TrigModeOptFalling", channel));
-                Color falling_color = dropdown_option_color(trig->enabled && trig->trigger_mode == TRIGGER_MODE_FALLING, falling_hover);
+                Color falling_color = gui_dropdown_option_color(trig->enabled && trig->trigger_mode == TRIGGER_MODE_FALLING, falling_hover);
                 CLAY(CLAY_IDI("TrigModeOptFalling", channel), {
                     .layout = {
                         .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(20) },
@@ -416,7 +401,7 @@ static void render_channel_stats(gui_app_t *app, int channel) {
 
                 // CVBS H-Sync option
                 bool cvbs_hover = Clay_PointerOver(CLAY_IDI("TrigModeOptCVBS", channel));
-                Color cvbs_color = dropdown_option_color(trig->enabled && trig->trigger_mode == TRIGGER_MODE_CVBS_HSYNC, cvbs_hover);
+                Color cvbs_color = gui_dropdown_option_color(trig->enabled && trig->trigger_mode == TRIGGER_MODE_CVBS_HSYNC, cvbs_hover);
                 CLAY(CLAY_IDI("TrigModeOptCVBS", channel), {
                     .layout = {
                         .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(20) },
@@ -484,7 +469,7 @@ static void render_channel_stats(gui_app_t *app, int channel) {
                 .cornerRadius = CLAY_CORNER_RADIUS(3)
             }) {
                 bool single_hover = Clay_PointerOver(CLAY_IDI("LayoutOptSingle", channel));
-                Color single_color = dropdown_option_color(!panel_split, single_hover);
+                Color single_color = gui_dropdown_option_color(!panel_split, single_hover);
                 CLAY(CLAY_IDI("LayoutOptSingle", channel), {
                     .layout = {
                         .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(20) },
@@ -497,7 +482,7 @@ static void render_channel_stats(gui_app_t *app, int channel) {
                 }
 
                 bool split_hover = Clay_PointerOver(CLAY_IDI("LayoutOptSplit", channel));
-                Color split_color = dropdown_option_color(panel_split, split_hover);
+                Color split_color = gui_dropdown_option_color(panel_split, split_hover);
                 CLAY(CLAY_IDI("LayoutOptSplit", channel), {
                     .layout = {
                         .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(20) },
@@ -557,7 +542,7 @@ static void render_channel_stats(gui_app_t *app, int channel) {
                     if (!panel_view_type_available((panel_view_type_t)vt)) continue;
                     // Use channel * 10 + vt to create unique IDs per channel
                     bool opt_hover = Clay_PointerOver(CLAY_IDI("LeftViewOpt", channel * 10 + vt));
-                    Color opt_color = dropdown_option_color(left_view == vt, opt_hover);
+                    Color opt_color = gui_dropdown_option_color(left_view == vt, opt_hover);
                     CLAY(CLAY_IDI("LeftViewOpt", channel * 10 + vt), {
                         .layout = {
                             .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(20) },
@@ -619,7 +604,7 @@ static void render_channel_stats(gui_app_t *app, int channel) {
                         if (!panel_view_type_available((panel_view_type_t)vt)) continue;
                         // Use channel * 10 + vt to create unique IDs per channel
                         bool opt_hover = Clay_PointerOver(CLAY_IDI("RightViewOpt", channel * 10 + vt));
-                        Color opt_color = dropdown_option_color(right_view == vt, opt_hover);
+                        Color opt_color = gui_dropdown_option_color(right_view == vt, opt_hover);
                         CLAY(CLAY_IDI("RightViewOpt", channel * 10 + vt), {
                             .layout = {
                                 .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(20) },
@@ -1000,7 +985,7 @@ void gui_render_layout(gui_app_t *app) {
         }) {
             for (int i = 0; i < app->device_count; i++) {
                 bool opt_hover = Clay_PointerOver(CLAY_IDI("DeviceOption", i));
-                Color item_color = dropdown_option_color(i == app->selected_device, opt_hover);
+                Color item_color = gui_dropdown_option_color(i == app->selected_device, opt_hover);
 
                 CLAY(CLAY_IDI("DeviceOption", i), {
                     .layout = {
@@ -1064,165 +1049,8 @@ void gui_handle_interactions(gui_app_t *app) {
             }
         }
 
-        // Track if any dropdown element was clicked
-        bool dropdown_clicked = false;
-
-        // Check device dropdown
-        if (Clay_PointerOver(CLAY_ID("DeviceDropdown"))) {
-            gui_dropdown_toggle(DROPDOWN_DEVICE, 0);
-            dropdown_clicked = true;
-        } else if (gui_dropdown_is_open(DROPDOWN_DEVICE, 0)) {
-            // Check device options
-            for (int i = 0; i < app->device_count; i++) {
-                if (Clay_PointerOver(CLAY_IDI("DeviceOption", i))) {
-                    if (i != app->selected_device) {
-                        // Switch to a different device - stop current and start new
-                        bool was_capturing = app->is_capturing;
-                        if (was_capturing) {
-                            gui_app_stop_capture(app);
-                        }
-                        app->selected_device = i;
-                        if (was_capturing) {
-                            gui_app_start_capture(app);
-                        }
-                    }
-                    gui_dropdown_close_all();
-                    dropdown_clicked = true;
-                    break;
-                }
-            }
-        }
-
-        // Per-channel controls
-        for (int ch = 0; ch < 2; ch++) {
-            channel_trigger_t *trig = (ch == 0) ? &app->trigger_a : &app->trigger_b;
-
-            // Per-channel trigger mode dropdown (includes Off option)
-            if (Clay_PointerOver(CLAY_IDI("TrigModeBtn", ch))) {
-                gui_dropdown_toggle(DROPDOWN_TRIGGER_MODE, ch);
-                dropdown_clicked = true;
-            } else if (gui_dropdown_is_open(DROPDOWN_TRIGGER_MODE, ch)) {
-                if (Clay_PointerOver(CLAY_IDI("TrigModeOptOff", ch))) {
-                    trig->enabled = false;
-                    gui_dropdown_close_all();
-                    dropdown_clicked = true;
-                }
-                if (Clay_PointerOver(CLAY_IDI("TrigModeOptRising", ch))) {
-                    trig->enabled = true;
-                    trig->trigger_mode = TRIGGER_MODE_RISING;
-                    gui_dropdown_close_all();
-                    dropdown_clicked = true;
-                }
-                if (Clay_PointerOver(CLAY_IDI("TrigModeOptFalling", ch))) {
-                    trig->enabled = true;
-                    trig->trigger_mode = TRIGGER_MODE_FALLING;
-                    gui_dropdown_close_all();
-                    dropdown_clicked = true;
-                }
-                if (Clay_PointerOver(CLAY_IDI("TrigModeOptCVBS", ch))) {
-                    trig->enabled = true;
-                    trig->trigger_mode = TRIGGER_MODE_CVBS_HSYNC;
-                    gui_dropdown_close_all();
-                    dropdown_clicked = true;
-                }
-            }
-
-            // Get panel config pointer for this channel
-            // Note: panel_config_a/b are inline structs in gui_app_t, access fields directly
-            bool *cfg_split = (ch == 0) ? &app->panel_config_a.split : &app->panel_config_b.split;
-            int *cfg_left_view = (ch == 0) ? &app->panel_config_a.left_view : &app->panel_config_b.left_view;
-            int *cfg_right_view = (ch == 0) ? &app->panel_config_a.right_view : &app->panel_config_b.right_view;
-            void **cfg_left_state = (ch == 0) ? &app->panel_config_a.left_state : &app->panel_config_b.left_state;
-            void **cfg_right_state = (ch == 0) ? &app->panel_config_a.right_state : &app->panel_config_b.right_state;
-
-            // Layout dropdown (Single/Split)
-            if (Clay_PointerOver(CLAY_IDI("LayoutBtn", ch))) {
-                gui_dropdown_toggle(DROPDOWN_LAYOUT, ch);
-                dropdown_clicked = true;
-            } else if (gui_dropdown_is_open(DROPDOWN_LAYOUT, ch)) {
-                if (Clay_PointerOver(CLAY_IDI("LayoutOptSingle", ch))) {
-                    // Switch to single panel
-                    if (*cfg_split) {
-                        *cfg_split = false;
-                        // Destroy right panel state if it exists
-                        if (*cfg_right_state) {
-                            panel_destroy_view_state((panel_view_type_t)*cfg_right_view, *cfg_right_state);
-                            *cfg_right_state = NULL;
-                        }
-                    }
-                    gui_dropdown_close_all();
-                    dropdown_clicked = true;
-                }
-                if (Clay_PointerOver(CLAY_IDI("LayoutOptSplit", ch))) {
-                    // Switch to split panel
-                    if (!*cfg_split) {
-                        *cfg_split = true;
-                        // Create right panel state if needed
-                        *cfg_right_state = panel_create_view_state((panel_view_type_t)*cfg_right_view);
-                    }
-                    gui_dropdown_close_all();
-                    dropdown_clicked = true;
-                }
-            }
-
-            // Left view dropdown
-            if (Clay_PointerOver(CLAY_IDI("LeftViewBtn", ch))) {
-                gui_dropdown_toggle(DROPDOWN_LEFT_VIEW, ch);
-                dropdown_clicked = true;
-            } else if (gui_dropdown_is_open(DROPDOWN_LEFT_VIEW, ch)) {
-                for (int vt = 0; vt < PANEL_VIEW_COUNT; vt++) {
-                    if (!panel_view_type_available((panel_view_type_t)vt)) continue;
-                    // Use ch * 10 + vt to match the ID used in rendering
-                    if (Clay_PointerOver(CLAY_IDI("LeftViewOpt", ch * 10 + vt))) {
-                        if (*cfg_left_view != vt) {
-                            // Destroy old state
-                            if (*cfg_left_state) {
-                                panel_destroy_view_state((panel_view_type_t)*cfg_left_view, *cfg_left_state);
-                                *cfg_left_state = NULL;
-                            }
-                            *cfg_left_view = vt;
-                            *cfg_left_state = panel_create_view_state((panel_view_type_t)vt);
-                        }
-                        gui_dropdown_close_all();
-                        dropdown_clicked = true;
-                        break;
-                    }
-                }
-            }
-
-            // Right view dropdown (only when split)
-            if (*cfg_split) {
-                if (Clay_PointerOver(CLAY_IDI("RightViewBtn", ch))) {
-                    gui_dropdown_toggle(DROPDOWN_RIGHT_VIEW, ch);
-                    dropdown_clicked = true;
-                } else if (gui_dropdown_is_open(DROPDOWN_RIGHT_VIEW, ch)) {
-                    for (int vt = 0; vt < PANEL_VIEW_COUNT; vt++) {
-                        if (!panel_view_type_available((panel_view_type_t)vt)) continue;
-                        // Use ch * 10 + vt to match the ID used in rendering
-                        if (Clay_PointerOver(CLAY_IDI("RightViewOpt", ch * 10 + vt))) {
-                            if (*cfg_right_view != vt) {
-                                // Destroy old state
-                                if (*cfg_right_state) {
-                                    panel_destroy_view_state((panel_view_type_t)*cfg_right_view, *cfg_right_state);
-                                    *cfg_right_state = NULL;
-                                }
-                                *cfg_right_view = vt;
-                                *cfg_right_state = panel_create_view_state((panel_view_type_t)vt);
-                            }
-                            gui_dropdown_close_all();
-                            dropdown_clicked = true;
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-
-        // Close all dropdowns if clicked elsewhere
-        if (!dropdown_clicked) {
-            gui_dropdown_close_all();
-        } else {
-            // Dropdown consumed the click - prevent click-through
+        // Handle all dropdown interactions via centralized handler
+        if (gui_dropdown_handle_click(app)) {
             s_ui_consumed_click = true;
         }
     }

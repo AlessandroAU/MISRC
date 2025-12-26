@@ -473,28 +473,36 @@ void gui_fft_render(fft_state_t *state, float x, float y,
     // Draw background (same as oscilloscope)
     DrawRectangle((int)x, (int)y, rt_width, rt_height, COLOR_METER_BG);
 
-    // Draw horizontal grid lines (dB levels) with 1-2-5 snapping
-    float db_range = FFT_DB_MAX - FFT_DB_MIN;  // 80 dB range
+    // Grid setup
+    float db_range = FFT_DB_MAX - FFT_DB_MIN;
     float rough_db_division = db_range * (float)FFT_GRID_MIN_SPACING_PX / height;
     float db_division = (float)fft_snap_to_125((double)rough_db_division);
 
-    // Find first grid line position
+    // First gridline
     float first_db = ceilf(FFT_DB_MIN / db_division) * db_division;
     int div_count = 0;
 
-    for (float db = first_db; db <= FFT_DB_MAX && div_count < FFT_GRID_MAX_DIVISIONS; db += db_division) {
+    const float eps = 1e-3f;
+
+    for (float db = first_db;
+        db <= FFT_DB_MAX && div_count < FFT_GRID_MAX_DIVISIONS;
+        db += db_division)
+    {
+        // Skip min/max gridlines (draw only interior lines)
+        if (db <= FFT_DB_MIN || db >= FFT_DB_MAX)
+            continue;
+
         float normalized = (db - FFT_DB_MIN) / db_range;
         float line_y = y + height - (normalized * height);
 
-        // Draw grid line (use major color for 0 dB)
-        bool is_zero = (fabsf(db) < 0.001f);
-        DrawLineV((Vector2){x, line_y}, (Vector2){x + width, line_y},
-                  is_zero ? COLOR_GRID_MAJOR : COLOR_GRID);
+        bool is_zero = (db == 0.0f);
 
-        // Draw dB label on left side
+        DrawLineV((Vector2){x, line_y}, (Vector2){x + width, line_y},
+                is_zero ? COLOR_GRID_MAJOR : COLOR_GRID);
+
         char label[16];
         snprintf(label, sizeof(label), "%+.0fdB", db);
-        fft_draw_text_mono(fonts, label, x + 4, line_y - 6, FONT_SIZE_OSC_SCALE, COLOR_TEXT_DIM);
+        fft_draw_text_mono(fonts, label, x + 5, line_y, FONT_SIZE_OSC_SCALE, COLOR_TEXT_DIM);
 
         div_count++;
     }
