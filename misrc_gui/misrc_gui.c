@@ -52,16 +52,8 @@ int main(int argc, char **argv) {
     // Initialize sample rate early (before any capture/rendering can occur)
     atomic_store(&app.sample_rate, DEFAULT_SAMPLE_RATE);
 
-    // Initialize default settings
-    app.settings.capture_a = true;
-    app.settings.capture_b = true;
-    app.settings.use_flac = true;
-    app.settings.flac_level = 4;
-    app.settings.show_grid = true;
-    app.settings.time_scale = 1.0f;
-    app.settings.amplitude_scale = 1.0f;
-    strcpy(app.settings.output_filename_a, "capture_a.flac");
-    strcpy(app.settings.output_filename_b, "capture_b.flac");
+    // Load persistent settings (includes desktop path defaults)
+    gui_settings_load(&app.settings);
 
     // Initialize raylib window
     SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_MSAA_4X_HINT | FLAG_VSYNC_HINT);
@@ -274,6 +266,9 @@ int main(int argc, char **argv) {
         gui_app_stop_capture(&app);
     }
 
+    // Save settings before cleanup
+    gui_settings_save(&app.settings);
+    
     gui_app_cleanup(&app);
     free(clay_memory);
 

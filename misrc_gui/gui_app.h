@@ -122,15 +122,61 @@ typedef struct {
     int index;
 } device_info_t;
 
-// GUI settings (bound to UI controls)
+// GUI settings (bound to UI controls) - mirrors all CLI options
 typedef struct {
+    // Basic settings
     int device_index;
     char output_filename_a[MAX_FILENAME_LEN];
     char output_filename_b[MAX_FILENAME_LEN];
+    char output_path[MAX_FILENAME_LEN];        // Default save path (Desktop)
     bool capture_a;
     bool capture_b;
+    
+    // Capture control
+    uint64_t sample_count;                     // Number of samples (0 = infinite)
+    char capture_time[32];                     // Time string (e.g., "5:30" or "1:30:00")
+    bool overwrite_files;                      // Overwrite without asking
+    
+    // Output files
+    char aux_filename[MAX_FILENAME_LEN];
+    char raw_filename[MAX_FILENAME_LEN];
+    char audio_4ch_filename[MAX_FILENAME_LEN];
+    char audio_2ch_12_filename[MAX_FILENAME_LEN];
+    char audio_2ch_34_filename[MAX_FILENAME_LEN];
+    char audio_1ch_filenames[4][MAX_FILENAME_LEN]; // Individual channel files
+    
+    // Processing options
+    bool pad_lower_bits;                       // Pad lower 4 bits instead of upper
+    bool show_peak_levels;                     // Display peak levels
+    bool suppress_clip_a;                      // Suppress clipping messages A
+    bool suppress_clip_b;                      // Suppress clipping messages B
+    bool reduce_8bit_a;                        // Reduce A to 8-bit
+    bool reduce_8bit_b;                        // Reduce B to 8-bit
+    
+    // Resampling (if SOXR enabled)
+    bool enable_resample_a;
+    bool enable_resample_b;
+    float resample_rate_a;                     // kHz
+    float resample_rate_b;                     // kHz
+    int resample_quality_a;                    // 0-4
+    int resample_quality_b;                    // 0-4
+    float resample_gain_a;                     // dB
+    float resample_gain_b;                     // dB
+    
+    // FLAC compression
     bool use_flac;
-    int flac_level;           // 0-8
+    bool flac_12bit;                           // 12-bit instead of 16-bit FLAC
+    int flac_level;                            // 0-8
+    bool flac_verification;                    // Verify encoder output
+    int flac_threads;                          // Number of threads
+    
+    // Audio output options
+    bool enable_audio_4ch;
+    bool enable_audio_2ch_12;
+    bool enable_audio_2ch_34;
+    bool enable_audio_1ch[4];                  // Individual channel enables
+    
+    // Display settings (existing)
     bool show_grid;
     float time_scale;         // Time per division (ms)
     float amplitude_scale;    // Amplitude scale factor
@@ -256,6 +302,12 @@ void gui_app_clear_display(gui_app_t *app);
 
 // Status messages
 void gui_app_set_status(gui_app_t *app, const char *message);
+
+// Settings persistence
+void gui_settings_load(gui_settings_t *settings);
+void gui_settings_save(const gui_settings_t *settings);
+void gui_settings_init_defaults(gui_settings_t *settings);
+const char* gui_settings_get_desktop_path(void);
 
 // Constants for VU meter
 #define VU_ATTACK_TIME 0.01f      // 10ms attack
