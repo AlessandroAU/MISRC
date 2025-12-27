@@ -41,6 +41,7 @@
 #define LUMA_LPF_TAPS  11  // Average over ~11 samples (one NTSC chroma cycle)
 
 // Decode a single video line from samples to grayscale pixels
+// Uses a sliding window box filter for efficient chroma removal
 static void decode_line_to_pixels(const int16_t *samples, size_t sample_count,
                                   const cvbs_levels_t *levels,
                                   uint8_t *pixels, int pixel_width) {
@@ -49,48 +50,78 @@ static void decode_line_to_pixels(const int16_t *samples, size_t sample_count,
 
     // Skip back porch to get to active video
     const int16_t *active_start = samples + BACK_PORCH_SAMPLES;
-    size_t active_samples = sample_count - BACK_PORCH_SAMPLES;
+    int active_samples = (int)(sample_count - BACK_PORCH_SAMPLES);
 
     // Limit to expected active region
     if (active_samples > CVBS_ACTIVE_SAMPLES) {
         active_samples = CVBS_ACTIVE_SAMPLES;
     }
 
-    // Calculate scale factor for sample-to-pixel mapping
-    float samples_per_pixel = (float)active_samples / pixel_width;
-    float level_range = (float)(levels->white_level - levels->black_level);
-    if (level_range < 1.0f) level_range = 1.0f;
+    // Pre-calculate level normalization constants (use integer math where possible)
+    int32_t black_level = levels->black_level;
+    int32_t level_range = levels->white_level - black_level;
+    if (level_range < 1) level_range = 1;
 
-    // Half the filter width for symmetric averaging
+    // Sliding window filter: compute running sum over LUMA_LPF_TAPS samples
+    // Window is always full size (LUMA_LPF_TAPS) except at edges
     int half_taps = LUMA_LPF_TAPS / 2;
 
-    // Decode each pixel with lowpass filtering to remove chroma
-    for (int px = 0; px < pixel_width; px++) {
-        // Find corresponding sample position
-        size_t sample_pos = (size_t)(px * samples_per_pixel);
-        if (sample_pos >= active_samples) sample_pos = active_samples - 1;
+    // Initialize window at position 0 (centered at half_taps)
+    int32_t window_sum = 0;
+    int window_start = 0;
+    int window_end = LUMA_LPF_TAPS;
+    if (window_end > active_samples) window_end = active_samples;
 
-        // Apply box filter: average samples centered on this position
-        // This nulls out the chroma subcarrier (averaging over one cycle)
-        int32_t sum = 0;
-        int count = 0;
-        for (int t = -half_taps; t <= half_taps; t++) {
-            int idx = (int)sample_pos + t;
-            if (idx >= 0 && idx < (int)active_samples) {
-                sum += active_start[idx];
-                count++;
+    for (int i = 0; i < window_end; i++) {
+        window_sum += active_start[i];
+    }
+    int window_count = window_end;
+
+    // Use fixed-point for sample position tracking (16.16 format)
+    // This avoids a float multiply per pixel
+    int32_t pos_fixed = 0;
+    int32_t step_fixed = (active_samples << 16) / pixel_width;
+
+    int last_center = -1;
+
+    for (int px = 0; px < pixel_width; px++) {
+        // Get center position from fixed-point (with bounds check)
+        int center = pos_fixed >> 16;
+        if (center >= active_samples) center = active_samples - 1;
+
+        // Only slide window if center moved (handles multiple pixels mapping to same sample)
+        if (center != last_center) {
+            // Calculate new window bounds
+            int new_start = center - half_taps;
+            int new_end = center + half_taps + 1;
+            if (new_start < 0) new_start = 0;
+            if (new_end > active_samples) new_end = active_samples;
+
+            // Slide window forward (pixels are sequential, so window only moves forward)
+            while (window_start < new_start) {
+                window_sum -= active_start[window_start++];
+                window_count--;
             }
+            while (window_end < new_end) {
+                window_sum += active_start[window_end++];
+                window_count++;
+            }
+
+            last_center = center;
         }
 
-        // Get filtered sample value
-        float filtered = (count > 0) ? (float)sum / count : (float)active_start[sample_pos];
+        // Calculate filtered value and normalize to 0-255
+        // Using integer math: (sum / count - black) * 255 / range
+        int32_t filtered = window_sum / window_count;
+        int32_t pixel_val = ((filtered - black_level) * 255) / level_range;
 
-        // Clamp to black-white range and normalize
-        float normalized = (filtered - (float)levels->black_level) / level_range;
-        if (normalized < 0.0f) normalized = 0.0f;
-        if (normalized > 1.0f) normalized = 1.0f;
+        // Clamp to valid range
+        if (pixel_val < 0) pixel_val = 0;
+        else if (pixel_val > 255) pixel_val = 255;
 
-        pixels[px] = (uint8_t)(normalized * 255.0f);
+        pixels[px] = (uint8_t)pixel_val;
+
+        pos_fixed += step_fixed;
     }
 }
 
@@ -439,7 +470,8 @@ static void commit_adaptive_levels(cvbs_decoder_t *decoder) {
 // Lowpass filter coefficient (IIR single-pole)
 // At 40 MSPS, a cutoff of ~500kHz gives alpha ≈ 0.08
 // Lower alpha = more smoothing (removes HF noise while preserving sync edges)
-#define LPF_ALPHA           0.08
+#define LPF_ALPHA           0.08f
+#define LPF_ONE_MINUS_ALPHA 0.92f  // Pre-computed (1 - alpha)
 
 //-----------------------------------------------------------------------------
 // Lowpass Filter for Sync Detection
@@ -447,11 +479,12 @@ static void commit_adaptive_levels(cvbs_decoder_t *decoder) {
 
 // Apply IIR lowpass filter to a sample
 // This smooths out high-frequency noise while preserving sync pulse edges
-static inline double apply_lowpass(cvbs_decoder_t *decoder, int16_t sample) {
+static inline float apply_lowpass(cvbs_decoder_t *decoder, int16_t sample) {
     // Single-pole IIR: y[n] = alpha * x[n] + (1 - alpha) * y[n-1]
-    decoder->lpf_state = LPF_ALPHA * (double)sample + (1.0 - LPF_ALPHA) * decoder->lpf_state;
-    decoder->lpf_output = decoder->lpf_state;
-    return decoder->lpf_output;
+    // Using float instead of double - sufficient precision for sync detection
+    float state = LPF_ALPHA * (float)sample + LPF_ONE_MINUS_ALPHA * (float)decoder->lpf_state;
+    decoder->lpf_state = state;
+    return state;
 }
 
 //-----------------------------------------------------------------------------
@@ -476,7 +509,7 @@ typedef struct {
 // Detect V-sync by tracking falling edge intervals
 // V-sync region has half-line rate pulses (~1280 samples apart vs ~2560 for normal lines)
 // Field detection: odd field has 16 half-lines, even field has 14
-static vsync_result_t detect_vsync(cvbs_decoder_t *decoder, double filtered,
+static vsync_result_t detect_vsync(cvbs_decoder_t *decoder, float filtered,
                                     int16_t threshold, size_t sample_pos) {
     vsync_result_t result = {false, 0, false, false};
     bool is_above = (filtered > threshold);
@@ -522,7 +555,7 @@ static vsync_result_t detect_vsync(cvbs_decoder_t *decoder, double filtered,
 
 // Detect H-sync by measuring pulse width
 // Returns pulse_complete=true when a valid H-sync pulse ends (100-280 samples)
-static hsync_result_t detect_hsync(cvbs_decoder_t *decoder, double filtered,
+static hsync_result_t detect_hsync(cvbs_decoder_t *decoder, float filtered,
                                     int16_t threshold, size_t sample_pos,
                                     double current_pll_phase) {
     hsync_result_t result = {false, 0, 0.0};
@@ -600,44 +633,64 @@ static void deinterlace_fields(cvbs_decoder_t *decoder) {
         }
     } else if (have_odd) {
         // Bob mode with odd field only: duplicate lines with interpolation
-        for (int fl = 0; fl < field_height; fl++) {
+        // First line: just duplicate (no previous line to interpolate from)
+        memcpy(frame + CVBS_FRAME_WIDTH, odd_field, CVBS_FRAME_WIDTH);  // dst_odd line 0
+        memcpy(frame, odd_field, CVBS_FRAME_WIDTH);  // dst_even line 0
+
+        // Remaining lines: interpolate even lines from adjacent odd lines
+        for (int fl = 1; fl < field_height; fl++) {
             uint8_t *src = odd_field + (size_t)fl * CVBS_FRAME_WIDTH;
+            uint8_t *src_prev = odd_field + (size_t)(fl - 1) * CVBS_FRAME_WIDTH;
             uint8_t *dst_even = frame + (size_t)(fl * 2) * CVBS_FRAME_WIDTH;
             uint8_t *dst_odd = frame + (size_t)(fl * 2 + 1) * CVBS_FRAME_WIDTH;
 
             memcpy(dst_odd, src, CVBS_FRAME_WIDTH);
 
-            // Interpolate even line from adjacent odd lines
-            if (fl > 0) {
-                uint8_t *src_prev = odd_field + (size_t)(fl - 1) * CVBS_FRAME_WIDTH;
-                for (int x = 0; x < CVBS_FRAME_WIDTH; x++) {
-                    dst_even[x] = (uint8_t)(((int)src_prev[x] + (int)src[x]) / 2);
-                }
-            } else {
-                // First line - just duplicate
-                memcpy(dst_even, src, CVBS_FRAME_WIDTH);
+            // Interpolate using integer average: (a + b) >> 1
+            // Process 4 bytes at a time using 32-bit operations
+            int x = 0;
+            for (; x <= CVBS_FRAME_WIDTH - 4; x += 4) {
+                uint32_t a = *(uint32_t *)(src_prev + x);
+                uint32_t b = *(uint32_t *)(src + x);
+                // Average without overflow: (a & b) + ((a ^ b) >> 1)
+                uint32_t avg = (a & b) + (((a ^ b) & 0xFEFEFEFE) >> 1);
+                *(uint32_t *)(dst_even + x) = avg;
+            }
+            // Handle remaining pixels
+            for (; x < CVBS_FRAME_WIDTH; x++) {
+                dst_even[x] = (uint8_t)((src_prev[x] + src[x]) >> 1);
             }
         }
     } else if (have_even) {
         // Bob mode with even field only
-        for (int fl = 0; fl < field_height; fl++) {
+        // Process all but last line with interpolation
+        for (int fl = 0; fl < field_height - 1; fl++) {
             uint8_t *src = even_field + (size_t)fl * CVBS_FRAME_WIDTH;
+            uint8_t *src_next = even_field + (size_t)(fl + 1) * CVBS_FRAME_WIDTH;
             uint8_t *dst_even = frame + (size_t)(fl * 2) * CVBS_FRAME_WIDTH;
             uint8_t *dst_odd = frame + (size_t)(fl * 2 + 1) * CVBS_FRAME_WIDTH;
 
             memcpy(dst_even, src, CVBS_FRAME_WIDTH);
 
-            // Interpolate odd line from adjacent even lines
-            if (fl < field_height - 1) {
-                uint8_t *src_next = even_field + (size_t)(fl + 1) * CVBS_FRAME_WIDTH;
-                for (int x = 0; x < CVBS_FRAME_WIDTH; x++) {
-                    dst_odd[x] = (uint8_t)(((int)src[x] + (int)src_next[x]) / 2);
-                }
-            } else {
-                // Last line - just duplicate
-                memcpy(dst_odd, src, CVBS_FRAME_WIDTH);
+            // Interpolate using 32-bit operations
+            int x = 0;
+            for (; x <= CVBS_FRAME_WIDTH - 4; x += 4) {
+                uint32_t a = *(uint32_t *)(src + x);
+                uint32_t b = *(uint32_t *)(src_next + x);
+                uint32_t avg = (a & b) + (((a ^ b) & 0xFEFEFEFE) >> 1);
+                *(uint32_t *)(dst_odd + x) = avg;
+            }
+            for (; x < CVBS_FRAME_WIDTH; x++) {
+                dst_odd[x] = (uint8_t)((src[x] + src_next[x]) >> 1);
             }
         }
+        // Last line: just duplicate
+        int last_fl = field_height - 1;
+        uint8_t *src_last = even_field + (size_t)last_fl * CVBS_FRAME_WIDTH;
+        uint8_t *dst_even_last = frame + (size_t)(last_fl * 2) * CVBS_FRAME_WIDTH;
+        uint8_t *dst_odd_last = frame + (size_t)(last_fl * 2 + 1) * CVBS_FRAME_WIDTH;
+        memcpy(dst_even_last, src_last, CVBS_FRAME_WIDTH);
+        memcpy(dst_odd_last, src_last, CVBS_FRAME_WIDTH);
     }
     // If neither field ready, frame_buffer keeps its previous content
 }
@@ -797,79 +850,141 @@ void gui_cvbs_process_buffer(cvbs_decoder_t *decoder,
         return;
     }
 
+    // Cache frequently accessed values in local variables
     int16_t threshold = decoder->adaptive.threshold;
     cvbs_pll_state_t *pll = &decoder->pll;
+    int16_t *line_buffer = decoder->line_buffer;
+    int line_buffer_count = decoder->line_buffer_count;
+    size_t global_sample_pos = decoder->global_sample_pos;
+    bool last_filtered_above = decoder->last_filtered_above;
+
+    // Pre-calculate effective period (only changes on H-sync, updated in loop)
+    double effective_period = pll->line_period + pll->freq_adjust;
+
+    // Pre-calculate max lines for field overflow check
+    int max_lines = (decoder->state.format == CVBS_FORMAT_NTSC) ?
+                   NTSC_FIELD_LINES + 20 : PAL_FIELD_LINES + 20;
 
     // Process each sample
     for (size_t i = 0; i < count; i++) {
         int16_t sample = buf[i];
 
         // Apply lowpass filter for cleaner sync detection
-        double filtered = apply_lowpass(decoder, sample);
+        float filtered = apply_lowpass(decoder, sample);
 
         // Accumulate min/max from filtered signal (every 16th sample for efficiency)
-        // This reuses the sync detection filter to reject noise from level estimates
         if ((i & 0xF) == 0) {
             accumulate_filtered_level(decoder, (int16_t)filtered);
         }
 
         // Store UNFILTERED sample in line buffer (for video decoding)
-        // We want full bandwidth for the video, just filtered for sync detect
-        if (decoder->line_buffer_count < CVBS_LINE_BUFFER_SIZE) {
-            decoder->line_buffer[decoder->line_buffer_count++] = sample;
+        if (line_buffer_count < CVBS_LINE_BUFFER_SIZE) {
+            line_buffer[line_buffer_count++] = sample;
         }
 
         // Advance PLL phase
         pll->phase += 1.0;
         pll->samples_in_line++;
         pll->total_samples++;
-        decoder->global_sample_pos++;
+        global_sample_pos++;
 
-        // Run V-sync detector on filtered signal
-        vsync_result_t vr = detect_vsync(decoder, filtered, threshold,
-                                          decoder->global_sample_pos);
-        if (vr.vsync_complete) {
-            // V-sync detected - start new field with detected field type
-            start_new_field_pll(decoder, vr.is_odd_field);
+        // Check for edge transitions (computed once, used by both detectors)
+        bool is_above = (filtered > threshold);
+        bool falling_edge = last_filtered_above && !is_above;
+        bool rising_edge = !last_filtered_above && is_above;
+
+        // Run V-sync detector on falling edges only
+        if (falling_edge) {
+            size_t interval = global_sample_pos - decoder->vsync_last_edge_pos;
+            decoder->vsync_last_edge_pos = global_sample_pos;
+            cvbs_vsync_state_t *vs = &decoder->vsync;
+
+            // Half-line interval: 1000-1600 samples (vs 2200-3000 for full line)
+            bool is_half_line = (interval >= 1000 && interval <= 1600);
+
+            if (is_half_line) {
+                vs->half_line_count++;
+                vs->total_half_lines++;
+                if (vs->half_line_count >= 6 && !vs->in_vsync) {
+                    vs->in_vsync = true;
+                    vs->total_half_lines = vs->half_line_count;
+                }
+            } else if (vs->in_vsync && interval >= 2200 && interval <= 3000) {
+                // V-sync complete
+                vs->in_vsync = false;
+                decoder->debug.last_half_line_count = vs->total_half_lines;
+                bool is_odd_field = (vs->total_half_lines >= 15);
+                vs->half_line_count = 0;
+                vs->total_half_lines = 0;
+
+                // Write back before calling start_new_field_pll
+                decoder->line_buffer_count = line_buffer_count;
+                decoder->global_sample_pos = global_sample_pos;
+                decoder->last_filtered_above = is_above;
+
+                start_new_field_pll(decoder, is_odd_field);
+
+                // Refresh cached values that may have changed
+                effective_period = pll->line_period + pll->freq_adjust;
+                line_buffer_count = decoder->line_buffer_count;
+            } else {
+                vs->half_line_count = 0;
+            }
+
+            // H-sync falling edge - start pulse measurement
+            decoder->in_hsync_pulse = true;
+            decoder->hsync_pulse_start = global_sample_pos;
         }
 
-        // Run H-sync detector on filtered signal
-        hsync_result_t hr = detect_hsync(decoder, filtered, threshold,
-                                          decoder->global_sample_pos, pll->phase);
-        if (hr.pulse_complete) {
-            // Valid H-sync pulse detected - update PLL
-            pll_process_hsync(decoder, hr.phase_at_sync);
+        // H-sync rising edge - check pulse width
+        if (rising_edge && decoder->in_hsync_pulse) {
+            decoder->in_hsync_pulse = false;
+            size_t pulse_width = global_sample_pos - decoder->hsync_pulse_start;
+
+            if (pulse_width >= HSYNC_MIN_WIDTH && pulse_width <= HSYNC_MAX_WIDTH) {
+                pll_process_hsync(decoder, pll->phase);
+                // Update effective period after PLL adjustment
+                effective_period = pll->line_period + pll->freq_adjust;
+            }
         }
 
-        // Update filtered edge state for next iteration
-        decoder->last_filtered_above = (filtered > threshold);
-
-        // Calculate effective period with current freq_adjust (updated by PLL each H-sync)
-        double effective_period = pll->line_period + pll->freq_adjust;
+        last_filtered_above = is_above;
 
         // Check if PLL indicates line complete (phase >= line_period)
         if (pll->phase >= effective_period) {
+            // Write back line_buffer_count before decode
+            decoder->line_buffer_count = line_buffer_count;
+
             // Line complete - decode it
             decode_current_line(decoder);
 
+            // Refresh line_buffer_count (decode_current_line resets it)
+            line_buffer_count = decoder->line_buffer_count;
+
             // Advance to next line
             pll->current_line++;
-            pll->phase -= effective_period;  // Keep fractional phase
+            pll->phase -= effective_period;
             pll->samples_in_line = 0;
             decoder->lines_since_vsync++;
 
-            // Check for field overflow (shouldn't happen with proper V-sync)
-            int max_lines = (decoder->state.format == CVBS_FORMAT_NTSC) ?
-                           NTSC_FIELD_LINES + 20 : PAL_FIELD_LINES + 20;
+            // Check for field overflow
             if (pll->current_line > max_lines) {
-                // Too many lines - force new field (toggle since we have no V-sync info)
                 bool next_is_odd = (decoder->state.current_field == 1);
+                decoder->global_sample_pos = global_sample_pos;
+                decoder->last_filtered_above = last_filtered_above;
                 start_new_field_pll(decoder, next_is_odd);
+                effective_period = pll->line_period + pll->freq_adjust;
+                line_buffer_count = decoder->line_buffer_count;
             }
         }
     }
 
-    // Debug logging periodically (per-instance counter to avoid interference)
+    // Write back cached state
+    decoder->line_buffer_count = line_buffer_count;
+    decoder->global_sample_pos = global_sample_pos;
+    decoder->last_filtered_above = last_filtered_above;
+
+    // Debug logging periodically
     decoder->debug.log_counter++;
     if (decoder->debug.log_counter % 500 == 0) {
         fprintf(stderr, "[CVBS] fields=%d frames=%d locked=%d field=%s half_lines=%d\n",
@@ -907,14 +1022,15 @@ void gui_cvbs_render_frame(cvbs_decoder_t *decoder,
     if (field_h > CVBS_MAX_HEIGHT) field_h = CVBS_MAX_HEIGHT;
 
     // Convert grayscale to RGBA for the image
-    Color *pixels = (Color *)decoder->frame_image.data;
-    for (int row = 0; row < field_h; row++) {
-        uint8_t *src_row = decoder->display_buffer + (row * CVBS_FRAME_WIDTH);
-        Color *dst_row = pixels + (row * CVBS_FRAME_WIDTH);
-        for (int col = 0; col < CVBS_FRAME_WIDTH; col++) {
-            uint8_t gray = src_row[col];
-            dst_row[col] = (Color){gray, gray, gray, 255};
-        }
+    // Use 32-bit writes instead of per-component Color struct assignment
+    uint8_t *gray_src = decoder->display_buffer;
+    uint32_t *rgba_dst = (uint32_t *)decoder->frame_image.data;
+    int total_pixels = field_h * CVBS_FRAME_WIDTH;
+
+    for (int i = 0; i < total_pixels; i++) {
+        uint8_t gray = gray_src[i];
+        // Pack as RGBA (little-endian: 0xAABBGGRR)
+        rgba_dst[i] = 0xFF000000 | ((uint32_t)gray << 16) | ((uint32_t)gray << 8) | gray;
     }
 
     // Upload to GPU
