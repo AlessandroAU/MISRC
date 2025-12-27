@@ -206,7 +206,13 @@ if raylib_dep.found()
     gui_deps += [ fftw3f_dep ]
   endif
 
-  gui_cflags = cflags
+  gui_cflags = cflags + [
+    '-O3',                    # Maximum optimization (should already be set by buildtype=release)
+    '-funroll-loops',         # Unroll loops for better performance
+    '-ftree-vectorize',       # Enable auto-vectorization
+    '-ffast-math',            # Fast floating-point (safe for video/audio processing)
+    '-march=native',          # Optimize for current CPU
+  ]
 
   # GUI doesn't need all the ldflags_capture (e.g., onecore conflicts with raylib's CloseWindow)
   gui_ldflags = ldflags

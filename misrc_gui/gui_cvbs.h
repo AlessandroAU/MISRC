@@ -139,9 +139,9 @@ typedef struct cvbs_decoder {
     cvbs_pll_state_t pll;              // Software PLL for H-sync
     cvbs_vsync_state_t vsync;          // V-sync detection state
 
-    // Lowpass filter state for sync detection
-    double lpf_state;              // IIR lowpass filter accumulator
-    double lpf_output;             // Filtered signal value
+    // Lowpass filter state for sync detection (fixed-point Q16)
+    int32_t lpf_state;             // IIR lowpass filter accumulator (Q16 fixed-point)
+    int32_t lpf_output;            // Filtered signal value (unused, kept for ABI)
 
     // Edge detection state (persistent across buffers)
     bool last_filtered_above;      // Was last filtered sample above threshold?

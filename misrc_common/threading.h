@@ -60,6 +60,32 @@
     return (uint64_t)GetTickCount();
   }
 
+  /* Get current time in microseconds (for performance measurements) */
+  static inline uint64_t get_time_us(void) {
+    /* Layout-compatible with LARGE_INTEGER for when windows.h is included */
+    typedef union { int64_t i64; struct { unsigned long lo, hi; } parts; } perf_counter_t;
+    static int64_t freq = 0;
+    perf_counter_t counter, freq_val;
+    #ifdef _PROFILEAPI_H_
+    /* windows.h was included - use the already-declared functions with cast */
+    if (freq == 0) {
+      QueryPerformanceFrequency((LARGE_INTEGER*)&freq_val);
+      freq = freq_val.i64;
+    }
+    QueryPerformanceCounter((LARGE_INTEGER*)&counter);
+    #else
+    /* Declare functions ourselves */
+    extern __declspec(dllimport) int __stdcall QueryPerformanceCounter(perf_counter_t*);
+    extern __declspec(dllimport) int __stdcall QueryPerformanceFrequency(perf_counter_t*);
+    if (freq == 0) {
+      QueryPerformanceFrequency(&freq_val);
+      freq = freq_val.i64;
+    }
+    QueryPerformanceCounter(&counter);
+    #endif
+    return (uint64_t)(counter.i64 * 1000000 / freq);
+  }
+
 #else
   /* POSIX implementation */
   #include <pthread.h>
@@ -88,6 +114,13 @@
     struct timeval tv;
     gettimeofday(&tv, NULL);
     return (uint64_t)(tv.tv_sec * 1000 + tv.tv_usec / 1000);
+  }
+
+  /* Get current time in microseconds (for performance measurements) */
+  static inline uint64_t get_time_us(void) {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (uint64_t)(tv.tv_sec * 1000000 + tv.tv_usec);
   }
 
 #endif

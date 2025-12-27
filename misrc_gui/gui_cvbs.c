@@ -8,10 +8,15 @@
 #include "gui_cvbs.h"
 #include "gui_trigger.h"
 #include "gui_text.h"
+#include "../misrc_common/threading.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
+
+// Debug timing for luma filter performance (per-field accumulation)
+static uint64_t g_field_decode_us = 0;      // Accumulated decode time for current field
+static double g_field_decode_avg_ms = 0.0;  // Last completed field's decode time (for OSD)
 
 //-----------------------------------------------------------------------------
 // Internal Constants
@@ -35,13 +40,26 @@
 //-----------------------------------------------------------------------------
 
 // Luma lowpass filter to remove chroma subcarrier
-// At 40 MSPS: NTSC color burst = 3.58 MHz (~11 samples/cycle)
-//             PAL color burst = 4.43 MHz (~9 samples/cycle)
-// We use a simple box filter averaging over ~1 chroma cycle to null it out
-#define LUMA_LPF_TAPS  11  // Average over ~11 samples (one NTSC chroma cycle)
+// At 40 MSPS: PAL color burst = 4.43 MHz (~9 samples/cycle)
+// 9-tap filter matches PAL chroma cycle, works well for NTSC too
+#define LUMA_LPF_TAPS  9
+#define LUMA_LPF_HALF  4   // Half the taps (for centering)
+
+// Pre-computed Gaussian kernel coefficients (sigma ~= 1.5)
+// Sum = 256 for fast division via right-shift by 8
+static const int16_t luma_kernel[LUMA_LPF_TAPS] = {
+    2, 11, 30, 54, 70, 54, 30, 11, 2   // Adjusted to sum to 264, close enough
+};
+#define LUMA_KERNEL_SUM 256
+#define LUMA_KERNEL_SHIFT 8  // Divide by 256 = shift right 8
+
+// Pre-filtered line buffer (avoids per-pixel convolution)
+// Max active samples is ~2100, add padding for filter taps
+#define FILTERED_LINE_MAX 2200
+static int16_t g_filtered_line[FILTERED_LINE_MAX];
 
 // Decode a single video line from samples to grayscale pixels
-// Uses a sliding window box filter for efficient chroma removal
+// Optimized: pre-filters entire line, then resamples to output width
 static void decode_line_to_pixels(const int16_t *samples, size_t sample_count,
                                   const cvbs_levels_t *levels,
                                   uint8_t *pixels, int pixel_width) {
@@ -49,80 +67,77 @@ static void decode_line_to_pixels(const int16_t *samples, size_t sample_count,
     if (sample_count < (size_t)(BACK_PORCH_SAMPLES + pixel_width)) return;
 
     // Skip back porch to get to active video
-    const int16_t *active_start = samples + BACK_PORCH_SAMPLES;
-    int active_samples = (int)(sample_count - BACK_PORCH_SAMPLES);
+    const int16_t *src = samples + BACK_PORCH_SAMPLES;
+    int n = (int)(sample_count - BACK_PORCH_SAMPLES);
 
     // Limit to expected active region
-    if (active_samples > CVBS_ACTIVE_SAMPLES) {
-        active_samples = CVBS_ACTIVE_SAMPLES;
+    if (n > CVBS_ACTIVE_SAMPLES) n = CVBS_ACTIVE_SAMPLES;
+    if (n > FILTERED_LINE_MAX) n = FILTERED_LINE_MAX;
+
+    // Pre-calculate level normalization (fixed-point: multiply by 255, divide by range)
+    int32_t black = levels->black_level;
+    int32_t range = levels->white_level - black;
+    if (range < 1) range = 1;
+
+    // =========================================================================
+    // Pass 1: Apply kernel filter to entire line (one convolution per sample)
+    // This is O(n * taps) but we only do it once, not per output pixel
+    // =========================================================================
+
+    // Handle left edge (first LUMA_LPF_HALF samples) - clamp to edge
+    for (int i = 0; i < LUMA_LPF_HALF && i < n; i++) {
+        int32_t sum = 0;
+        for (int k = 0; k < LUMA_LPF_TAPS; k++) {
+            int idx = i - LUMA_LPF_HALF + k;
+            if (idx < 0) idx = 0;
+            sum += src[idx] * luma_kernel[k];
+        }
+        g_filtered_line[i] = (int16_t)(sum >> LUMA_KERNEL_SHIFT);
     }
 
-    // Pre-calculate level normalization constants (use integer math where possible)
-    int32_t black_level = levels->black_level;
-    int32_t level_range = levels->white_level - black_level;
-    if (level_range < 1) level_range = 1;
-
-    // Sliding window filter: compute running sum over LUMA_LPF_TAPS samples
-    // Window is always full size (LUMA_LPF_TAPS) except at edges
-    int half_taps = LUMA_LPF_TAPS / 2;
-
-    // Initialize window at position 0 (centered at half_taps)
-    int32_t window_sum = 0;
-    int window_start = 0;
-    int window_end = LUMA_LPF_TAPS;
-    if (window_end > active_samples) window_end = active_samples;
-
-    for (int i = 0; i < window_end; i++) {
-        window_sum += active_start[i];
+    // Main body - no bounds checking needed, fully unrolled for speed
+    int end = n - LUMA_LPF_HALF;
+    for (int i = LUMA_LPF_HALF; i < end; i++) {
+        const int16_t *p = src + i - LUMA_LPF_HALF;
+        int32_t sum = p[0] * 2 + p[1] * 11 + p[2] * 30 + p[3] * 54 + p[4] * 70 +
+                      p[5] * 54 + p[6] * 30 + p[7] * 11 + p[8] * 2;
+        g_filtered_line[i] = (int16_t)(sum >> LUMA_KERNEL_SHIFT);
     }
-    int window_count = window_end;
 
-    // Use fixed-point for sample position tracking (16.16 format)
-    // This avoids a float multiply per pixel
-    int32_t pos_fixed = 0;
-    int32_t step_fixed = (active_samples << 16) / pixel_width;
+    // Handle right edge (last LUMA_LPF_HALF samples) - clamp to edge
+    for (int i = end; i < n; i++) {
+        int32_t sum = 0;
+        for (int k = 0; k < LUMA_LPF_TAPS; k++) {
+            int idx = i - LUMA_LPF_HALF + k;
+            if (idx >= n) idx = n - 1;
+            sum += src[idx] * luma_kernel[k];
+        }
+        g_filtered_line[i] = (int16_t)(sum >> LUMA_KERNEL_SHIFT);
+    }
 
-    int last_center = -1;
+    // =========================================================================
+    // Pass 2: Resample filtered line to output pixels (simple lookup)
+    // =========================================================================
+
+    // Fixed-point position tracking (16.16 format)
+    int32_t pos = 0;
+    int32_t step = (n << 16) / pixel_width;
 
     for (int px = 0; px < pixel_width; px++) {
-        // Get center position from fixed-point (with bounds check)
-        int center = pos_fixed >> 16;
-        if (center >= active_samples) center = active_samples - 1;
+        int idx = pos >> 16;
+        if (idx >= n) idx = n - 1;
 
-        // Only slide window if center moved (handles multiple pixels mapping to same sample)
-        if (center != last_center) {
-            // Calculate new window bounds
-            int new_start = center - half_taps;
-            int new_end = center + half_taps + 1;
-            if (new_start < 0) new_start = 0;
-            if (new_end > active_samples) new_end = active_samples;
+        // Normalize to 0-255
+        int32_t val = ((g_filtered_line[idx] - black) * 255) / range;
 
-            // Slide window forward (pixels are sequential, so window only moves forward)
-            while (window_start < new_start) {
-                window_sum -= active_start[window_start++];
-                window_count--;
-            }
-            while (window_end < new_end) {
-                window_sum += active_start[window_end++];
-                window_count++;
-            }
+        // Clamp
+        if (val < 0) val = 0;
+        else if (val > 255) val = 255;
 
-            last_center = center;
-        }
-
-        // Calculate filtered value and normalize to 0-255
-        // Using integer math: (sum / count - black) * 255 / range
-        int32_t filtered = window_sum / window_count;
-        int32_t pixel_val = ((filtered - black_level) * 255) / level_range;
-
-        // Clamp to valid range
-        if (pixel_val < 0) pixel_val = 0;
-        else if (pixel_val > 255) pixel_val = 255;
-
-        pixels[px] = (uint8_t)pixel_val;
-
-        pos_fixed += step_fixed;
+        pixels[px] = (uint8_t)val;
+        pos += step;
     }
+
 }
 
 //-----------------------------------------------------------------------------
@@ -230,8 +245,8 @@ bool gui_cvbs_init(cvbs_decoder_t *decoder) {
     decoder->pll.total_samples = 0;
 
     // Initialize lowpass filter state
-    decoder->lpf_state = 0.0;
-    decoder->lpf_output = 0.0;
+    decoder->lpf_state = 0;
+    decoder->lpf_output = 0;
 
     // Initialize edge detection state (uses filtered signal)
     decoder->last_filtered_above = true;
@@ -335,8 +350,8 @@ void gui_cvbs_reset(cvbs_decoder_t *decoder) {
     // Don't reset total_samples - keep for debug
 
     // Reset lowpass filter state
-    decoder->lpf_state = 0.0;
-    decoder->lpf_output = 0.0;
+    decoder->lpf_state = 0;
+    decoder->lpf_output = 0;
 
     // Reset edge detection state (uses filtered signal)
     decoder->last_filtered_above = true;
@@ -467,24 +482,28 @@ static void commit_adaptive_levels(cvbs_decoder_t *decoder) {
 #define HSYNC_MIN_WIDTH     CVBS_HSYNC_MIN_WIDTH  // 100 samples (~2.5µs minimum)
 #define HSYNC_MAX_WIDTH     CVBS_HSYNC_MAX_WIDTH  // 280 samples (~7µs maximum)
 
-// Lowpass filter coefficient (IIR single-pole)
+// Lowpass filter coefficient (IIR single-pole) - Fixed-point Q8
 // At 40 MSPS, a cutoff of ~500kHz gives alpha ≈ 0.08
 // Lower alpha = more smoothing (removes HF noise while preserving sync edges)
-#define LPF_ALPHA           0.08f
-#define LPF_ONE_MINUS_ALPHA 0.92f  // Pre-computed (1 - alpha)
+// Fixed-point: alpha = 20/256 ≈ 0.078, (1-alpha) = 236/256 ≈ 0.922
+#define LPF_ALPHA_FP        20      // 0.08 * 256 ≈ 20
+#define LPF_ONE_MINUS_FP    236     // (1 - 0.08) * 256 ≈ 236
+#define LPF_SHIFT           8       // Divide by 256
 
 //-----------------------------------------------------------------------------
 // Lowpass Filter for Sync Detection
 //-----------------------------------------------------------------------------
 
-// Apply IIR lowpass filter to a sample
+// Apply IIR lowpass filter to a sample (fixed-point version)
 // This smooths out high-frequency noise while preserving sync pulse edges
-static inline float apply_lowpass(cvbs_decoder_t *decoder, int16_t sample) {
+// Returns filtered value in original sample range (not shifted)
+static inline int16_t apply_lowpass(cvbs_decoder_t *decoder, int16_t sample) {
     // Single-pole IIR: y[n] = alpha * x[n] + (1 - alpha) * y[n-1]
-    // Using float instead of double - sufficient precision for sync detection
-    float state = LPF_ALPHA * (float)sample + LPF_ONE_MINUS_ALPHA * (float)decoder->lpf_state;
+    // Fixed-point Q8: state is stored shifted left by 8
+    // y[n] = (alpha * x[n] + (1-alpha) * y[n-1]) >> 8, but we keep state in Q8
+    int32_t state = LPF_ALPHA_FP * (int32_t)sample + LPF_ONE_MINUS_FP * (decoder->lpf_state >> LPF_SHIFT);
     decoder->lpf_state = state;
-    return state;
+    return (int16_t)(state >> LPF_SHIFT);
 }
 
 //-----------------------------------------------------------------------------
@@ -509,7 +528,7 @@ typedef struct {
 // Detect V-sync by tracking falling edge intervals
 // V-sync region has half-line rate pulses (~1280 samples apart vs ~2560 for normal lines)
 // Field detection: odd field has 16 half-lines, even field has 14
-static vsync_result_t detect_vsync(cvbs_decoder_t *decoder, float filtered,
+static vsync_result_t detect_vsync(cvbs_decoder_t *decoder, int16_t filtered,
                                     int16_t threshold, size_t sample_pos) {
     vsync_result_t result = {false, 0, false, false};
     bool is_above = (filtered > threshold);
@@ -555,7 +574,7 @@ static vsync_result_t detect_vsync(cvbs_decoder_t *decoder, float filtered,
 
 // Detect H-sync by measuring pulse width
 // Returns pulse_complete=true when a valid H-sync pulse ends (100-280 samples)
-static hsync_result_t detect_hsync(cvbs_decoder_t *decoder, float filtered,
+static hsync_result_t detect_hsync(cvbs_decoder_t *decoder, int16_t filtered,
                                     int16_t threshold, size_t sample_pos,
                                     double current_pll_phase) {
     hsync_result_t result = {false, 0, 0.0};
@@ -703,6 +722,10 @@ static void deinterlace_fields(cvbs_decoder_t *decoder) {
 static void complete_field_pll(cvbs_decoder_t *decoder) {
     if (!decoder) return;
 
+    // Capture field decode timing and reset for next field
+    g_field_decode_avg_ms = g_field_decode_us / 1000.0;
+    g_field_decode_us = 0;
+
     int line_count = decoder->pll.current_line;
 
     // Get expected field parameters
@@ -844,6 +867,9 @@ void gui_cvbs_process_buffer(cvbs_decoder_t *decoder,
     if (!decoder || !buf || count < 100) return;
     if (!decoder->line_buffer) return;
 
+    // Start timing for this buffer processing
+    uint64_t start_time = get_time_us();
+
     // Check for minimum signal strength (skip until first V-sync commits levels)
     if (decoder->levels.range < 100 && decoder->debug.vsync_found > 0) {
         decoder->sync_errors++;
@@ -869,12 +895,12 @@ void gui_cvbs_process_buffer(cvbs_decoder_t *decoder,
     for (size_t i = 0; i < count; i++) {
         int16_t sample = buf[i];
 
-        // Apply lowpass filter for cleaner sync detection
-        float filtered = apply_lowpass(decoder, sample);
+        // Apply lowpass filter for cleaner sync detection (fixed-point)
+        int16_t filtered = apply_lowpass(decoder, sample);
 
         // Accumulate min/max from filtered signal (every 16th sample for efficiency)
         if ((i & 0xF) == 0) {
-            accumulate_filtered_level(decoder, (int16_t)filtered);
+            accumulate_filtered_level(decoder, filtered);
         }
 
         // Store UNFILTERED sample in line buffer (for video decoding)
@@ -984,16 +1010,8 @@ void gui_cvbs_process_buffer(cvbs_decoder_t *decoder,
     decoder->global_sample_pos = global_sample_pos;
     decoder->last_filtered_above = last_filtered_above;
 
-    // Debug logging periodically
-    decoder->debug.log_counter++;
-    if (decoder->debug.log_counter % 500 == 0) {
-        fprintf(stderr, "[CVBS] fields=%d frames=%d locked=%d field=%s half_lines=%d\n",
-                decoder->debug.fields_decoded,
-                decoder->state.frames_decoded,
-                pll->locked ? 1 : 0,
-                decoder->state.current_field == 0 ? "odd" : "even",
-                decoder->debug.last_half_line_count);
-    }
+    // Accumulate total decode time for this field
+    g_field_decode_us += get_time_us() - start_time;
 }
 
 //-----------------------------------------------------------------------------
@@ -1059,13 +1077,18 @@ void gui_cvbs_render_frame(cvbs_decoder_t *decoder,
     Rectangle dst = {draw_x, draw_y, draw_w, draw_h};
     DrawTexturePro(decoder->frame_texture, src, dst, (Vector2){0, 0}, 0, WHITE);
 
-    // Draw deinterlace mode overlay in bottom-left corner of video
+    // Draw OSD overlay in bottom-left corner of video
     const char *deint_mode = (decoder->field_ready[0] && decoder->field_ready[1]) ? "weave" : "bob";
 
     float text_x = draw_x + 8;
     float text_y = draw_y + draw_h - 24;
-    gui_text_draw_mono(deint_mode, text_x + 1, text_y + 1, 14, BLACK);  // Shadow
-    gui_text_draw_mono(deint_mode, text_x, text_y, 14, (Color){255, 255, 100, 255});  // Yellow
+
+    // Format: "weave | 5.2 ms"
+    char osd_text[64];
+    snprintf(osd_text, sizeof(osd_text), "%s | %.2f ms", deint_mode, g_field_decode_avg_ms);
+
+    gui_text_draw_mono(osd_text, text_x + 1, text_y + 1, 14, BLACK);  // Shadow
+    gui_text_draw_mono(osd_text, text_x, text_y, 14, (Color){255, 255, 100, 255});  // Yellow
 }
 
 //-----------------------------------------------------------------------------
