@@ -40,10 +40,13 @@
 // Buffer sizes - match reference implementation
 #define BUFFER_READ_SIZE 65536
 #define BUFFER_TOTAL_SIZE (65536 * 1024)  // Same as reference: 64MB
+#define BUFFER_AUDIO_TOTAL_SIZE (65536 * 256)
 
-// Ringbuffer for raw capture data (written by callback, read by main thread)
+// Ringbuffers for capture data
 static ringbuffer_t s_capture_rb;
 static bool s_rb_initialized = false;
+static ringbuffer_t s_capture_audio_rb;
+static bool s_audio_rb_initialized = false;
 
 // Capture handler context (includes frame parser state)
 static capture_handler_ctx_t s_capture_handler;
@@ -177,8 +180,11 @@ void gui_capture_callback(void *data_info_ptr) {
         return;
     }
 
-    // Wait for ringbuffer space with event-based waiting
-    uint8_t *buf_out = rb_write_ptr(&s_capture_rb, result.stream0_bytes);
+    uint8_t *buf_out = NULL;
+    uint8_t *buf_out_audio = NULL;
+
+    // Wait for ringbuffer space with event-based waiting (RF)
+    buf_out = rb_write_ptr(&s_capture_rb, result.stream0_bytes);
     if (!buf_out) {
         // Buffer full - wait with timeout using space event
         rb_event_t *space_event = gui_extract_get_space_event();
@@ -215,11 +221,24 @@ void gui_capture_callback(void *data_info_ptr) {
         }
     }
 
-    // Copy payload data to ringbuffer (stream 0 only for GUI)
-    frame_copy_payloads(data_info->buf, data_info->width, data_info->height,
-                        &meta, buf_out, NULL);
+    // If audio capture enabled, reserve space in audio ringbuffer too
+    if (s_capture_handler.capture_audio && s_audio_rb_initialized && result.stream1_bytes > 0) {
+        buf_out_audio = rb_write_ptr(&s_capture_audio_rb, result.stream1_bytes);
+        if (!buf_out_audio) {
+            // Best-effort: drop audio if buffer full
+            buf_out_audio = NULL;
+        }
+    }
+
+    // Copy payloads (RF + optional audio) with shared audio sync filtering
+    frame_copy_payloads_cb(data_info->buf, data_info->width, data_info->height,
+                           &meta, buf_out, buf_out_audio,
+                           capture_handler_audio_filter, &s_capture_handler);
 
     rb_write_finished(&s_capture_rb, result.stream0_bytes);
+    if (buf_out_audio) {
+        rb_write_finished(&s_capture_audio_rb, result.stream1_bytes);
+    }
 
     // Signal that new data is available
     rb_event_t *data_event = gui_extract_get_data_event();
@@ -259,6 +278,10 @@ void gui_app_init(gui_app_t *app) {
     app->vu_b.peak_hold_time_neg = 0;
 
     strcpy(app->status_message, "Initializing...");
+
+    for (int i = 0; i < 4; i++) {
+        atomic_store(&app->audio_peak[i], 0);
+    }
 
     // Initialize sample rate to default (will be updated when device connects)
     atomic_store(&app->sample_rate, DEFAULT_SAMPLE_RATE);
@@ -323,7 +346,7 @@ void gui_app_init(gui_app_t *app) {
     app->cvbs_a = NULL;
     app->cvbs_b = NULL;
 
-    // Initialize capture ringbuffer
+    // Initialize capture ringbuffers
     if (!s_rb_initialized) {
         int r = rb_init(&s_capture_rb, "gui_capture", BUFFER_TOTAL_SIZE);
         if (r != 0) {
@@ -334,13 +357,34 @@ void gui_app_init(gui_app_t *app) {
         }
     }
 
+    if (!s_audio_rb_initialized) {
+        int r = rb_init(&s_capture_audio_rb, "gui_capture_audio", BUFFER_AUDIO_TOTAL_SIZE);
+        if (r != 0) {
+            fprintf(stderr, "Failed to initialize audio ringbuffer: %d\n", r);
+        } else {
+            s_audio_rb_initialized = true;
+            fprintf(stderr, "Audio ringbuffer initialized (%d bytes)\n", BUFFER_AUDIO_TOTAL_SIZE);
+        }
+    }
+
     // Initialize capture handler (includes frame parser state)
     capture_handler_init(&s_capture_handler);
     s_capture_handler.rb_rf = &s_capture_rb;
+    s_capture_handler.rb_audio = s_audio_rb_initialized ? &s_capture_audio_rb : NULL;
     s_capture_handler.capture_rf = true;
-    s_capture_handler.capture_audio = false;  // No audio capture in GUI yet
+
+    // Enable audio capture if any audio outputs are enabled (mirrors CLI audio options)
+    bool want_audio = app->settings.enable_audio_4ch || app->settings.enable_audio_2ch_12 || app->settings.enable_audio_2ch_34;
+    for (int i = 0; i < 4; i++) {
+        if (app->settings.enable_audio_1ch[i]) want_audio = true;
+    }
+    s_capture_handler.capture_audio = want_audio && s_audio_rb_initialized;
     s_capture_handler.sync_event_cb = gui_sync_event_cb;
     s_capture_handler.user_ctx = app;
+
+    // Default CVBS system selection
+    atomic_store(&app->cvbs_system_a, 1); // NTSC default (matches simulated test signal)
+    atomic_store(&app->cvbs_system_b, 1);
 
     // Set app for text rendering
     gui_text_set_app(app);
@@ -352,10 +396,14 @@ void gui_app_cleanup(gui_app_t *app) {
         gui_app_stop_capture(app);
     }
 
-    // Close ringbuffer
+    // Close ringbuffers
     if (s_rb_initialized) {
         rb_close(&s_capture_rb);
         s_rb_initialized = false;
+    }
+    if (s_audio_rb_initialized) {
+        rb_close(&s_capture_audio_rb);
+        s_audio_rb_initialized = false;
     }
 
     // Cleanup extraction subsystem
@@ -385,16 +433,30 @@ void gui_app_cleanup(gui_app_t *app) {
         app->fft_b = NULL;
     }
 
-    // Cleanup CVBS decoders
-    if (app->cvbs_a) {
-        gui_cvbs_cleanup(app->cvbs_a);
-        free(app->cvbs_a);
-        app->cvbs_a = NULL;
+    // Cleanup CVBS decoders (also free any deferred frees)
+    {
+        cvbs_decoder_t *dec = atomic_exchange(&app->cvbs_a, NULL);
+        if (dec) {
+            gui_cvbs_cleanup(dec);
+            free(dec);
+        }
+        dec = atomic_exchange(&app->cvbs_pending_free_a, NULL);
+        if (dec) {
+            gui_cvbs_cleanup(dec);
+            free(dec);
+        }
     }
-    if (app->cvbs_b) {
-        gui_cvbs_cleanup(app->cvbs_b);
-        free(app->cvbs_b);
-        app->cvbs_b = NULL;
+    {
+        cvbs_decoder_t *dec = atomic_exchange(&app->cvbs_b, NULL);
+        if (dec) {
+            gui_cvbs_cleanup(dec);
+            free(dec);
+        }
+        dec = atomic_exchange(&app->cvbs_pending_free_b, NULL);
+        if (dec) {
+            gui_cvbs_cleanup(dec);
+            free(dec);
+        }
     }
 
     // Cleanup oscilloscope resources (static state and resamplers)
@@ -517,8 +579,15 @@ int gui_app_start_capture(gui_app_t *app) {
     s_callback_count = 0;
     capture_handler_init(&s_capture_handler);
     s_capture_handler.rb_rf = &s_capture_rb;
+    s_capture_handler.rb_audio = s_audio_rb_initialized ? &s_capture_audio_rb : NULL;
     s_capture_handler.capture_rf = true;
-    s_capture_handler.capture_audio = false;
+
+    bool want_audio = app->settings.enable_audio_4ch || app->settings.enable_audio_2ch_12 || app->settings.enable_audio_2ch_34;
+    for (int i = 0; i < 4; i++) {
+        if (app->settings.enable_audio_1ch[i]) want_audio = true;
+    }
+    s_capture_handler.capture_audio = want_audio && s_audio_rb_initialized;
+
     s_capture_handler.sync_event_cb = gui_sync_event_cb;
     s_capture_handler.user_ctx = app;
 
@@ -619,6 +688,10 @@ void gui_app_stop_capture(gui_app_t *app) {
     gui_app_clear_display(app);
 
     gui_app_set_status(app, "Capture stopped");
+}
+
+ringbuffer_t *gui_capture_get_audio_ringbuffer(void) {
+    return s_audio_rb_initialized ? &s_capture_audio_rb : NULL;
 }
 
 // Recording wrappers - delegate to gui_record module

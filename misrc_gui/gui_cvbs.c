@@ -29,7 +29,7 @@
 
 // Field heights (half of full frame)
 #define PAL_FIELD_HEIGHT        288  // 576/2
-#define NTSC_FIELD_HEIGHT       240  // 480/2
+#define NTSC_FIELD_HEIGHT       243  // 486/2
 
 // CVBS Phosphor settings - much lower than main phosphor since we draw ~300 lines per field
 // Main phosphor draws ~1 waveform per frame, CVBS draws ~288 lines per field (50 fields/sec)
@@ -179,16 +179,16 @@ bool gui_cvbs_init(cvbs_decoder_t *decoder) {
 
     memset(decoder, 0, sizeof(cvbs_decoder_t));
 
-    // Allocate frame buffer at field resolution (let raylib scale up)
+    // Allocate frame buffer at full-frame resolution (D1)
     decoder->frame_width = CVBS_FRAME_WIDTH;
-    decoder->frame_height = PAL_FIELD_HEIGHT;  // Start with PAL field height
-    decoder->frame_buffer = (uint8_t *)calloc(CVBS_FRAME_WIDTH * PAL_FIELD_HEIGHT, 1);
+    decoder->frame_height = CVBS_PAL_HEIGHT;  // Start with PAL full-frame height
+    decoder->frame_buffer = (uint8_t *)calloc(CVBS_FRAME_WIDTH * CVBS_MAX_HEIGHT, 1);
     if (!decoder->frame_buffer) {
         return false;
     }
 
     // Allocate display buffer (double buffering)
-    decoder->display_buffer = (uint8_t *)calloc(CVBS_FRAME_WIDTH * PAL_FIELD_HEIGHT, 1);
+    decoder->display_buffer = (uint8_t *)calloc(CVBS_FRAME_WIDTH * CVBS_MAX_HEIGHT, 1);
     if (!decoder->display_buffer) {
         free(decoder->frame_buffer);
         decoder->frame_buffer = NULL;
@@ -210,9 +210,9 @@ bool gui_cvbs_init(cvbs_decoder_t *decoder) {
         return false;
     }
 
-    // Create raylib Image for video display (RGBA format at field resolution)
+    // Create raylib Image for video display (RGBA format at full-frame resolution)
     // Allocate our own pixel buffer so we control the memory
-    Color *frame_pixels = (Color *)calloc(CVBS_FRAME_WIDTH * PAL_FIELD_HEIGHT, sizeof(Color));
+    Color *frame_pixels = (Color *)calloc(CVBS_FRAME_WIDTH * CVBS_MAX_HEIGHT, sizeof(Color));
     if (!frame_pixels) {
         free(decoder->frame_buffer);
         free(decoder->display_buffer);
@@ -224,7 +224,7 @@ bool gui_cvbs_init(cvbs_decoder_t *decoder) {
     }
     decoder->frame_image.data = frame_pixels;
     decoder->frame_image.width = CVBS_FRAME_WIDTH;
-    decoder->frame_image.height = PAL_FIELD_HEIGHT;
+    decoder->frame_image.height = CVBS_MAX_HEIGHT;
     decoder->frame_image.mipmaps = 1;
     decoder->frame_image.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
     decoder->texture_valid = false;
@@ -337,10 +337,10 @@ void gui_cvbs_reset(cvbs_decoder_t *decoder) {
 
     // Clear frame buffers
     if (decoder->frame_buffer) {
-        memset(decoder->frame_buffer, 0, CVBS_FRAME_WIDTH * PAL_FIELD_HEIGHT);
+        memset(decoder->frame_buffer, 0, CVBS_FRAME_WIDTH * CVBS_MAX_HEIGHT);
     }
     if (decoder->display_buffer) {
-        memset(decoder->display_buffer, 0, CVBS_FRAME_WIDTH * PAL_FIELD_HEIGHT);
+        memset(decoder->display_buffer, 0, CVBS_FRAME_WIDTH * CVBS_MAX_HEIGHT);
     }
     if (decoder->phosphor_buffer) {
         memset(decoder->phosphor_buffer, 0,
@@ -353,8 +353,13 @@ void gui_cvbs_reset(cvbs_decoder_t *decoder) {
     // Reset adaptive levels
     memset(&decoder->adaptive, 0, sizeof(decoder->adaptive));
 
-    // Reset PLL
-    decoder->pll.line_period = CVBS_SAMPLES_PER_LINE_PAL;
+    // Reset PLL (keep line period consistent with selected system)
+    if (decoder->state.format == CVBS_FORMAT_NTSC) {
+        decoder->pll.line_period = CVBS_SAMPLES_PER_LINE_NTSC;
+    } else {
+        // PAL + SECAM + UNKNOWN use PAL timing
+        decoder->pll.line_period = CVBS_SAMPLES_PER_LINE_PAL;
+    }
     decoder->pll.phase_error = 0;
     decoder->pll.last_hsync_phase = 0;
     decoder->pll.samples_since_hsync = 0;
@@ -367,8 +372,7 @@ void gui_cvbs_reset(cvbs_decoder_t *decoder) {
     // Reset legacy state
     decoder->lines_since_vsync = 0;
 
-    // Reset frame state
-    decoder->state.format = CVBS_FORMAT_UNKNOWN;
+    // Reset frame state (preserve decoder->state.format set by gui_cvbs_set_format)
     decoder->state.current_line = 0;
     decoder->state.current_field = 0;
     decoder->state.in_vsync = false;
@@ -461,12 +465,11 @@ static void update_adaptive_levels(cvbs_decoder_t *decoder,
 // Field Handling
 //-----------------------------------------------------------------------------
 
-// Complete a field and prepare for display
+// Complete a field; once we have both fields, publish a full frame for display
 static void complete_field(cvbs_decoder_t *decoder) {
-    int line_count = decoder->lines_since_vsync;
+    if (!decoder) return;
 
-    // Format is now set manually via gui_cvbs_set_format() - no auto-detection
-    // Just use the current format setting
+    int line_count = decoder->lines_since_vsync;
 
     // Get expected field parameters
     int expected_active = (decoder->state.format == CVBS_FORMAT_NTSC) ?
@@ -475,13 +478,28 @@ static void complete_field(cvbs_decoder_t *decoder) {
                        NTSC_ACTIVE_START : PAL_ACTIVE_START;
     int actual_active = line_count - active_start;
 
-    // Only display if we got a reasonable field (at least 50% of expected)
-    if (actual_active >= (expected_active / 2)) {
+    // Only accept if we got a reasonable field (at least 50% of expected)
+    if (actual_active < (expected_active / 2)) {
+        return;
+    }
+
+    // Mark this field as received
+    decoder->field_ready[decoder->state.current_field ? 1 : 0] = true;
+
+    // When both fields are ready, publish a full frame
+    if (decoder->field_ready[0] && decoder->field_ready[1]) {
+        int frame_h = decoder->frame_height;
+        if (frame_h > CVBS_MAX_HEIGHT) frame_h = CVBS_MAX_HEIGHT;
+
         memcpy(decoder->display_buffer, decoder->frame_buffer,
-               CVBS_FRAME_WIDTH * expected_active);
+               (size_t)CVBS_FRAME_WIDTH * (size_t)frame_h);
         decoder->display_ready = true;
         decoder->state.frame_complete = true;
         decoder->state.frames_decoded++;
+
+        // Prepare for next frame
+        decoder->field_ready[0] = false;
+        decoder->field_ready[1] = false;
     }
 }
 
@@ -497,10 +515,14 @@ static void start_new_field(cvbs_decoder_t *decoder) {
     decoder->state.current_field = 1 - decoder->state.current_field;
     decoder->lines_since_vsync = 0;
 
-    // Clear frame buffer
-    int field_h = (decoder->state.format == CVBS_FORMAT_NTSC) ?
-                  NTSC_FIELD_HEIGHT : PAL_FIELD_HEIGHT;
-    memset(decoder->frame_buffer, 0, CVBS_FRAME_WIDTH * field_h);
+    // If we're starting the first field of a new frame, clear the full-frame buffer
+    if (decoder->state.current_field == 0) {
+        int frame_h = decoder->frame_height;
+        if (frame_h > CVBS_MAX_HEIGHT) frame_h = CVBS_MAX_HEIGHT;
+        memset(decoder->frame_buffer, 0, (size_t)CVBS_FRAME_WIDTH * (size_t)frame_h);
+        decoder->field_ready[0] = false;
+        decoder->field_ready[1] = false;
+    }
 }
 
 // Process a single video line
@@ -516,7 +538,12 @@ static void process_video_line(cvbs_decoder_t *decoder,
                               NTSC_FIELD_HEIGHT : PAL_FIELD_HEIGHT;
 
         if (field_line >= 0 && field_line < max_field_lines) {
-            uint8_t *row_ptr = decoder->frame_buffer + (field_line * CVBS_FRAME_WIDTH);
+            // Interleave fields into a full-frame buffer: line = field_line*2 + field
+            int out_line = field_line * 2 + (decoder->state.current_field ? 1 : 0);
+            if (out_line < 0) return;
+            if (out_line >= decoder->frame_height) return;
+
+            uint8_t *row_ptr = decoder->frame_buffer + ((size_t)out_line * (size_t)CVBS_FRAME_WIDTH);
             decode_line_to_pixels(line_start, available,
                                  &decoder->levels, row_ptr, CVBS_FRAME_WIDTH);
 
@@ -745,9 +772,9 @@ void gui_cvbs_render_frame(cvbs_decoder_t *decoder,
         decoder->texture_valid = true;
     }
 
-    // Get field height
+    // Get frame height
     int field_h = decoder->frame_height;
-    if (field_h > PAL_FIELD_HEIGHT) field_h = PAL_FIELD_HEIGHT;
+    if (field_h > CVBS_MAX_HEIGHT) field_h = CVBS_MAX_HEIGHT;
 
     // Convert grayscale to RGBA for the image
     Color *pixels = (Color *)decoder->frame_image.data;
@@ -792,7 +819,7 @@ void gui_cvbs_render_frame(cvbs_decoder_t *decoder,
 
     // Draw frame counter
     char frame_info[64];
-    snprintf(frame_info, sizeof(frame_info), "Field: %d", decoder->state.frames_decoded);
+    snprintf(frame_info, sizeof(frame_info), "Frame: %d", decoder->state.frames_decoded);
     DrawText(frame_info, (int)(x + 5), (int)(y + 25), 14, (Color){150, 150, 150, 180});
 }
 
@@ -894,34 +921,39 @@ const char *gui_cvbs_get_format_name(cvbs_decoder_t *decoder) {
     if (!decoder) return "Unknown";
 
     switch (decoder->state.format) {
-        case CVBS_FORMAT_PAL:  return "PAL 720x288";
-        case CVBS_FORMAT_NTSC: return "NTSC 720x240";
-        default:               return "Detecting...";
+        case CVBS_FORMAT_PAL:   return "PAL 720x576";
+        case CVBS_FORMAT_NTSC:  return "NTSC 720x486";
+        case CVBS_FORMAT_SECAM: return "SECAM 720x576";
+        default:                return "Detecting...";
     }
 }
 
 void gui_cvbs_set_format(cvbs_decoder_t *decoder, int format_select) {
     if (!decoder) return;
 
-    // Map from cvbs_format_select_t (gui_app.h) to cvbs_format_t (gui_cvbs.h)
-    // CVBS_FORMAT_PAL (gui_app) = 0 -> CVBS_FORMAT_PAL (gui_cvbs) = 1
-    // CVBS_FORMAT_NTSC (gui_app) = 1 -> CVBS_FORMAT_NTSC (gui_cvbs) = 2
-    cvbs_format_t new_format = (format_select == 0) ? CVBS_FORMAT_PAL : CVBS_FORMAT_NTSC;
+    // format_select: 0=PAL, 1=NTSC, 2=SECAM
+    cvbs_format_t new_format = CVBS_FORMAT_NTSC;
+    if (format_select == 0) new_format = CVBS_FORMAT_PAL;
+    else if (format_select == 2) new_format = CVBS_FORMAT_SECAM;
 
     if (decoder->state.format != new_format) {
         decoder->state.format = new_format;
 
-        if (new_format == CVBS_FORMAT_PAL) {
-            decoder->state.total_lines = CVBS_PAL_TOTAL_LINES;
-            decoder->state.active_lines = CVBS_PAL_ACTIVE_LINES;
-            decoder->frame_height = PAL_FIELD_HEIGHT;
-            decoder->pll.line_period = CVBS_PAL_LINE_SAMPLES;
-        } else {
+        if (new_format == CVBS_FORMAT_NTSC) {
             decoder->state.total_lines = CVBS_NTSC_TOTAL_LINES;
             decoder->state.active_lines = CVBS_NTSC_ACTIVE_LINES;
-            decoder->frame_height = NTSC_FIELD_HEIGHT;
+            decoder->frame_height = CVBS_NTSC_HEIGHT;
             decoder->pll.line_period = CVBS_NTSC_LINE_SAMPLES;
+        } else {
+            // PAL and SECAM share line/field geometry for luma
+            decoder->state.total_lines = CVBS_PAL_TOTAL_LINES;
+            decoder->state.active_lines = CVBS_PAL_ACTIVE_LINES;
+            decoder->frame_height = CVBS_PAL_HEIGHT;
+            decoder->pll.line_period = CVBS_PAL_LINE_SAMPLES;
         }
+
+        // Reset decode state after changing system
+        gui_cvbs_reset(decoder);
     }
 }
 

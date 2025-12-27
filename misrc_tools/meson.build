@@ -183,6 +183,7 @@ if raylib_dep.found()
     '../misrc_gui/gui_vu_meter.c',
     '../misrc_gui/gui_cvbs.c',
     '../misrc_gui/gui_settings.c',
+    '../misrc_gui/gui_audio.c',
     '../misrc_gui/clay_renderer_raylib.c',
     '../misrc_common/extract.c',
     '../misrc_common/ringbuffer.c',

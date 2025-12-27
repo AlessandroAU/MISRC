@@ -27,6 +27,7 @@
 #include "gui_simulated.h"
 #include "gui_app.h"
 #include "gui_oscilloscope.h"
+#include "gui_cvbs.h"
 #include "gui_extract.h"
 #include "../misrc_common/ringbuffer.h"
 #include "../misrc_common/threading.h"
@@ -662,6 +663,24 @@ static int simulated_capture_thread(void *ctx) {
         }
 
         gui_oscilloscope_update_display(app, buf_a, buf_b, SIM_BUFFER_SIZE);
+
+        // CVBS decode (if enabled)
+        cvbs_decoder_t *cvbs_a = atomic_load(&app->cvbs_a);
+        if (cvbs_a) {
+            atomic_fetch_add(&app->cvbs_busy_a, 1);
+            int sys = atomic_load(&app->cvbs_system_a);
+            gui_cvbs_set_format(cvbs_a, sys);
+            gui_cvbs_process_buffer(cvbs_a, buf_a, SIM_BUFFER_SIZE);
+            atomic_fetch_sub(&app->cvbs_busy_a, 1);
+        }
+        cvbs_decoder_t *cvbs_b = atomic_load(&app->cvbs_b);
+        if (cvbs_b) {
+            atomic_fetch_add(&app->cvbs_busy_b, 1);
+            int sys = atomic_load(&app->cvbs_system_b);
+            gui_cvbs_set_format(cvbs_b, sys);
+            gui_cvbs_process_buffer(cvbs_b, buf_b, SIM_BUFFER_SIZE);
+            atomic_fetch_sub(&app->cvbs_busy_b, 1);
+        }
 
         atomic_fetch_add(&app->total_samples, SIM_BUFFER_SIZE);
         atomic_fetch_add(&app->samples_a, SIM_BUFFER_SIZE);

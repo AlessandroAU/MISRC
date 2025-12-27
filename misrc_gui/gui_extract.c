@@ -10,6 +10,7 @@
 #include "gui_extract.h"
 #include "gui_app.h"
 #include "gui_oscilloscope.h"
+#include "gui_cvbs.h"
 #include "../misrc_common/extract.h"
 #include "../misrc_common/ringbuffer.h"
 #include "../misrc_common/rb_event.h"
@@ -35,6 +36,12 @@ static uint8_t *s_buf_aux = NULL;
 static conv_function_t s_extract_fn = NULL;
 static bool s_initialized = false;
 
+// Scratch buffers for recording conversions
+static int8_t *s_tmp8_a = NULL;
+static int8_t *s_tmp8_b = NULL;
+static int32_t *s_tmp32_a = NULL;
+static int32_t *s_tmp32_b = NULL;
+
 // Recording ringbuffers (extracted samples -> file writers)
 static ringbuffer_t s_record_rb_a;
 static ringbuffer_t s_record_rb_b;
@@ -49,6 +56,11 @@ static gui_app_t *s_extract_app = NULL;
 // Recording state (atomic for thread-safe access)
 static atomic_bool s_recording_enabled = false;
 static atomic_bool s_use_flac = false;
+static atomic_uchar s_rf_bits_a = 16;
+static atomic_uchar s_rf_bits_b = 16;
+
+static conv_16to8_t s_conv_16to8 = NULL;
+static conv_16to32_t s_conv_16to8to32 = NULL;
 
 // Event signaling for producer/consumer synchronization
 static rb_event_t s_data_event;       // Signaled when new data is available in ringbuffer
@@ -101,6 +113,25 @@ static int extraction_thread(void *ctx) {
         // Always update stats and display
         gui_extract_update_stats(s_extract_app, s_buf_a, s_buf_b, BUFFER_READ_SIZE);
         gui_oscilloscope_update_display(s_extract_app, s_buf_a, s_buf_b, BUFFER_READ_SIZE);
+
+        // CVBS decode (if enabled per-channel)
+        cvbs_decoder_t *cvbs_a = atomic_load(&s_extract_app->cvbs_a);
+        if (cvbs_a) {
+            atomic_fetch_add(&s_extract_app->cvbs_busy_a, 1);
+            int sys = atomic_load(&s_extract_app->cvbs_system_a);
+            gui_cvbs_set_format(cvbs_a, sys);
+            gui_cvbs_process_buffer(cvbs_a, s_buf_a, BUFFER_READ_SIZE);
+            atomic_fetch_sub(&s_extract_app->cvbs_busy_a, 1);
+        }
+        cvbs_decoder_t *cvbs_b = atomic_load(&s_extract_app->cvbs_b);
+        if (cvbs_b) {
+            atomic_fetch_add(&s_extract_app->cvbs_busy_b, 1);
+            int sys = atomic_load(&s_extract_app->cvbs_system_b);
+            gui_cvbs_set_format(cvbs_b, sys);
+            gui_cvbs_process_buffer(cvbs_b, s_buf_b, BUFFER_READ_SIZE);
+            atomic_fetch_sub(&s_extract_app->cvbs_busy_b, 1);
+        }
+
         atomic_fetch_add(&s_extract_app->total_samples, BUFFER_READ_SIZE);
         atomic_fetch_add(&s_extract_app->samples_a, BUFFER_READ_SIZE);
         atomic_fetch_add(&s_extract_app->samples_b, BUFFER_READ_SIZE);
@@ -110,11 +141,14 @@ static int extraction_thread(void *ctx) {
 
         // Conditionally write to record ringbuffers
         if (atomic_load(&s_recording_enabled)) {
-            if (atomic_load(&s_use_flac)) {
-                // FLAC needs 32-bit samples with 12-bit to 16-bit extension
+            bool use_flac = atomic_load(&s_use_flac);
+            uint8_t bits_a = (uint8_t)atomic_load(&s_rf_bits_a);
+            uint8_t bits_b = (uint8_t)atomic_load(&s_rf_bits_b);
+
+            if (use_flac) {
+                // FLAC: write int32 samples (BUFFER_READ_SIZE samples)
                 size_t sample_bytes = BUFFER_READ_SIZE * sizeof(int32_t);
 
-                // Wait for space in record ringbuffers - never drop recording data
                 int32_t *write_a;
                 int32_t *write_b;
                 while ((write_a = (int32_t *)rb_write_ptr(&s_record_rb_a, sample_bytes)) == NULL ||
@@ -125,32 +159,100 @@ static int extraction_thread(void *ctx) {
                     thrd_sleep_ms(1);
                 }
 
-                // Convert 12-bit samples to 16-bit by left-shifting 4 bits
-                for (size_t i = 0; i < BUFFER_READ_SIZE; i++) {
-                    write_a[i] = (int32_t)s_buf_a[i] << 4;
-                    write_b[i] = (int32_t)s_buf_b[i] << 4;
+                // Channel A
+                if (bits_a == 8) {
+                    // clamp to int8 range, widen to int32
+                    if (s_conv_16to8to32) s_conv_16to8to32(s_buf_a, write_a, BUFFER_READ_SIZE);
+                    else {
+                        for (size_t i = 0; i < BUFFER_READ_SIZE; i++) {
+                            int16_t v = s_buf_a[i];
+                            if (v > 127) v = 127;
+                            if (v < -128) v = -128;
+                            write_a[i] = (int32_t)v;
+                        }
+                    }
+                } else if (bits_a == 12) {
+                    // already 12-bit range; keep as-is
+                    for (size_t i = 0; i < BUFFER_READ_SIZE; i++) {
+                        write_a[i] = (int32_t)s_buf_a[i];
+                    }
+                } else {
+                    // 16-bit: expand 12-bit to 16-bit by shifting
+                    for (size_t i = 0; i < BUFFER_READ_SIZE; i++) {
+                        write_a[i] = (int32_t)s_buf_a[i] << 4;
+                    }
                 }
+
+                // Channel B
+                if (bits_b == 8) {
+                    if (s_conv_16to8to32) s_conv_16to8to32(s_buf_b, write_b, BUFFER_READ_SIZE);
+                    else {
+                        for (size_t i = 0; i < BUFFER_READ_SIZE; i++) {
+                            int16_t v = s_buf_b[i];
+                            if (v > 127) v = 127;
+                            if (v < -128) v = -128;
+                            write_b[i] = (int32_t)v;
+                        }
+                    }
+                } else if (bits_b == 12) {
+                    for (size_t i = 0; i < BUFFER_READ_SIZE; i++) {
+                        write_b[i] = (int32_t)s_buf_b[i];
+                    }
+                } else {
+                    for (size_t i = 0; i < BUFFER_READ_SIZE; i++) {
+                        write_b[i] = (int32_t)s_buf_b[i] << 4;
+                    }
+                }
+
                 rb_write_finished(&s_record_rb_a, sample_bytes);
                 rb_write_finished(&s_record_rb_b, sample_bytes);
             } else {
-                // RAW uses 16-bit samples directly
-                size_t sample_bytes = BUFFER_READ_SIZE * sizeof(int16_t);
+                // RAW: write either int16 or int8 bytes
+                size_t bytes_a = BUFFER_READ_SIZE * ((bits_a == 8) ? sizeof(int8_t) : sizeof(int16_t));
+                size_t bytes_b = BUFFER_READ_SIZE * ((bits_b == 8) ? sizeof(int8_t) : sizeof(int16_t));
 
-                // Wait for space in record ringbuffers - never drop recording data
                 void *write_a;
                 void *write_b;
-                while ((write_a = rb_write_ptr(&s_record_rb_a, sample_bytes)) == NULL ||
-                       (write_b = rb_write_ptr(&s_record_rb_b, sample_bytes)) == NULL) {
+                while ((write_a = rb_write_ptr(&s_record_rb_a, bytes_a)) == NULL ||
+                       (write_b = rb_write_ptr(&s_record_rb_b, bytes_b)) == NULL) {
                     if (atomic_load(&do_exit)) {
                         goto exit_thread;
                     }
                     thrd_sleep_ms(1);
                 }
 
-                memcpy(write_a, s_buf_a, sample_bytes);
-                memcpy(write_b, s_buf_b, sample_bytes);
-                rb_write_finished(&s_record_rb_a, sample_bytes);
-                rb_write_finished(&s_record_rb_b, sample_bytes);
+                if (bits_a == 8) {
+                    if (s_conv_16to8) s_conv_16to8(s_buf_a, (int8_t *)write_a, BUFFER_READ_SIZE);
+                    else {
+                        int8_t *dst = (int8_t *)write_a;
+                        for (size_t i = 0; i < BUFFER_READ_SIZE; i++) {
+                            int16_t v = s_buf_a[i];
+                            if (v > 127) v = 127;
+                            if (v < -128) v = -128;
+                            dst[i] = (int8_t)v;
+                        }
+                    }
+                } else {
+                    memcpy(write_a, s_buf_a, bytes_a);
+                }
+
+                if (bits_b == 8) {
+                    if (s_conv_16to8) s_conv_16to8(s_buf_b, (int8_t *)write_b, BUFFER_READ_SIZE);
+                    else {
+                        int8_t *dst = (int8_t *)write_b;
+                        for (size_t i = 0; i < BUFFER_READ_SIZE; i++) {
+                            int16_t v = s_buf_b[i];
+                            if (v > 127) v = 127;
+                            if (v < -128) v = -128;
+                            dst[i] = (int8_t)v;
+                        }
+                    }
+                } else {
+                    memcpy(write_b, s_buf_b, bytes_b);
+                }
+
+                rb_write_finished(&s_record_rb_a, bytes_a);
+                rb_write_finished(&s_record_rb_b, bytes_b);
             }
         }
     }
@@ -167,6 +269,15 @@ void gui_extract_init(void) {
     s_buf_a = (int16_t *)aligned_alloc(32, BUFFER_READ_SIZE * sizeof(int16_t));
     s_buf_b = (int16_t *)aligned_alloc(32, BUFFER_READ_SIZE * sizeof(int16_t));
     s_buf_aux = aligned_alloc(16, BUFFER_READ_SIZE);
+
+    // Scratch buffers for conversions
+    s_tmp8_a = (int8_t *)aligned_alloc(32, BUFFER_READ_SIZE * sizeof(int8_t));
+    s_tmp8_b = (int8_t *)aligned_alloc(32, BUFFER_READ_SIZE * sizeof(int8_t));
+    s_tmp32_a = (int32_t *)aligned_alloc(32, BUFFER_READ_SIZE * sizeof(int32_t));
+    s_tmp32_b = (int32_t *)aligned_alloc(32, BUFFER_READ_SIZE * sizeof(int32_t));
+
+    s_conv_16to8 = get_16to8_function();
+    s_conv_16to8to32 = get_16to8to32_function();
 
     // Get extraction function (AB mode)
     s_extract_fn = get_conv_function(0, 0, 0, 0, (void*)1, (void*)1);
@@ -215,6 +326,22 @@ void gui_extract_cleanup(void) {
         if (s_buf_aux) {
             aligned_free(s_buf_aux);
             s_buf_aux = NULL;
+        }
+        if (s_tmp8_a) {
+            aligned_free(s_tmp8_a);
+            s_tmp8_a = NULL;
+        }
+        if (s_tmp8_b) {
+            aligned_free(s_tmp8_b);
+            s_tmp8_b = NULL;
+        }
+        if (s_tmp32_a) {
+            aligned_free(s_tmp32_a);
+            s_tmp32_a = NULL;
+        }
+        if (s_tmp32_b) {
+            aligned_free(s_tmp32_b);
+            s_tmp32_b = NULL;
         }
         s_initialized = false;
     }
@@ -281,12 +408,15 @@ ringbuffer_t *gui_extract_get_record_rb_b(void) {
     return &s_record_rb_b;
 }
 
-void gui_extract_set_recording(bool enabled, bool use_flac) {
+void gui_extract_set_recording(bool enabled, bool use_flac, uint8_t rf_bits_a, uint8_t rf_bits_b) {
     atomic_store(&s_use_flac, use_flac);
+    atomic_store(&s_rf_bits_a, rf_bits_a);
+    atomic_store(&s_rf_bits_b, rf_bits_b);
     atomic_store(&s_recording_enabled, enabled);
-    fprintf(stderr, "[EXTRACT] Recording %s (FLAC: %s)\n",
+    fprintf(stderr, "[EXTRACT] Recording %s (FLAC: %s, bits A:%u B:%u)\n",
             enabled ? "enabled" : "disabled",
-            use_flac ? "yes" : "no");
+            use_flac ? "yes" : "no",
+            (unsigned)rf_bits_a, (unsigned)rf_bits_b);
 }
 
 void gui_extract_reset_record_rbs(void) {

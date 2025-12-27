@@ -10,7 +10,10 @@
 #include "gui_app.h"
 #include "gui_panel.h"
 #include "gui_ui.h"
+#include "gui_cvbs.h"
 #include <string.h>
+#include <stdatomic.h>
+#include <stdlib.h>
 
 //-----------------------------------------------------------------------------
 // State
@@ -160,6 +163,27 @@ static bool handle_layout_dropdown(gui_app_t *app, int ch) {
     return clicked;
 }
 
+static void ensure_cvbs_enabled_for_channel(gui_app_t *app, int ch) {
+    if (!app) return;
+
+    _Atomic(cvbs_decoder_t *) *decp = (ch == 0) ? &app->cvbs_a : &app->cvbs_b;
+    cvbs_decoder_t *cur = atomic_load(decp);
+    if (cur) return;
+
+    cvbs_decoder_t *new_dec = (cvbs_decoder_t*)calloc(1, sizeof(cvbs_decoder_t));
+    if (new_dec && gui_cvbs_init(new_dec)) {
+        gui_cvbs_reset(new_dec);
+        int sys = (ch == 0) ? atomic_load(&app->cvbs_system_a) : atomic_load(&app->cvbs_system_b);
+        gui_cvbs_set_format(new_dec, sys);
+        atomic_store(decp, new_dec);
+    } else {
+        if (new_dec) {
+            gui_cvbs_cleanup(new_dec);
+            free(new_dec);
+        }
+    }
+}
+
 // Handle left view selection for a channel
 static bool handle_left_view_dropdown(gui_app_t *app, int ch) {
     bool clicked = false;
@@ -173,6 +197,9 @@ static bool handle_left_view_dropdown(gui_app_t *app, int ch) {
             if (!panel_view_type_available((panel_view_type_t)vt)) continue;
             // Use ch * 10 + vt to match the ID used in rendering
             if (Clay_PointerOver(CLAY_IDI("LeftViewOpt", ch * 10 + vt))) {
+                if ((panel_view_type_t)vt == PANEL_VIEW_CVBS) {
+                    ensure_cvbs_enabled_for_channel(app, ch);
+                }
                 panel_config_set_left_view(config, (panel_view_type_t)vt);
                 gui_dropdown_close_all();
                 clicked = true;
@@ -199,12 +226,46 @@ static bool handle_right_view_dropdown(gui_app_t *app, int ch) {
             if (!panel_view_type_available((panel_view_type_t)vt)) continue;
             // Use ch * 10 + vt to match the ID used in rendering
             if (Clay_PointerOver(CLAY_IDI("RightViewOpt", ch * 10 + vt))) {
+                if ((panel_view_type_t)vt == PANEL_VIEW_CVBS) {
+                    ensure_cvbs_enabled_for_channel(app, ch);
+                }
                 panel_config_set_right_view(config, (panel_view_type_t)vt);
                 gui_dropdown_close_all();
                 clicked = true;
                 break;
             }
         }
+    }
+
+    return clicked;
+}
+
+// Handle CVBS system dropdown for a channel
+static bool handle_cvbs_system_dropdown(gui_app_t *app, int ch) {
+    bool clicked = false;
+
+    if (Clay_PointerOver(CLAY_IDI("CvbsSysBtn", ch))) {
+        gui_dropdown_toggle(DROPDOWN_CVBS_SYSTEM, ch);
+        return true;
+    }
+
+    if (!gui_dropdown_is_open(DROPDOWN_CVBS_SYSTEM, ch)) return false;
+
+    if (Clay_PointerOver(CLAY_IDI("CvbsSysOptPAL", ch))) {
+        if (ch == 0) atomic_store(&app->cvbs_system_a, 0);
+        else atomic_store(&app->cvbs_system_b, 0);
+        gui_dropdown_close_all();
+        clicked = true;
+    } else if (Clay_PointerOver(CLAY_IDI("CvbsSysOptNTSC", ch))) {
+        if (ch == 0) atomic_store(&app->cvbs_system_a, 1);
+        else atomic_store(&app->cvbs_system_b, 1);
+        gui_dropdown_close_all();
+        clicked = true;
+    } else if (Clay_PointerOver(CLAY_IDI("CvbsSysOptSECAM", ch))) {
+        if (ch == 0) atomic_store(&app->cvbs_system_a, 2);
+        else atomic_store(&app->cvbs_system_b, 2);
+        gui_dropdown_close_all();
+        clicked = true;
     }
 
     return clicked;
@@ -234,6 +295,9 @@ bool gui_dropdown_handle_click(gui_app_t *app) {
             dropdown_clicked = true;
         }
         if (handle_right_view_dropdown(app, ch)) {
+            dropdown_clicked = true;
+        }
+        if (handle_cvbs_system_dropdown(app, ch)) {
             dropdown_clicked = true;
         }
     }

@@ -165,6 +165,24 @@ void gui_settings_save(const gui_settings_t *settings) {
     fprintf(f, "  \"overwrite_files\": %s,\n", settings->overwrite_files ? "true" : "false");
     fprintf(f, "  \"aux_filename\": \"%s\",\n", settings->aux_filename);
     fprintf(f, "  \"raw_filename\": \"%s\",\n", settings->raw_filename);
+
+    // Audio filenames + enables (mirror CLI options)
+    fprintf(f, "  \"audio_4ch_filename\": \"%s\",\n", settings->audio_4ch_filename);
+    fprintf(f, "  \"audio_2ch_12_filename\": \"%s\",\n", settings->audio_2ch_12_filename);
+    fprintf(f, "  \"audio_2ch_34_filename\": \"%s\",\n", settings->audio_2ch_34_filename);
+    fprintf(f, "  \"audio_1ch_1_filename\": \"%s\",\n", settings->audio_1ch_filenames[0]);
+    fprintf(f, "  \"audio_1ch_2_filename\": \"%s\",\n", settings->audio_1ch_filenames[1]);
+    fprintf(f, "  \"audio_1ch_3_filename\": \"%s\",\n", settings->audio_1ch_filenames[2]);
+    fprintf(f, "  \"audio_1ch_4_filename\": \"%s\",\n", settings->audio_1ch_filenames[3]);
+
+    fprintf(f, "  \"enable_audio_4ch\": %s,\n", settings->enable_audio_4ch ? "true" : "false");
+    fprintf(f, "  \"enable_audio_2ch_12\": %s,\n", settings->enable_audio_2ch_12 ? "true" : "false");
+    fprintf(f, "  \"enable_audio_2ch_34\": %s,\n", settings->enable_audio_2ch_34 ? "true" : "false");
+    fprintf(f, "  \"enable_audio_1ch_1\": %s,\n", settings->enable_audio_1ch[0] ? "true" : "false");
+    fprintf(f, "  \"enable_audio_1ch_2\": %s,\n", settings->enable_audio_1ch[1] ? "true" : "false");
+    fprintf(f, "  \"enable_audio_1ch_3\": %s,\n", settings->enable_audio_1ch[2] ? "true" : "false");
+    fprintf(f, "  \"enable_audio_1ch_4\": %s,\n", settings->enable_audio_1ch[3] ? "true" : "false");
+
     fprintf(f, "  \"pad_lower_bits\": %s,\n", settings->pad_lower_bits ? "true" : "false");
     fprintf(f, "  \"show_peak_levels\": %s,\n", settings->show_peak_levels ? "true" : "false");
     fprintf(f, "  \"suppress_clip_a\": %s,\n", settings->suppress_clip_a ? "true" : "false");
@@ -414,8 +432,65 @@ void gui_settings_load(gui_settings_t *settings) {
     if ((value = find_value(content, "amplitude_scale")) != NULL) {
         settings->amplitude_scale = (float)atof(value);
     }
-    
-    // Add more parsing as needed...
-    
+
+    if ((value = find_value(content, "reduce_8bit_a")) != NULL) {
+        settings->reduce_8bit_a = (strcmp(value, "true") == 0);
+    }
+    if ((value = find_value(content, "reduce_8bit_b")) != NULL) {
+        settings->reduce_8bit_b = (strcmp(value, "true") == 0);
+    }
+
+    // Audio filenames + enables
+    if ((value = find_value(content, "audio_4ch_filename")) != NULL) {
+        strncpy(settings->audio_4ch_filename, value, MAX_FILENAME_LEN - 1);
+        settings->audio_4ch_filename[MAX_FILENAME_LEN - 1] = '\0';
+    }
+    if ((value = find_value(content, "audio_2ch_12_filename")) != NULL) {
+        strncpy(settings->audio_2ch_12_filename, value, MAX_FILENAME_LEN - 1);
+        settings->audio_2ch_12_filename[MAX_FILENAME_LEN - 1] = '\0';
+    }
+    if ((value = find_value(content, "audio_2ch_34_filename")) != NULL) {
+        strncpy(settings->audio_2ch_34_filename, value, MAX_FILENAME_LEN - 1);
+        settings->audio_2ch_34_filename[MAX_FILENAME_LEN - 1] = '\0';
+    }
+    if ((value = find_value(content, "audio_1ch_1_filename")) != NULL) {
+        strncpy(settings->audio_1ch_filenames[0], value, MAX_FILENAME_LEN - 1);
+        settings->audio_1ch_filenames[0][MAX_FILENAME_LEN - 1] = '\0';
+    }
+    if ((value = find_value(content, "audio_1ch_2_filename")) != NULL) {
+        strncpy(settings->audio_1ch_filenames[1], value, MAX_FILENAME_LEN - 1);
+        settings->audio_1ch_filenames[1][MAX_FILENAME_LEN - 1] = '\0';
+    }
+    if ((value = find_value(content, "audio_1ch_3_filename")) != NULL) {
+        strncpy(settings->audio_1ch_filenames[2], value, MAX_FILENAME_LEN - 1);
+        settings->audio_1ch_filenames[2][MAX_FILENAME_LEN - 1] = '\0';
+    }
+    if ((value = find_value(content, "audio_1ch_4_filename")) != NULL) {
+        strncpy(settings->audio_1ch_filenames[3], value, MAX_FILENAME_LEN - 1);
+        settings->audio_1ch_filenames[3][MAX_FILENAME_LEN - 1] = '\0';
+    }
+
+    if ((value = find_value(content, "enable_audio_4ch")) != NULL) {
+        settings->enable_audio_4ch = (strcmp(value, "true") == 0);
+    }
+    if ((value = find_value(content, "enable_audio_2ch_12")) != NULL) {
+        settings->enable_audio_2ch_12 = (strcmp(value, "true") == 0);
+    }
+    if ((value = find_value(content, "enable_audio_2ch_34")) != NULL) {
+        settings->enable_audio_2ch_34 = (strcmp(value, "true") == 0);
+    }
+    if ((value = find_value(content, "enable_audio_1ch_1")) != NULL) {
+        settings->enable_audio_1ch[0] = (strcmp(value, "true") == 0);
+    }
+    if ((value = find_value(content, "enable_audio_1ch_2")) != NULL) {
+        settings->enable_audio_1ch[1] = (strcmp(value, "true") == 0);
+    }
+    if ((value = find_value(content, "enable_audio_1ch_3")) != NULL) {
+        settings->enable_audio_1ch[2] = (strcmp(value, "true") == 0);
+    }
+    if ((value = find_value(content, "enable_audio_1ch_4")) != NULL) {
+        settings->enable_audio_1ch[3] = (strcmp(value, "true") == 0);
+    }
+
     free(content);
 }

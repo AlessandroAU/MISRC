@@ -23,14 +23,15 @@
 typedef enum {
     CVBS_FORMAT_UNKNOWN,
     CVBS_FORMAT_PAL,
-    CVBS_FORMAT_NTSC
+    CVBS_FORMAT_NTSC,
+    CVBS_FORMAT_SECAM
 } cvbs_format_t;
 
 // Frame dimensions
 #define CVBS_FRAME_WIDTH      720   // Standard horizontal resolution
-#define CVBS_PAL_HEIGHT       576   // PAL active lines
-#define CVBS_NTSC_HEIGHT      480   // NTSC active lines
-#define CVBS_MAX_HEIGHT       576   // Maximum (PAL)
+#define CVBS_PAL_HEIGHT       576   // PAL (D1) active lines
+#define CVBS_NTSC_HEIGHT      486   // NTSC (D1) active lines
+#define CVBS_MAX_HEIGHT       576   // Maximum (PAL/SECAM)
 
 // Line counts
 #define CVBS_PAL_TOTAL_LINES  625
@@ -109,6 +110,8 @@ typedef struct {
 
 // Main decoder structure
 typedef struct cvbs_decoder {
+    // Track whether we've received each field for the current frame
+    bool field_ready[2];
     // Frame state
     cvbs_frame_state_t state;
 

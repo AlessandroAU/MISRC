@@ -11,6 +11,8 @@
 #include "gui_app.h"
 #include "gui_extract.h"
 #include "gui_popup.h"
+#include "gui_audio.h"
+#include "gui_capture.h"
 
 #include "../misrc_common/ringbuffer.h"
 #include "../misrc_common/flac_writer.h"
@@ -50,8 +52,7 @@ static void format_file_size(off_t size, char *buf, size_t buf_size) {
     }
 }
 
-// External do_exit flag from ringbuffer.h
-extern atomic_int do_exit;
+// do_exit is declared in gui_capture.h (defined in misrc_gui.c)
 
 // Writer threads
 static thrd_t s_writer_thread_a;
@@ -76,9 +77,14 @@ typedef struct {
     ringbuffer_t *rb;
     FILE *file;
     int channel;  // 0 = A, 1 = B
+
+    // For RAW writer: bytes per sample (1=8-bit, 2=16-bit)
+    size_t raw_bytes_per_sample;
+
 #if LIBFLAC_ENABLED == 1
     flac_writer_t *writer;
     atomic_uint_fast64_t *compressed_bytes;
+    uint8_t flac_bits_per_sample;
 #endif
     gui_app_t *app;  // For error reporting
 } writer_ctx_t;
@@ -164,7 +170,8 @@ static int flac_writer_thread(void *ctx) {
 // RAW file writer thread
 static int raw_writer_thread(void *ctx) {
     writer_ctx_t *wctx = (writer_ctx_t *)ctx;
-    size_t len = BUFFER_READ_SIZE * sizeof(int16_t);
+    size_t bps = (wctx->raw_bytes_per_sample == 1) ? 1 : 2;
+    size_t len = BUFFER_READ_SIZE * bps;
 
     fprintf(stderr, "[RAW] Writer thread %c started\n", wctx->channel == 0 ? 'A' : 'B');
 
@@ -374,23 +381,30 @@ static int gui_record_start_confirmed(gui_app_t *app) {
             return RECORD_ERROR;
         }
 
+        // Determine per-channel RF bit depth (matches CLI: --8bit-* overrides)
+        uint8_t bits_a = app->settings.reduce_8bit_a ? 8 : (app->settings.flac_12bit ? 12 : 16);
+        uint8_t bits_b = app->settings.reduce_8bit_b ? 8 : (app->settings.flac_12bit ? 12 : 16);
+
         // Setup writer contexts
         s_ctx_a.rb = rb_a;
         s_ctx_a.file = s_file_a;
         s_ctx_a.channel = 0;
         s_ctx_a.compressed_bytes = &app->recording_compressed_a;
+        s_ctx_a.flac_bits_per_sample = bits_a;
         s_ctx_a.app = app;
 
         s_ctx_b.rb = rb_b;
         s_ctx_b.file = s_file_b;
         s_ctx_b.channel = 1;
         s_ctx_b.compressed_bytes = &app->recording_compressed_b;
+        s_ctx_b.flac_bits_per_sample = bits_b;
         s_ctx_b.app = app;
 
         // Configure FLAC writers using shared library
         flac_writer_config_t config = flac_writer_default_config();
         config.sample_rate = 40000;
-        config.bits_per_sample = app->settings.flac_12bit ? 12 : 16;
+        // bits_per_sample is set per-channel below
+        config.bits_per_sample = 16;
         config.compression_level = app->settings.flac_level;
         config.verify = app->settings.flac_verification;
         config.num_threads = (app->settings.flac_threads > 0) ? (uint32_t)app->settings.flac_threads : 0;  // 0 = auto
@@ -401,6 +415,7 @@ static int gui_record_start_confirmed(gui_app_t *app) {
         config.bytes_cb = gui_flac_bytes_callback;
 
         if (app->settings.capture_a) {
+            config.bits_per_sample = s_ctx_a.flac_bits_per_sample;
             config.callback_user_data = &s_ctx_a;
             s_flac_writer_a = flac_writer_create_stream(s_file_a, &config);
             if (!s_flac_writer_a) {
@@ -418,6 +433,7 @@ static int gui_record_start_confirmed(gui_app_t *app) {
 
         // Create writer for channel B
         if (app->settings.capture_b) {
+            config.bits_per_sample = s_ctx_b.flac_bits_per_sample;
             config.callback_user_data = &s_ctx_b;
             s_flac_writer_b = flac_writer_create_stream(s_file_b, &config);
             if (!s_flac_writer_b) {
@@ -443,7 +459,7 @@ static int gui_record_start_confirmed(gui_app_t *app) {
         app->recording_start_time = GetTime();
 
         // Enable recording in extraction thread
-        gui_extract_set_recording(true, true);
+        gui_extract_set_recording(true, true, bits_a, bits_b);
 
         if (app->settings.capture_a) {
             thrd_create(&s_writer_thread_a, flac_writer_thread, &s_ctx_a);
@@ -452,6 +468,9 @@ static int gui_record_start_confirmed(gui_app_t *app) {
             thrd_create(&s_writer_thread_b, flac_writer_thread, &s_ctx_b);
         }
         s_writer_threads_running = true;
+
+        // Start audio output/monitoring (if enabled)
+        gui_audio_start(app, gui_capture_get_audio_ringbuffer());
 
         gui_app_set_status(app, "Recording (FLAC)...");
     } else
@@ -469,13 +488,18 @@ static int gui_record_start_confirmed(gui_app_t *app) {
             return RECORD_ERROR;
         }
 
+        uint8_t bits_a = app->settings.reduce_8bit_a ? 8 : 16;
+        uint8_t bits_b = app->settings.reduce_8bit_b ? 8 : 16;
+
         s_ctx_a.rb = rb_a;
         s_ctx_a.file = s_file_a;
         s_ctx_a.channel = 0;
+        s_ctx_a.raw_bytes_per_sample = (bits_a == 8) ? 1 : 2;
 
         s_ctx_b.rb = rb_b;
         s_ctx_b.file = s_file_b;
         s_ctx_b.channel = 1;
+        s_ctx_b.raw_bytes_per_sample = (bits_b == 8) ? 1 : 2;
 
         // Capture backpressure stats at recording start
         s_start_wait_count = atomic_load(&app->rb_wait_count);
@@ -486,7 +510,7 @@ static int gui_record_start_confirmed(gui_app_t *app) {
         app->recording_start_time = GetTime();
 
         // Enable recording in extraction thread
-        gui_extract_set_recording(true, false);
+        gui_extract_set_recording(true, false, bits_a, bits_b);
 
         if (app->settings.capture_a) {
             thrd_create(&s_writer_thread_a, raw_writer_thread, &s_ctx_a);
@@ -495,6 +519,9 @@ static int gui_record_start_confirmed(gui_app_t *app) {
             thrd_create(&s_writer_thread_b, raw_writer_thread, &s_ctx_b);
         }
         s_writer_threads_running = true;
+
+        // Start audio output/monitoring (if enabled)
+        gui_audio_start(app, gui_capture_get_audio_ringbuffer());
 
         gui_app_set_status(app, "Recording (RAW)...");
     }
@@ -510,7 +537,10 @@ void gui_record_stop(gui_app_t *app) {
 
     // Disable recording in extraction thread first
     // This stops new data from being written to record ringbuffers
-    gui_extract_set_recording(false, false);
+    gui_extract_set_recording(false, false, 16, 16);
+
+    // Stop audio output/monitoring
+    gui_audio_stop(app);
 
     // Signal threads to stop
     app->is_recording = false;

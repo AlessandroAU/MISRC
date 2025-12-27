@@ -21,6 +21,7 @@ typedef enum {
     PANEL_VIEW_WAVEFORM_LINE,      // Simple line oscilloscope (fast)
     PANEL_VIEW_WAVEFORM_PHOSPHOR,  // Digital phosphor with persistence
     PANEL_VIEW_FFT,                // FFT spectrum analysis
+    PANEL_VIEW_CVBS,               // CVBS luma decoder view
     PANEL_VIEW_COUNT
     // Future: PANEL_VIEW_XY, PANEL_VIEW_SPECTROGRAM
 } panel_view_type_t;
@@ -235,6 +236,9 @@ typedef struct gui_app {
     atomic_bool stream_synced;
     atomic_uint_fast32_t sample_rate;
 
+    // Audio monitoring peaks (24-bit audio magnitude, per channel 1..4)
+    atomic_uint_fast32_t audio_peak[4];
+
     // Backpressure statistics (ringbuffer flow control)
     atomic_uint_fast32_t rb_wait_count;     // Times callback had to wait for buffer space
     atomic_uint_fast32_t rb_drop_count;     // Frames dropped due to full buffer (after timeout)
@@ -283,8 +287,19 @@ typedef struct gui_app {
     channel_panel_config_t panel_config_a, panel_config_b;
 
     // CVBS decoder state (allocated on demand when CVBS mode is selected)
-    cvbs_decoder_t *cvbs_a;
-    cvbs_decoder_t *cvbs_b;
+    _Atomic(cvbs_decoder_t *) cvbs_a;
+    _Atomic(cvbs_decoder_t *) cvbs_b;
+
+    // CVBS lifetime safety: background threads may still be processing when UI disables CVBS.
+    // We detach (cvbs_* -> NULL) immediately, then free once busy count reaches 0.
+    atomic_uint cvbs_busy_a;
+    atomic_uint cvbs_busy_b;
+    _Atomic(cvbs_decoder_t *) cvbs_pending_free_a;
+    _Atomic(cvbs_decoder_t *) cvbs_pending_free_b;
+
+    // User-selected CVBS system per channel: 0=PAL, 1=NTSC, 2=SECAM
+    atomic_int cvbs_system_a;
+    atomic_int cvbs_system_b;
 
 } gui_app_t;
 

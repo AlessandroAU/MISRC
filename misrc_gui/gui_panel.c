@@ -8,6 +8,7 @@
 #include "gui_app.h"
 #include "gui_oscilloscope.h"
 #include "gui_fft.h"
+#include "gui_cvbs.h"
 #include "gui_ui.h"
 #include <stdlib.h>
 #include <stdatomic.h>
@@ -20,6 +21,7 @@ static const char* s_view_names[] = {
     [PANEL_VIEW_WAVEFORM_LINE] = "Line",
     [PANEL_VIEW_WAVEFORM_PHOSPHOR] = "Phosphor",
     [PANEL_VIEW_FFT] = "FFT",
+    [PANEL_VIEW_CVBS] = "CVBS",
 };
 
 const char* panel_view_type_name(panel_view_type_t type) {
@@ -31,6 +33,7 @@ bool panel_view_type_available(panel_view_type_t type) {
     switch (type) {
         case PANEL_VIEW_WAVEFORM_LINE:
         case PANEL_VIEW_WAVEFORM_PHOSPHOR:
+        case PANEL_VIEW_CVBS:
             return true;
         case PANEL_VIEW_FFT:
             return gui_fft_available();
@@ -59,6 +62,9 @@ void* panel_create_view_state(panel_view_type_t type) {
             }
             return NULL;
         }
+        case PANEL_VIEW_CVBS:
+            // CVBS decoder state is stored on gui_app_t (app->cvbs_a/b)
+            return NULL;
         default:
             return NULL;
     }
@@ -78,6 +84,9 @@ void panel_destroy_view_state(panel_view_type_t type, void *state) {
             free(fft);
             break;
         }
+        case PANEL_VIEW_CVBS:
+            // No per-panel state
+            break;
         default:
             break;
     }
@@ -95,6 +104,9 @@ void panel_clear_view_state(panel_view_type_t type, void *state) {
             gui_fft_clear(fft);
             break;
         }
+        case PANEL_VIEW_CVBS:
+            // No per-panel state
+            break;
         default:
             break;
     }
@@ -111,12 +123,15 @@ static void render_waveform_phosphor_panel(gui_app_t *app, int channel,
     float x, float y, float w, float h, void *state, Color color);
 static void render_fft_panel(gui_app_t *app, int channel,
     float x, float y, float w, float h, void *state, Color color);
+static void render_cvbs_panel(gui_app_t *app, int channel,
+    float x, float y, float w, float h, void *state, Color color);
 
 // Render function table
 static panel_render_fn s_render_fns[] = {
     [PANEL_VIEW_WAVEFORM_LINE] = render_waveform_line_panel,
     [PANEL_VIEW_WAVEFORM_PHOSPHOR] = render_waveform_phosphor_panel,
     [PANEL_VIEW_FFT] = render_fft_panel,
+    [PANEL_VIEW_CVBS] = render_cvbs_panel,
 };
 
 panel_render_fn panel_get_render_fn(panel_view_type_t type) {
@@ -188,6 +203,31 @@ static void render_fft_panel(gui_app_t *app, int channel,
     // Process and render FFT
     gui_fft_process_display(fft, samples, samples_available, display_sample_rate);
     gui_fft_render(fft, x, y, w, h, display_sample_rate, color, app->fonts);
+}
+
+//-----------------------------------------------------------------------------
+// CVBS Panel Rendering
+//-----------------------------------------------------------------------------
+
+static void render_cvbs_panel(gui_app_t *app, int channel,
+    float x, float y, float w, float h, void *state, Color color) {
+    (void)state;
+    (void)color;
+
+    cvbs_decoder_t *dec = (channel == 0) ? atomic_load(&app->cvbs_a) : atomic_load(&app->cvbs_b);
+    if (!dec) {
+        const char *text = "CVBS disabled";
+        int text_width = MeasureText(text, FONT_SIZE_OSC_MSG);
+        DrawText(text, (int)(x + w/2 - text_width/2), (int)(y + h/2 - 12),
+                 FONT_SIZE_OSC_MSG, COLOR_TEXT_DIM);
+        return;
+    }
+
+    // Decay phosphor once per frame for a nice CRT persistence look
+    gui_cvbs_decay_phosphor(dec);
+
+    // Render decoded video frame (grayscale)
+    gui_cvbs_render_frame(dec, x, y, w, h);
 }
 
 //-----------------------------------------------------------------------------

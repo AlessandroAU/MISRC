@@ -41,7 +41,10 @@ ringbuffer_t *gui_extract_get_record_rb_b(void);
 
 // Enable/disable recording mode
 // When enabled, extraction thread writes to record ringbuffers
-void gui_extract_set_recording(bool enabled, bool use_flac);
+// rf_bits_* semantics:
+// - If use_flac=true: bits per sample for FLAC stream (8/12/16)
+// - If use_flac=false: bits per sample for RAW output (8/16)
+void gui_extract_set_recording(bool enabled, bool use_flac, uint8_t rf_bits_a, uint8_t rf_bits_b);
 
 // Reset record ringbuffers (call before starting writer threads)
 void gui_extract_reset_record_rbs(void);
