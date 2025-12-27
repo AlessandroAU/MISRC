@@ -83,7 +83,8 @@ typedef struct {
 
 // V-sync detection state (persistent across buffers)
 typedef struct {
-    int half_line_count;           // Count of half-line intervals detected
+    int half_line_count;           // Count of consecutive half-line intervals
+    int total_half_lines;          // Total half-line pulses in V-sync (for field detection)
     bool in_vsync;                 // Currently in V-sync region
 } cvbs_vsync_state_t;
 
@@ -161,15 +162,13 @@ typedef struct cvbs_decoder {
     int sync_errors;               // Count of sync detection failures
     int format_changes;            // Count of format auto-detections
 
-    // Debug statistics (for tracking decoder health)
+    // Debug statistics
     struct {
         int fields_decoded;            // Total fields successfully decoded
-        int vsync_found;               // V-sync detection successes
-        int hsyncs_last_field;         // H-syncs found in last decoded field
-        int hsyncs_expected;           // Expected H-syncs for format (312 or 262)
-        int lines_decoded_last;        // Active lines decoded in last field
-        int buffers_received;          // Total buffers received
-        size_t samples_received;       // Total samples received
+        int vsync_found;               // V-sync detection count
+        int hsyncs_last_field;         // H-syncs found in last field
+        int last_half_line_count;      // Half-line count from last V-sync
+        int log_counter;               // Per-instance debug log counter
     } debug;
 } cvbs_decoder_t;
 

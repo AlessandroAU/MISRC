@@ -7,6 +7,7 @@
 
 #include "gui_cvbs.h"
 #include "gui_trigger.h"
+#include "gui_text.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -320,6 +321,10 @@ void gui_cvbs_reset(cvbs_decoder_t *decoder) {
     // Reset V-sync detection state
     memset(&decoder->vsync, 0, sizeof(decoder->vsync));
 
+    // Reset field ready flags (important when switching modes)
+    decoder->field_ready[0] = false;
+    decoder->field_ready[1] = false;
+
     // Reset legacy state
     decoder->lines_since_vsync = 0;
 
@@ -458,6 +463,7 @@ typedef struct {
     bool edge_detected;        // True if falling edge detected
     size_t interval;           // Samples since last falling edge
     bool vsync_complete;       // True if V-sync sequence completed
+    bool is_odd_field;         // True if odd field (field 1), false if even (field 2)
 } vsync_result_t;
 
 // H-sync detector result
@@ -468,12 +474,13 @@ typedef struct {
 } hsync_result_t;
 
 // Detect V-sync by tracking falling edge intervals
-// V-sync region has half-line rate pulses (equalizing + serration)
-// Returns vsync_complete=true when V-sync sequence ends
+// V-sync region has half-line rate pulses (~1280 samples apart vs ~2560 for normal lines)
+// Field detection: odd field has 16 half-lines, even field has 14
 static vsync_result_t detect_vsync(cvbs_decoder_t *decoder, double filtered,
                                     int16_t threshold, size_t sample_pos) {
-    vsync_result_t result = {false, 0, false};
+    vsync_result_t result = {false, 0, false, false};
     bool is_above = (filtered > threshold);
+    cvbs_vsync_state_t *vs = &decoder->vsync;
 
     // Check for falling edge (signal goes below threshold)
     if (decoder->last_filtered_above && !is_above) {
@@ -481,27 +488,32 @@ static vsync_result_t detect_vsync(cvbs_decoder_t *decoder, double filtered,
         result.interval = sample_pos - decoder->vsync_last_edge_pos;
         decoder->vsync_last_edge_pos = sample_pos;
 
-        // Check interval for V-sync detection
-        cvbs_vsync_state_t *vs = &decoder->vsync;
-
-        // Half-line interval is ~1280 samples (half of 2560)
-        // Allow generous tolerance: 1000-1600 samples
+        // Half-line interval: 1000-1600 samples (vs 2200-3000 for full line)
         bool is_half_line = (result.interval >= 1000 && result.interval <= 1600);
 
         if (is_half_line) {
             vs->half_line_count++;
-            // V-sync region has multiple half-line pulses
+            vs->total_half_lines++;
+            // Enter V-sync after 6 consecutive half-line pulses
             if (vs->half_line_count >= 6 && !vs->in_vsync) {
                 vs->in_vsync = true;
+                vs->total_half_lines = vs->half_line_count;
             }
         } else {
-            // Full line interval - if we were in V-sync, it's ending
+            // Full line interval - if in V-sync, it's ending
             if (vs->in_vsync && result.interval >= 2200 && result.interval <= 3000) {
                 vs->in_vsync = false;
-                vs->half_line_count = 0;
                 result.vsync_complete = true;
+
+                // Field detection: >= 15 half-lines = odd field, < 15 = even field
+                decoder->debug.last_half_line_count = vs->total_half_lines;
+                result.is_odd_field = (vs->total_half_lines >= 15);
+
+                vs->half_line_count = 0;
+                vs->total_half_lines = 0;
+            } else {
+                vs->half_line_count = 0;
             }
-            vs->half_line_count = 0;
         }
     }
 
@@ -509,8 +521,7 @@ static vsync_result_t detect_vsync(cvbs_decoder_t *decoder, double filtered,
 }
 
 // Detect H-sync by measuring pulse width
-// Only valid H-sync pulses (100-400 samples) are reported
-// Returns pulse_complete=true when a valid H-sync pulse ends
+// Returns pulse_complete=true when a valid H-sync pulse ends (100-280 samples)
 static hsync_result_t detect_hsync(cvbs_decoder_t *decoder, double filtered,
                                     int16_t threshold, size_t sample_pos,
                                     double current_pll_phase) {
@@ -528,7 +539,7 @@ static hsync_result_t detect_hsync(cvbs_decoder_t *decoder, double filtered,
         decoder->in_hsync_pulse = false;
         size_t pulse_width = sample_pos - decoder->hsync_pulse_start;
 
-        // Only accept pulses in H-sync range (100-400 samples)
+        // Only accept pulses in H-sync range
         if (pulse_width >= HSYNC_MIN_WIDTH && pulse_width <= HSYNC_MAX_WIDTH) {
             result.pulse_complete = true;
             result.pulse_width = pulse_width;
@@ -546,6 +557,11 @@ static hsync_result_t detect_hsync(cvbs_decoder_t *decoder, double filtered,
 // Deinterlace two fields into a full frame using weave with bob fallback
 // - Weave: interleave even/odd fields (best quality when both present)
 // - Bob: interpolate missing field lines (for partial frames)
+//
+// Field mapping (PAL/NTSC standard):
+// - field_buffer[0] = odd field (field 1): contains lines 1, 3, 5... of the frame
+// - field_buffer[1] = even field (field 2): contains lines 0, 2, 4... of the frame
+// In the frame buffer, even field lines come first (0, 2, 4...), then odd (1, 3, 5...)
 static void deinterlace_fields(cvbs_decoder_t *decoder) {
     if (!decoder || !decoder->field_buffer[0] || !decoder->field_buffer[1]) return;
     if (!decoder->frame_buffer) return;
@@ -560,51 +576,32 @@ static void deinterlace_fields(cvbs_decoder_t *decoder) {
         field_height = frame_height / 2;
     }
 
-    uint8_t *field0 = decoder->field_buffer[0];  // Even/first field (lines 0, 2, 4...)
-    uint8_t *field1 = decoder->field_buffer[1];  // Odd/second field (lines 1, 3, 5...)
+    uint8_t *odd_field = decoder->field_buffer[0];   // Odd field (frame lines 1, 3, 5...)
+    uint8_t *even_field = decoder->field_buffer[1];  // Even field (frame lines 0, 2, 4...)
     uint8_t *frame = decoder->frame_buffer;
 
     // Check which fields are valid
-    bool have_field0 = decoder->field_ready[0];
-    bool have_field1 = decoder->field_ready[1];
+    bool have_odd = decoder->field_ready[0];
+    bool have_even = decoder->field_ready[1];
 
-    if (have_field0 && have_field1) {
+    if (have_odd && have_even) {
         // Weave mode: interleave both fields for full vertical resolution
         for (int fl = 0; fl < field_height; fl++) {
-            uint8_t *src0 = field0 + (size_t)fl * CVBS_FRAME_WIDTH;
-            uint8_t *src1 = field1 + (size_t)fl * CVBS_FRAME_WIDTH;
+            uint8_t *src_odd = odd_field + (size_t)fl * CVBS_FRAME_WIDTH;
+            uint8_t *src_even = even_field + (size_t)fl * CVBS_FRAME_WIDTH;
 
-            // Even lines from field 0, odd lines from field 1
+            // Even frame lines (0, 2, 4...) from even field
+            // Odd frame lines (1, 3, 5...) from odd field
             uint8_t *dst_even = frame + (size_t)(fl * 2) * CVBS_FRAME_WIDTH;
             uint8_t *dst_odd = frame + (size_t)(fl * 2 + 1) * CVBS_FRAME_WIDTH;
 
-            memcpy(dst_even, src0, CVBS_FRAME_WIDTH);
-            memcpy(dst_odd, src1, CVBS_FRAME_WIDTH);
+            memcpy(dst_even, src_even, CVBS_FRAME_WIDTH);
+            memcpy(dst_odd, src_odd, CVBS_FRAME_WIDTH);
         }
-    } else if (have_field0) {
-        // Bob mode with field 0 only: duplicate lines with slight blur
+    } else if (have_odd) {
+        // Bob mode with odd field only: duplicate lines with interpolation
         for (int fl = 0; fl < field_height; fl++) {
-            uint8_t *src = field0 + (size_t)fl * CVBS_FRAME_WIDTH;
-            uint8_t *dst_even = frame + (size_t)(fl * 2) * CVBS_FRAME_WIDTH;
-            uint8_t *dst_odd = frame + (size_t)(fl * 2 + 1) * CVBS_FRAME_WIDTH;
-
-            memcpy(dst_even, src, CVBS_FRAME_WIDTH);
-
-            // Interpolate odd line from adjacent even lines
-            if (fl < field_height - 1) {
-                uint8_t *src_next = field0 + (size_t)(fl + 1) * CVBS_FRAME_WIDTH;
-                for (int x = 0; x < CVBS_FRAME_WIDTH; x++) {
-                    dst_odd[x] = (uint8_t)(((int)src[x] + (int)src_next[x]) / 2);
-                }
-            } else {
-                // Last line - just duplicate
-                memcpy(dst_odd, src, CVBS_FRAME_WIDTH);
-            }
-        }
-    } else if (have_field1) {
-        // Bob mode with field 1 only
-        for (int fl = 0; fl < field_height; fl++) {
-            uint8_t *src = field1 + (size_t)fl * CVBS_FRAME_WIDTH;
+            uint8_t *src = odd_field + (size_t)fl * CVBS_FRAME_WIDTH;
             uint8_t *dst_even = frame + (size_t)(fl * 2) * CVBS_FRAME_WIDTH;
             uint8_t *dst_odd = frame + (size_t)(fl * 2 + 1) * CVBS_FRAME_WIDTH;
 
@@ -612,13 +609,33 @@ static void deinterlace_fields(cvbs_decoder_t *decoder) {
 
             // Interpolate even line from adjacent odd lines
             if (fl > 0) {
-                uint8_t *src_prev = field1 + (size_t)(fl - 1) * CVBS_FRAME_WIDTH;
+                uint8_t *src_prev = odd_field + (size_t)(fl - 1) * CVBS_FRAME_WIDTH;
                 for (int x = 0; x < CVBS_FRAME_WIDTH; x++) {
                     dst_even[x] = (uint8_t)(((int)src_prev[x] + (int)src[x]) / 2);
                 }
             } else {
                 // First line - just duplicate
                 memcpy(dst_even, src, CVBS_FRAME_WIDTH);
+            }
+        }
+    } else if (have_even) {
+        // Bob mode with even field only
+        for (int fl = 0; fl < field_height; fl++) {
+            uint8_t *src = even_field + (size_t)fl * CVBS_FRAME_WIDTH;
+            uint8_t *dst_even = frame + (size_t)(fl * 2) * CVBS_FRAME_WIDTH;
+            uint8_t *dst_odd = frame + (size_t)(fl * 2 + 1) * CVBS_FRAME_WIDTH;
+
+            memcpy(dst_even, src, CVBS_FRAME_WIDTH);
+
+            // Interpolate odd line from adjacent even lines
+            if (fl < field_height - 1) {
+                uint8_t *src_next = even_field + (size_t)(fl + 1) * CVBS_FRAME_WIDTH;
+                for (int x = 0; x < CVBS_FRAME_WIDTH; x++) {
+                    dst_odd[x] = (uint8_t)(((int)src[x] + (int)src_next[x]) / 2);
+                }
+            } else {
+                // Last line - just duplicate
+                memcpy(dst_odd, src, CVBS_FRAME_WIDTH);
             }
         }
     }
@@ -639,8 +656,9 @@ static void complete_field_pll(cvbs_decoder_t *decoder) {
     int expected_lines = (decoder->state.format == CVBS_FORMAT_NTSC) ?
                          NTSC_FIELD_LINES : PAL_FIELD_LINES;
 
-    // Only accept if we got a reasonable field (at least 50% of expected)
-    if (line_count < (expected_lines / 2)) {
+    // Only accept if we got a reasonable field (at least 80% of expected lines)
+    // This prevents accepting partial/corrupted fields after format switch
+    if (line_count < (expected_lines * 4 / 5)) {
         return;
     }
 
@@ -648,9 +666,8 @@ static void complete_field_pll(cvbs_decoder_t *decoder) {
     int field_idx = decoder->state.current_field ? 1 : 0;
     decoder->field_ready[field_idx] = true;
 
-    // Deinterlace fields into frame buffer
-    // Note: field_ready flags persist so weave mode works on every field after
-    // the first two fields are received (not just every other frame)
+    // Deinterlace and display - works with one or both fields
+    // Bob mode is used until both fields are available, then weave takes over
     deinterlace_fields(decoder);
 
     // Copy deinterlaced frame to display buffer
@@ -660,43 +677,21 @@ static void complete_field_pll(cvbs_decoder_t *decoder) {
     memcpy(decoder->display_buffer, decoder->frame_buffer,
            (size_t)CVBS_FRAME_WIDTH * (size_t)frame_h);
     decoder->display_ready = true;
-
-    // Count full frames when we have both fields
-    if (decoder->field_ready[0] && decoder->field_ready[1]) {
-        decoder->state.frame_complete = true;
-        decoder->state.frames_decoded++;
-        // Don't clear field_ready - keep both marked so weave mode continues
-        // Fields will be overwritten in-place by subsequent decoding
-    }
-
+    decoder->state.frame_complete = true;
+    decoder->state.frames_decoded++;
     decoder->debug.fields_decoded++;
-    decoder->debug.lines_decoded_last = line_count;
 }
 
 // Start a new field after V-sync
-static void start_new_field_pll(cvbs_decoder_t *decoder) {
-    // Complete previous field
+// is_odd_field: true for odd field (buffer 0), false for even field (buffer 1)
+static void start_new_field_pll(cvbs_decoder_t *decoder, bool is_odd_field) {
     complete_field_pll(decoder);
-
-    // Commit accumulated levels from completed field (before starting new one)
-    // This ensures levels only update at field boundaries, eliminating shimmer
     commit_adaptive_levels(decoder);
 
-    // Reset line counter for new field, but DON'T reset PLL phase
-    // The PLL should continue tracking smoothly - resetting phase causes
-    // the first ~60 lines to wobble as PLL re-locks after V-sync
     decoder->pll.current_line = 0;
-    // decoder->pll.phase = 0;  // Don't reset - let PLL free-run through V-sync
-
-    // Alternate fields for interlacing
-    decoder->state.current_field = 1 - decoder->state.current_field;
+    decoder->state.current_field = is_odd_field ? 0 : 1;
     decoder->lines_since_vsync = 0;
-
-    // Reset hsync counter for new field's debug stats
     decoder->debug.hsyncs_last_field = 0;
-    decoder->debug.hsyncs_expected = (decoder->state.format == CVBS_FORMAT_NTSC) ?
-                                      NTSC_FIELD_LINES : PAL_FIELD_LINES;
-
     decoder->debug.vsync_found++;
 }
 
@@ -791,19 +786,12 @@ static void decode_current_line(cvbs_decoder_t *decoder) {
     decoder->line_buffer_count = 0;
 }
 
-// Debug counter for periodic logging
-static int s_debug_counter = 0;
-
 void gui_cvbs_process_buffer(cvbs_decoder_t *decoder,
                               const int16_t *buf, size_t count) {
     if (!decoder || !buf || count < 100) return;
     if (!decoder->line_buffer) return;
 
-    // Track incoming data
-    decoder->debug.buffers_received++;
-    decoder->debug.samples_received += count;
-
-    // Check for minimum signal strength (skip check until first V-sync commits levels)
+    // Check for minimum signal strength (skip until first V-sync commits levels)
     if (decoder->levels.range < 100 && decoder->debug.vsync_found > 0) {
         decoder->sync_errors++;
         return;
@@ -841,8 +829,8 @@ void gui_cvbs_process_buffer(cvbs_decoder_t *decoder,
         vsync_result_t vr = detect_vsync(decoder, filtered, threshold,
                                           decoder->global_sample_pos);
         if (vr.vsync_complete) {
-            // V-sync detected - start new field
-            start_new_field_pll(decoder);
+            // V-sync detected - start new field with detected field type
+            start_new_field_pll(decoder, vr.is_odd_field);
         }
 
         // Run H-sync detector on filtered signal
@@ -874,25 +862,22 @@ void gui_cvbs_process_buffer(cvbs_decoder_t *decoder,
             int max_lines = (decoder->state.format == CVBS_FORMAT_NTSC) ?
                            NTSC_FIELD_LINES + 20 : PAL_FIELD_LINES + 20;
             if (pll->current_line > max_lines) {
-                // Too many lines - force new field
-                start_new_field_pll(decoder);
+                // Too many lines - force new field (toggle since we have no V-sync info)
+                bool next_is_odd = (decoder->state.current_field == 1);
+                start_new_field_pll(decoder, next_is_odd);
             }
         }
     }
 
-    // Debug logging periodically (every ~10 seconds at 50 fields/sec)
-    s_debug_counter++;
-    if (s_debug_counter % 500 == 0) {
-        fprintf(stderr, "[CVBS-PLL] fields=%d frames=%d line=%d phase=%.0f "
-                        "locked=%d hsyncs=%d/%d freq_adj=%.2f\n",
+    // Debug logging periodically (per-instance counter to avoid interference)
+    decoder->debug.log_counter++;
+    if (decoder->debug.log_counter % 500 == 0) {
+        fprintf(stderr, "[CVBS] fields=%d frames=%d locked=%d field=%s half_lines=%d\n",
                 decoder->debug.fields_decoded,
                 decoder->state.frames_decoded,
-                pll->current_line,
-                pll->phase,
                 pll->locked ? 1 : 0,
-                decoder->debug.hsyncs_last_field,
-                decoder->debug.hsyncs_expected,
-                pll->freq_adjust);
+                decoder->state.current_field == 0 ? "odd" : "even",
+                decoder->debug.last_half_line_count);
     }
 }
 
@@ -958,8 +943,13 @@ void gui_cvbs_render_frame(cvbs_decoder_t *decoder,
     Rectangle dst = {draw_x, draw_y, draw_w, draw_h};
     DrawTexturePro(decoder->frame_texture, src, dst, (Vector2){0, 0}, 0, WHITE);
 
-    // Note: Format info and frame counter removed - system selector is now
-    // an overlay dropdown in the panel (see render_cvbs_system_overlay)
+    // Draw deinterlace mode overlay in bottom-left corner of video
+    const char *deint_mode = (decoder->field_ready[0] && decoder->field_ready[1]) ? "weave" : "bob";
+
+    float text_x = draw_x + 8;
+    float text_y = draw_y + draw_h - 24;
+    gui_text_draw_mono(deint_mode, text_x + 1, text_y + 1, 14, BLACK);  // Shadow
+    gui_text_draw_mono(deint_mode, text_x, text_y, 14, (Color){255, 255, 100, 255});  // Yellow
 }
 
 //-----------------------------------------------------------------------------
