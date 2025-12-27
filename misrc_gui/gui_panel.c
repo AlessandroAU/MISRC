@@ -323,9 +323,6 @@ static void render_cvbs_panel(gui_app_t *app, int channel,
         return;
     }
 
-    // Decay phosphor once per frame for a nice CRT persistence look
-    gui_cvbs_decay_phosphor(dec);
-
     // Render decoded video frame (grayscale)
     gui_cvbs_render_frame(dec, x, y, w, h);
 

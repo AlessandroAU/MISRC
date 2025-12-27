@@ -2,7 +2,7 @@
  * MISRC GUI - CVBS Video Decoder Module
  *
  * Decodes composite video (PAL/NTSC) from raw ADC samples.
- * Provides frame buffer display and phosphor waveform visualization.
+ * Uses software PLL for H-sync tracking and provides frame buffer display.
  */
 
 #ifndef GUI_CVBS_H
@@ -43,10 +43,6 @@ typedef enum {
 #define CVBS_SAMPLES_PER_LINE_PAL   CVBS_PAL_LINE_SAMPLES    // 2560
 #define CVBS_SAMPLES_PER_LINE_NTSC  CVBS_NTSC_LINE_SAMPLES   // 2540
 
-// Phosphor display dimensions
-#define CVBS_PHOSPHOR_WIDTH   1024  // Phosphor display width in pixels
-#define CVBS_PHOSPHOR_HEIGHT  256   // Phosphor display height in pixels
-
 //-----------------------------------------------------------------------------
 // Decoder State Structures
 //-----------------------------------------------------------------------------
@@ -63,34 +59,32 @@ typedef struct {
     int frames_decoded;            // Total frames decoded
 } cvbs_frame_state_t;
 
-// Sync pulse classification
-typedef enum {
-    PULSE_NONE,          // No pulse / noise
-    PULSE_HSYNC,         // Normal H-sync (~4.7µs = 188 samples)
-    PULSE_EQUALIZING,    // Equalizing pulse (~2.35µs = 94 samples, half-line rate)
-    PULSE_SERRATION      // Serration pulse (broad, ~27.3µs = 1092 samples)
-} cvbs_pulse_type_t;
-
-// Line period PLL state (persistent across buffers)
+// Software PLL state for H-sync tracking
 typedef struct {
-    float line_period;             // Current estimate of line period in samples
-    float phase_error;             // Accumulated phase error
-    float last_hsync_phase;        // Phase of last H-sync (0-1 within line)
-    size_t samples_since_hsync;    // Samples since last confirmed H-sync edge
-    int hsync_lock_count;          // Consecutive good H-syncs (for lock detection)
-    bool locked;                   // True if PLL is locked to H-sync
-} cvbs_line_pll_t;
+    // Core PLL state
+    double phase;                  // Current phase within line (0 to line_period)
+    double line_period;            // Nominal line period in samples (2560 PAL, 2540 NTSC)
+    double freq_adjust;            // Fine frequency adjustment (±small value)
+
+    // Phase correction
+    double phase_error;            // Last phase error (for derivative term)
+    double phase_integral;         // Integrated phase error (for I term)
+
+    // Lock detection
+    int good_sync_count;           // Consecutive syncs within tolerance
+    int bad_sync_count;            // Consecutive syncs out of tolerance
+    bool locked;                   // True if PLL is locked
+
+    // Line tracking
+    int current_line;              // Current line number in field (0-312 for PAL)
+    int samples_in_line;           // Samples processed in current line
+    size_t total_samples;          // Total samples processed (for debug)
+} cvbs_pll_state_t;
 
 // V-sync detection state (persistent across buffers)
 typedef struct {
-    int abnormal_pulse_count;      // Count of non-HSYNC pulses in current window
-    int half_line_pulse_count;     // Count of half-line rate pulses
-    int window_line_count;         // Lines in current detection window
-    bool in_vsync_region;          // Currently detecting V-sync region
-    bool awaiting_first_hsync;     // True if we detected V-sync and waiting for first H-sync
-    int vsync_start_line;          // Line where V-sync region started
-    size_t last_pulse_pos;         // Position of last sync pulse
-    cvbs_pulse_type_t last_pulse;  // Type of last detected pulse
+    int half_line_count;           // Count of half-line intervals detected
+    bool in_vsync;                 // Currently in V-sync region
 } cvbs_vsync_state_t;
 
 // Adaptive threshold state (percentile-based)
@@ -100,13 +94,11 @@ typedef struct {
     int16_t black;                 // Estimated black level
     int16_t white;                 // Estimated white level (highest ~95%)
     int16_t threshold;             // Current sync threshold
-    float dc_offset;               // Running DC offset estimate (high-pass)
 } cvbs_adaptive_levels_t;
 
-// Sample accumulation buffer size - only need a few lines for continuous processing
-// PAL line: 2560 samples, NTSC line: 2540 samples
-// Keep 32 lines worth for margin (32 * 2560 = 82K samples)
-#define CVBS_ACCUM_SIZE         (128 * 1024)  // 128K samples (~50 lines worth)
+// Line buffer size - stores one complete line of samples for decoding
+// We need this because H-sync edges may not align with buffer boundaries
+#define CVBS_LINE_BUFFER_SIZE   3000  // Slightly more than max line period (2560 PAL)
 
 // Main decoder structure
 typedef struct cvbs_decoder {
@@ -129,23 +121,29 @@ typedef struct cvbs_decoder {
     Texture2D frame_texture;
     bool texture_valid;
 
-    // Phosphor display for line waveforms
-    float *phosphor_buffer;        // Intensity accumulation buffer
-    Color *phosphor_pixels;        // RGBA pixel buffer for display
-    Image phosphor_image;
-    Texture2D phosphor_texture;
-    bool phosphor_valid;
-    int phosphor_width;
-    int phosphor_height;
+    // Line buffer for cross-boundary line assembly
+    int16_t *line_buffer;          // Buffer for current line samples
+    int line_buffer_count;         // Samples currently in line buffer
 
-    // Sample accumulation for cross-buffer line detection
-    int16_t *accum_buffer;         // Accumulation buffer for line overlap
-    size_t accum_count;            // Current samples in accumulation buffer
-
-    // NEW: Robust sync detection state (persistent across buffers)
+    // Software PLL and sync detection (persistent across buffers)
     cvbs_adaptive_levels_t adaptive;   // Adaptive threshold tracking
-    cvbs_line_pll_t pll;               // Line period PLL
+    cvbs_pll_state_t pll;              // Software PLL for H-sync
     cvbs_vsync_state_t vsync;          // V-sync detection state
+
+    // Lowpass filter state for sync detection
+    double lpf_state;              // IIR lowpass filter accumulator
+    double lpf_output;             // Filtered signal value
+
+    // Edge detection state (persistent across buffers)
+    bool last_filtered_above;      // Was last filtered sample above threshold?
+    size_t global_sample_pos;      // Global sample position counter
+
+    // H-sync pulse tracking
+    bool in_hsync_pulse;           // Currently inside a potential H-sync pulse
+    size_t hsync_pulse_start;      // Sample position where H-sync pulse started
+
+    // V-sync detector state (separate from H-sync)
+    size_t vsync_last_edge_pos;    // Position of last falling edge for V-sync
 
     // Legacy sync tracking (kept for compatibility)
     cvbs_levels_t levels;          // Current signal levels
@@ -155,8 +153,16 @@ typedef struct cvbs_decoder {
     int sync_errors;               // Count of sync detection failures
     int format_changes;            // Count of format auto-detections
 
-    // Configuration (internal)
-    int phosphor_line_counter;     // Counter for line skip tracking
+    // Debug statistics (for tracking decoder health)
+    struct {
+        int fields_decoded;            // Total fields successfully decoded
+        int vsync_found;               // V-sync detection successes
+        int hsyncs_last_field;         // H-syncs found in last decoded field
+        int hsyncs_expected;           // Expected H-syncs for format (312 or 262)
+        int lines_decoded_last;        // Active lines decoded in last field
+        int buffers_received;          // Total buffers received
+        size_t samples_received;       // Total samples received
+    } debug;
 } cvbs_decoder_t;
 
 //-----------------------------------------------------------------------------
@@ -190,14 +196,6 @@ void gui_cvbs_process_buffer(cvbs_decoder_t *decoder,
 // Scales to fit within the given rectangle while maintaining aspect ratio
 void gui_cvbs_render_frame(cvbs_decoder_t *decoder,
                             float x, float y, float width, float height);
-
-// Render phosphor waveform display of all lines
-void gui_cvbs_render_phosphor(cvbs_decoder_t *decoder,
-                               float x, float y, float width, float height,
-                               Color channel_color);
-
-// Decay phosphor intensity (call once per frame)
-void gui_cvbs_decay_phosphor(cvbs_decoder_t *decoder);
 
 //-----------------------------------------------------------------------------
 // Configuration

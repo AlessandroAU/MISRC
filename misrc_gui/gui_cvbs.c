@@ -2,7 +2,7 @@
  * MISRC GUI - CVBS Video Decoder Module
  *
  * Decodes composite video (PAL/NTSC) from raw ADC samples.
- * Provides frame buffer display and phosphor waveform visualization.
+ * Uses software PLL for H-sync tracking and provides frame buffer display.
  */
 
 #include "gui_cvbs.h"
@@ -17,9 +17,7 @@
 //-----------------------------------------------------------------------------
 
 // Back porch offset (after H-sync, before active video)
-// Standard back porch is ~5.7µs = 228 samples, but we add extra margin
-// to skip color burst and any residual blanking
-#define BACK_PORCH_SAMPLES      280  // ~7µs - slightly more than standard to skip color burst
+#define BACK_PORCH_SAMPLES      228  // ~7µs - slightly more than standard to skip color burst
 
 // Field detection constants
 #define PAL_FIELD_LINES         312  // Lines per PAL field (312.5 rounded)
@@ -30,17 +28,6 @@
 // Field heights (half of full frame)
 #define PAL_FIELD_HEIGHT        288  // 576/2
 #define NTSC_FIELD_HEIGHT       243  // 486/2
-
-// CVBS Phosphor settings - much lower than main phosphor since we draw ~300 lines per field
-// Main phosphor draws ~1 waveform per frame, CVBS draws ~288 lines per field (50 fields/sec)
-// So we need roughly 1/300th the intensity to get similar visual result
-#define CVBS_PHOSPHOR_HIT       0.001f   // Much lower than main (0.5f) since many lines drawn
-#define CVBS_PHOSPHOR_BLOOM1    0.004f  // Proportional bloom
-#define CVBS_PHOSPHOR_BLOOM2    0.002f
-
-// Line skip for phosphor display - skip N lines to reduce CPU load
-// Value of 4 means only draw every 4th line to phosphor (still draws all lines to video)
-#define CVBS_PHOSPHOR_LINE_SKIP 4
 
 //-----------------------------------------------------------------------------
 // Internal Helper Functions
@@ -85,91 +72,6 @@ static void decode_line_to_pixels(const int16_t *samples, size_t sample_count,
     }
 }
 
-// Helper to add intensity to phosphor buffer with bounds check
-static inline void add_phosphor_hit(float *buffer, int width, int height,
-                                    int x, int y, float amount) {
-    if (x < 0 || x >= width || y < 0 || y >= height) return;
-    int idx = y * width + x;
-    buffer[idx] += amount;
-    if (buffer[idx] > 1.0f) buffer[idx] = 1.0f;
-}
-
-// Draw line with Bresenham and bloom (similar to gui_phosphor.c)
-static void draw_phosphor_line(float *buffer, int buf_width, int buf_height,
-                               int x0, int y0, int x1, int y1) {
-    // Quick reject
-    if ((x0 < 0 && x1 < 0) || (x0 >= buf_width && x1 >= buf_width) ||
-        (y0 < 0 && y1 < 0) || (y0 >= buf_height && y1 >= buf_height)) {
-        return;
-    }
-
-    int dx = abs(x1 - x0);
-    int dy = abs(y1 - y0);
-    int sx = (x0 < x1) ? 1 : -1;
-    int sy = (y0 < y1) ? 1 : -1;
-    int err = dx - dy;
-
-    int x = x0, y = y0;
-    while (1) {
-        // Core pixel
-        add_phosphor_hit(buffer, buf_width, buf_height, x, y, CVBS_PHOSPHOR_HIT);
-
-        // Bloom effect (vertical spread for CRT look)
-        add_phosphor_hit(buffer, buf_width, buf_height, x, y - 1, CVBS_PHOSPHOR_BLOOM1);
-        add_phosphor_hit(buffer, buf_width, buf_height, x, y + 1, CVBS_PHOSPHOR_BLOOM1);
-        add_phosphor_hit(buffer, buf_width, buf_height, x, y - 2, CVBS_PHOSPHOR_BLOOM2);
-        add_phosphor_hit(buffer, buf_width, buf_height, x, y + 2, CVBS_PHOSPHOR_BLOOM2);
-
-        if (x == x1 && y == y1) break;
-
-        int e2 = 2 * err;
-        if (e2 > -dy) { err -= dy; x += sx; }
-        if (e2 < dx) { err += dx; y += sy; }
-    }
-}
-
-// Add a line's waveform to the phosphor buffer
-static void add_line_to_phosphor(cvbs_decoder_t *decoder,
-                                 const int16_t *line_start, size_t available) {
-    if (!decoder || !decoder->phosphor_buffer || !line_start) return;
-
-    int width = decoder->phosphor_width;
-    int height = decoder->phosphor_height;
-    if (width <= 0 || height <= 0) return;
-
-    // Determine how many samples in a line
-    size_t line_samples = (decoder->state.format == CVBS_FORMAT_NTSC) ?
-                          CVBS_SAMPLES_PER_LINE_NTSC : CVBS_SAMPLES_PER_LINE_PAL;
-    if (available < line_samples) line_samples = available;
-
-    float samples_per_pixel = (float)line_samples / width;
-    float center_y = height / 2.0f;
-    float scale = (height - 20.0f) / 4096.0f;  // 12-bit signed range
-
-    // Draw this line into the phosphor buffer using line segments
-    int prev_x = -1, prev_y = -1;
-    for (int px = 0; px < width; px++) {
-        size_t sample_idx = (size_t)(px * samples_per_pixel);
-        if (sample_idx >= line_samples) sample_idx = line_samples - 1;
-
-        int16_t sample = line_start[sample_idx];
-        int screen_y = (int)(center_y - sample * scale);
-
-        // Clamp to buffer
-        if (screen_y < 0) screen_y = 0;
-        if (screen_y >= height) screen_y = height - 1;
-
-        // Draw line segment from previous point
-        if (prev_x >= 0) {
-            draw_phosphor_line(decoder->phosphor_buffer, width, height,
-                              prev_x, prev_y, px, screen_y);
-        }
-
-        prev_x = px;
-        prev_y = screen_y;
-    }
-}
-
 //-----------------------------------------------------------------------------
 // Initialization and Cleanup
 //-----------------------------------------------------------------------------
@@ -195,31 +97,14 @@ bool gui_cvbs_init(cvbs_decoder_t *decoder) {
         return false;
     }
 
-    // Allocate phosphor intensity buffer (GPU shader handles color conversion)
-    decoder->phosphor_width = CVBS_PHOSPHOR_WIDTH;
-    decoder->phosphor_height = CVBS_PHOSPHOR_HEIGHT;
-    size_t phosphor_size = CVBS_PHOSPHOR_WIDTH * CVBS_PHOSPHOR_HEIGHT;
-
-    decoder->phosphor_buffer = (float *)calloc(phosphor_size, sizeof(float));
-    decoder->phosphor_pixels = NULL;  // Not needed with GPU shader path
-    if (!decoder->phosphor_buffer) {
-        free(decoder->frame_buffer);
-        free(decoder->display_buffer);
-        decoder->frame_buffer = NULL;
-        decoder->display_buffer = NULL;
-        return false;
-    }
-
     // Create raylib Image for video display (RGBA format at full-frame resolution)
     // Allocate our own pixel buffer so we control the memory
     Color *frame_pixels = (Color *)calloc(CVBS_FRAME_WIDTH * CVBS_MAX_HEIGHT, sizeof(Color));
     if (!frame_pixels) {
         free(decoder->frame_buffer);
         free(decoder->display_buffer);
-        free(decoder->phosphor_buffer);
         decoder->frame_buffer = NULL;
         decoder->display_buffer = NULL;
-        decoder->phosphor_buffer = NULL;
         return false;
     }
     decoder->frame_image.data = frame_pixels;
@@ -229,52 +114,49 @@ bool gui_cvbs_init(cvbs_decoder_t *decoder) {
     decoder->frame_image.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
     decoder->texture_valid = false;
 
-    // Initialize phosphor texture (CPU-updated RGBA texture)
-    decoder->phosphor_pixels = (Color *)calloc(phosphor_size, sizeof(Color));
-    if (!decoder->phosphor_pixels) {
+    // Allocate line buffer for cross-boundary line assembly
+    decoder->line_buffer = (int16_t *)calloc(CVBS_LINE_BUFFER_SIZE, sizeof(int16_t));
+    if (!decoder->line_buffer) {
         free(decoder->frame_buffer);
         free(decoder->display_buffer);
-        free(decoder->phosphor_buffer);
         free(decoder->frame_image.data);
         decoder->frame_buffer = NULL;
         decoder->display_buffer = NULL;
-        decoder->phosphor_buffer = NULL;
         decoder->frame_image.data = NULL;
         return false;
     }
-
-    decoder->phosphor_image.data = decoder->phosphor_pixels;
-    decoder->phosphor_image.width = decoder->phosphor_width;
-    decoder->phosphor_image.height = decoder->phosphor_height;
-    decoder->phosphor_image.mipmaps = 1;
-    decoder->phosphor_image.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
-    decoder->phosphor_valid = false;
-
-    // Allocate sample accumulation buffer for cross-buffer line detection
-    decoder->accum_buffer = (int16_t *)calloc(CVBS_ACCUM_SIZE, sizeof(int16_t));
-    if (!decoder->accum_buffer) {
-        free(decoder->frame_buffer);
-        free(decoder->display_buffer);
-        free(decoder->phosphor_buffer);
-        free(decoder->frame_image.data);
-        decoder->frame_buffer = NULL;
-        decoder->display_buffer = NULL;
-        decoder->phosphor_buffer = NULL;
-        decoder->frame_image.data = NULL;
-        return false;
-    }
-    decoder->accum_count = 0;
+    decoder->line_buffer_count = 0;
 
     // Initialize adaptive levels
     memset(&decoder->adaptive, 0, sizeof(decoder->adaptive));
 
-    // Initialize PLL with PAL default
+    // Initialize software PLL with PAL default
+    decoder->pll.phase = 0;
     decoder->pll.line_period = CVBS_SAMPLES_PER_LINE_PAL;
+    decoder->pll.freq_adjust = 0;
     decoder->pll.phase_error = 0;
-    decoder->pll.last_hsync_phase = 0;
-    decoder->pll.samples_since_hsync = 0;
-    decoder->pll.hsync_lock_count = 0;
+    decoder->pll.phase_integral = 0;
+    decoder->pll.good_sync_count = 0;
+    decoder->pll.bad_sync_count = 0;
     decoder->pll.locked = false;
+    decoder->pll.current_line = 0;
+    decoder->pll.samples_in_line = 0;
+    decoder->pll.total_samples = 0;
+
+    // Initialize lowpass filter state
+    decoder->lpf_state = 0.0;
+    decoder->lpf_output = 0.0;
+
+    // Initialize edge detection state (uses filtered signal)
+    decoder->last_filtered_above = true;
+    decoder->global_sample_pos = 0;
+
+    // Initialize H-sync pulse tracking
+    decoder->in_hsync_pulse = false;
+    decoder->hsync_pulse_start = 0;
+
+    // Initialize V-sync detector state
+    decoder->vsync_last_edge_pos = 0;
 
     // Initialize V-sync detection state
     memset(&decoder->vsync, 0, sizeof(decoder->vsync));
@@ -303,33 +185,19 @@ void gui_cvbs_cleanup(cvbs_decoder_t *decoder) {
         decoder->texture_valid = false;
     }
 
-    if (decoder->phosphor_valid) {
-        UnloadTexture(decoder->phosphor_texture);
-        decoder->phosphor_valid = false;
-    }
-
     // Free frame image data (we allocated it ourselves)
     if (decoder->frame_image.data) {
         free(decoder->frame_image.data);
         decoder->frame_image.data = NULL;
     }
 
-    // Free phosphor image data (we allocated it ourselves)
-    if (decoder->phosphor_image.data) {
-        free(decoder->phosphor_image.data);
-        decoder->phosphor_image.data = NULL;
-    }
-
     free(decoder->frame_buffer);
     free(decoder->display_buffer);
-    free(decoder->phosphor_buffer);
-    free(decoder->accum_buffer);
+    free(decoder->line_buffer);
 
     decoder->frame_buffer = NULL;
     decoder->display_buffer = NULL;
-    decoder->phosphor_buffer = NULL;
-    decoder->phosphor_pixels = NULL;
-    decoder->accum_buffer = NULL;
+    decoder->line_buffer = NULL;
 }
 
 void gui_cvbs_reset(cvbs_decoder_t *decoder) {
@@ -342,29 +210,45 @@ void gui_cvbs_reset(cvbs_decoder_t *decoder) {
     if (decoder->display_buffer) {
         memset(decoder->display_buffer, 0, CVBS_FRAME_WIDTH * CVBS_MAX_HEIGHT);
     }
-    if (decoder->phosphor_buffer) {
-        memset(decoder->phosphor_buffer, 0,
-               decoder->phosphor_width * decoder->phosphor_height * sizeof(float));
-    }
 
-    // Reset accumulation buffer
-    decoder->accum_count = 0;
+    // Reset line buffer
+    decoder->line_buffer_count = 0;
 
     // Reset adaptive levels
     memset(&decoder->adaptive, 0, sizeof(decoder->adaptive));
 
-    // Reset PLL (keep line period consistent with selected system)
+    // Reset software PLL (keep line period consistent with selected system)
+    decoder->pll.phase = 0;
     if (decoder->state.format == CVBS_FORMAT_NTSC) {
         decoder->pll.line_period = CVBS_SAMPLES_PER_LINE_NTSC;
     } else {
         // PAL + SECAM + UNKNOWN use PAL timing
         decoder->pll.line_period = CVBS_SAMPLES_PER_LINE_PAL;
     }
+    decoder->pll.freq_adjust = 0;
     decoder->pll.phase_error = 0;
-    decoder->pll.last_hsync_phase = 0;
-    decoder->pll.samples_since_hsync = 0;
-    decoder->pll.hsync_lock_count = 0;
+    decoder->pll.phase_integral = 0;
+    decoder->pll.good_sync_count = 0;
+    decoder->pll.bad_sync_count = 0;
     decoder->pll.locked = false;
+    decoder->pll.current_line = 0;
+    decoder->pll.samples_in_line = 0;
+    // Don't reset total_samples - keep for debug
+
+    // Reset lowpass filter state
+    decoder->lpf_state = 0.0;
+    decoder->lpf_output = 0.0;
+
+    // Reset edge detection state (uses filtered signal)
+    decoder->last_filtered_above = true;
+    decoder->global_sample_pos = 0;
+
+    // Reset H-sync pulse tracking
+    decoder->in_hsync_pulse = false;
+    decoder->hsync_pulse_start = 0;
+
+    // Reset V-sync detector state
+    decoder->vsync_last_edge_pos = 0;
 
     // Reset V-sync detection state
     memset(&decoder->vsync, 0, sizeof(decoder->vsync));
@@ -383,18 +267,9 @@ void gui_cvbs_reset(cvbs_decoder_t *decoder) {
     decoder->sync_errors = 0;
     decoder->format_changes = 0;
 
-    // Initialize configuration
-    decoder->phosphor_line_counter = 0;
+    // Reset debug statistics
+    memset(&decoder->debug, 0, sizeof(decoder->debug));
 }
-
-//-----------------------------------------------------------------------------
-// Decoding - Robust sync detection using timing structure
-//-----------------------------------------------------------------------------
-
-// H-sync pulse width thresholds at 40 MSPS (in samples)
-// H-sync: 4.7µs = 188 samples typical
-#define HSYNC_MIN_WIDTH         100   // ~2.5µs - minimum H-sync (more tolerant)
-#define HSYNC_MAX_WIDTH         350   // ~8.75µs - maximum H-sync (more tolerant)
 
 //-----------------------------------------------------------------------------
 // Adaptive Level Estimation
@@ -459,168 +334,280 @@ static void update_adaptive_levels(cvbs_decoder_t *decoder,
     decoder->levels.white_level = decoder->adaptive.white;
 }
 
-// NOTE: Complex pulse classification and PLL removed - using simplified line-count based approach
+//-----------------------------------------------------------------------------
+// Software PLL-based CVBS Decoder
+//
+// This approach uses a software PLL to track H-sync timing:
+// - PLL maintains a phase counter that represents position within a line
+// - When H-sync edges are detected, PLL phase is corrected
+// - Samples are written to frame buffer based on PLL line counter
+// - V-sync detection resets the line counter to start a new field
+// - Missing H-syncs don't break the display - PLL interpolates
+//-----------------------------------------------------------------------------
+
+// PLL tuning constants
+#define PLL_PHASE_GAIN      0.15    // Proportional gain for phase correction
+#define PLL_INTEGRAL_GAIN   0.005   // Integral gain for frequency drift
+#define PLL_LOCK_THRESHOLD  100     // Phase error below this = good sync
+#define PLL_LOCK_COUNT      10      // Good syncs needed to declare lock
+#define PLL_UNLOCK_COUNT    5       // Bad syncs to lose lock
+
+// H-sync pulse validation
+#define HSYNC_MIN_WIDTH     100     // ~2.5µs minimum pulse width
+#define HSYNC_MAX_WIDTH     400     // ~10µs maximum pulse width (allows some tolerance)
+
+// Lowpass filter coefficient (IIR single-pole)
+// At 40 MSPS, a cutoff of ~500kHz gives alpha ≈ 0.08
+// Lower alpha = more smoothing (removes HF noise while preserving sync edges)
+#define LPF_ALPHA           0.08
 
 //-----------------------------------------------------------------------------
-// Field Handling
+// Lowpass Filter for Sync Detection
 //-----------------------------------------------------------------------------
 
-// Complete a field; once we have both fields, publish a full frame for display
-static void complete_field(cvbs_decoder_t *decoder) {
+// Apply IIR lowpass filter to a sample
+// This smooths out high-frequency noise while preserving sync pulse edges
+static inline double apply_lowpass(cvbs_decoder_t *decoder, int16_t sample) {
+    // Single-pole IIR: y[n] = alpha * x[n] + (1 - alpha) * y[n-1]
+    decoder->lpf_state = LPF_ALPHA * (double)sample + (1.0 - LPF_ALPHA) * decoder->lpf_state;
+    decoder->lpf_output = decoder->lpf_state;
+    return decoder->lpf_output;
+}
+
+//-----------------------------------------------------------------------------
+// Separate H-sync and V-sync Detectors
+//-----------------------------------------------------------------------------
+
+// V-sync detector result
+typedef struct {
+    bool edge_detected;        // True if falling edge detected
+    size_t interval;           // Samples since last falling edge
+    bool vsync_complete;       // True if V-sync sequence completed
+} vsync_result_t;
+
+// H-sync detector result
+typedef struct {
+    bool pulse_complete;       // True if a valid H-sync pulse ended
+    size_t pulse_width;        // Width of the completed pulse
+    double phase_at_sync;      // PLL phase when sync was detected
+} hsync_result_t;
+
+// Detect V-sync by tracking falling edge intervals
+// V-sync region has half-line rate pulses (equalizing + serration)
+// Returns vsync_complete=true when V-sync sequence ends
+static vsync_result_t detect_vsync(cvbs_decoder_t *decoder, double filtered,
+                                    int16_t threshold, size_t sample_pos) {
+    vsync_result_t result = {false, 0, false};
+    bool is_above = (filtered > threshold);
+
+    // Check for falling edge (signal goes below threshold)
+    if (decoder->last_filtered_above && !is_above) {
+        result.edge_detected = true;
+        result.interval = sample_pos - decoder->vsync_last_edge_pos;
+        decoder->vsync_last_edge_pos = sample_pos;
+
+        // Check interval for V-sync detection
+        cvbs_vsync_state_t *vs = &decoder->vsync;
+
+        // Half-line interval is ~1280 samples (half of 2560)
+        // Allow generous tolerance: 1000-1600 samples
+        bool is_half_line = (result.interval >= 1000 && result.interval <= 1600);
+
+        if (is_half_line) {
+            vs->half_line_count++;
+            // V-sync region has multiple half-line pulses
+            if (vs->half_line_count >= 6 && !vs->in_vsync) {
+                vs->in_vsync = true;
+            }
+        } else {
+            // Full line interval - if we were in V-sync, it's ending
+            if (vs->in_vsync && result.interval >= 2200 && result.interval <= 3000) {
+                vs->in_vsync = false;
+                vs->half_line_count = 0;
+                result.vsync_complete = true;
+            }
+            vs->half_line_count = 0;
+        }
+    }
+
+    return result;
+}
+
+// Detect H-sync by measuring pulse width
+// Only valid H-sync pulses (100-400 samples) are reported
+// Returns pulse_complete=true when a valid H-sync pulse ends
+static hsync_result_t detect_hsync(cvbs_decoder_t *decoder, double filtered,
+                                    int16_t threshold, size_t sample_pos,
+                                    double current_pll_phase) {
+    hsync_result_t result = {false, 0, 0.0};
+    bool is_above = (filtered > threshold);
+
+    // Check for falling edge - start of potential H-sync pulse
+    if (decoder->last_filtered_above && !is_above) {
+        decoder->in_hsync_pulse = true;
+        decoder->hsync_pulse_start = sample_pos;
+    }
+
+    // Check for rising edge - end of pulse
+    if (!decoder->last_filtered_above && is_above && decoder->in_hsync_pulse) {
+        decoder->in_hsync_pulse = false;
+        size_t pulse_width = sample_pos - decoder->hsync_pulse_start;
+
+        // Only accept pulses in H-sync range (100-400 samples)
+        if (pulse_width >= HSYNC_MIN_WIDTH && pulse_width <= HSYNC_MAX_WIDTH) {
+            result.pulse_complete = true;
+            result.pulse_width = pulse_width;
+            result.phase_at_sync = current_pll_phase;
+        }
+    }
+
+    return result;
+}
+
+// Complete a field - copy frame buffer to display
+static void complete_field_pll(cvbs_decoder_t *decoder) {
     if (!decoder) return;
 
-    int line_count = decoder->lines_since_vsync;
+    int line_count = decoder->pll.current_line;
 
     // Get expected field parameters
-    int expected_active = (decoder->state.format == CVBS_FORMAT_NTSC) ?
-                          NTSC_FIELD_HEIGHT : PAL_FIELD_HEIGHT;
-    int active_start = (decoder->state.format == CVBS_FORMAT_NTSC) ?
-                       NTSC_ACTIVE_START : PAL_ACTIVE_START;
-    int actual_active = line_count - active_start;
+    int expected_lines = (decoder->state.format == CVBS_FORMAT_NTSC) ?
+                         NTSC_FIELD_LINES : PAL_FIELD_LINES;
 
     // Only accept if we got a reasonable field (at least 50% of expected)
-    if (actual_active < (expected_active / 2)) {
+    if (line_count < (expected_lines / 2)) {
         return;
     }
 
     // Mark this field as received
-    decoder->field_ready[decoder->state.current_field ? 1 : 0] = true;
+    int field_idx = decoder->state.current_field ? 1 : 0;
+    decoder->field_ready[field_idx] = true;
 
-    // When both fields are ready, publish a full frame
+    // Copy frame buffer to display - gives updates at field rate (50/60 Hz)
+    int frame_h = decoder->frame_height;
+    if (frame_h > CVBS_MAX_HEIGHT) frame_h = CVBS_MAX_HEIGHT;
+
+    memcpy(decoder->display_buffer, decoder->frame_buffer,
+           (size_t)CVBS_FRAME_WIDTH * (size_t)frame_h);
+    decoder->display_ready = true;
+
+    // Count full frames when we have both fields
     if (decoder->field_ready[0] && decoder->field_ready[1]) {
-        int frame_h = decoder->frame_height;
-        if (frame_h > CVBS_MAX_HEIGHT) frame_h = CVBS_MAX_HEIGHT;
-
-        memcpy(decoder->display_buffer, decoder->frame_buffer,
-               (size_t)CVBS_FRAME_WIDTH * (size_t)frame_h);
-        decoder->display_ready = true;
         decoder->state.frame_complete = true;
         decoder->state.frames_decoded++;
-
-        // Prepare for next frame
         decoder->field_ready[0] = false;
         decoder->field_ready[1] = false;
     }
+
+    decoder->debug.fields_decoded++;
+    decoder->debug.lines_decoded_last = line_count;
 }
 
-// Start a new field
-static void start_new_field(cvbs_decoder_t *decoder) {
-    // Complete previous field if substantial
-    if (decoder->lines_since_vsync > 100) {
-        complete_field(decoder);
-    }
+// Start a new field after V-sync
+static void start_new_field_pll(cvbs_decoder_t *decoder) {
+    // Complete previous field
+    complete_field_pll(decoder);
 
-    // Reset for new field
-    decoder->state.current_line = 0;
+    // Reset line counter for new field, but DON'T reset PLL phase
+    // The PLL should continue tracking smoothly - resetting phase causes
+    // the first ~60 lines to wobble as PLL re-locks after V-sync
+    decoder->pll.current_line = 0;
+    // decoder->pll.phase = 0;  // Don't reset - let PLL free-run through V-sync
+
+    // Alternate fields for interlacing
     decoder->state.current_field = 1 - decoder->state.current_field;
     decoder->lines_since_vsync = 0;
 
-    // If we're starting the first field of a new frame, clear the full-frame buffer
-    if (decoder->state.current_field == 0) {
-        int frame_h = decoder->frame_height;
-        if (frame_h > CVBS_MAX_HEIGHT) frame_h = CVBS_MAX_HEIGHT;
-        memset(decoder->frame_buffer, 0, (size_t)CVBS_FRAME_WIDTH * (size_t)frame_h);
-        decoder->field_ready[0] = false;
-        decoder->field_ready[1] = false;
-    }
+    decoder->debug.vsync_found++;
 }
 
-// Process a single video line
-static void process_video_line(cvbs_decoder_t *decoder,
-                               const int16_t *line_start, size_t available) {
+// Process a detected H-sync edge - update PLL
+static void pll_process_hsync(cvbs_decoder_t *decoder, double phase_at_sync) {
+    cvbs_pll_state_t *pll = &decoder->pll;
+
+    // Calculate phase error: how far off was our prediction?
+    // Ideal sync should happen at phase = 0 (or line_period)
+    double phase_error = phase_at_sync;
+
+    // Wrap to -half_period to +half_period
+    if (phase_error > pll->line_period / 2) {
+        phase_error -= pll->line_period;
+    }
+
+    // Update PLL lock status based on phase error magnitude
+    if (fabs(phase_error) < PLL_LOCK_THRESHOLD) {
+        pll->good_sync_count++;
+        pll->bad_sync_count = 0;
+        if (pll->good_sync_count >= PLL_LOCK_COUNT) {
+            pll->locked = true;
+        }
+    } else {
+        pll->bad_sync_count++;
+        pll->good_sync_count = 0;
+        if (pll->bad_sync_count >= PLL_UNLOCK_COUNT) {
+            pll->locked = false;
+        }
+    }
+
+    // Reject obviously bad syncs (too far off)
+    if (fabs(phase_error) > pll->line_period * 0.4) {
+        // This sync is way off - probably noise or V-sync region
+        // Don't adjust PLL, just increment line counter if phase wrapped
+        return;
+    }
+
+    // Apply phase correction (proportional)
+    pll->phase -= phase_error * PLL_PHASE_GAIN;
+
+    // Accumulate for integral term (frequency drift correction)
+    pll->phase_integral += phase_error * PLL_INTEGRAL_GAIN;
+
+    // Limit integral term to prevent runaway
+    if (pll->phase_integral > 50) pll->phase_integral = 50;
+    if (pll->phase_integral < -50) pll->phase_integral = -50;
+
+    // Apply integral correction to frequency
+    pll->freq_adjust = pll->phase_integral;
+
+    // Store for derivative term (not currently used)
+    pll->phase_error = phase_error;
+
+    decoder->debug.hsyncs_last_field++;
+}
+
+// Decode current line from line buffer to frame buffer
+static void decode_current_line(cvbs_decoder_t *decoder) {
+    if (!decoder || !decoder->line_buffer) return;
+
+    cvbs_pll_state_t *pll = &decoder->pll;
+    int line_num = pll->current_line;
+
+    // Get field parameters
     int active_start = (decoder->state.format == CVBS_FORMAT_NTSC) ?
                        NTSC_ACTIVE_START : PAL_ACTIVE_START;
+    int max_field_lines = (decoder->state.format == CVBS_FORMAT_NTSC) ?
+                          NTSC_FIELD_HEIGHT : PAL_FIELD_HEIGHT;
 
-    int line_num = decoder->state.current_line;
-    if (line_num >= active_start) {
+    // Only decode active video lines (skip VBI)
+    if (line_num >= active_start && line_num < active_start + max_field_lines) {
         int field_line = line_num - active_start;
-        int max_field_lines = (decoder->state.format == CVBS_FORMAT_NTSC) ?
-                              NTSC_FIELD_HEIGHT : PAL_FIELD_HEIGHT;
+        int out_line = field_line * 2 + (decoder->state.current_field ? 1 : 0);
 
-        if (field_line >= 0 && field_line < max_field_lines) {
-            // Interleave fields into a full-frame buffer: line = field_line*2 + field
-            int out_line = field_line * 2 + (decoder->state.current_field ? 1 : 0);
-            if (out_line < 0) return;
-            if (out_line >= decoder->frame_height) return;
+        if (out_line >= 0 && out_line < decoder->frame_height) {
+            uint8_t *row_ptr = decoder->frame_buffer +
+                               ((size_t)out_line * (size_t)CVBS_FRAME_WIDTH);
 
-            uint8_t *row_ptr = decoder->frame_buffer + ((size_t)out_line * (size_t)CVBS_FRAME_WIDTH);
-            decode_line_to_pixels(line_start, available,
-                                 &decoder->levels, row_ptr, CVBS_FRAME_WIDTH);
-
-            // Add line to phosphor display (with skip for performance)
-            decoder->phosphor_line_counter++;
-            if (decoder->phosphor_line_counter >= CVBS_PHOSPHOR_LINE_SKIP) {
-                decoder->phosphor_line_counter = 0;
-                add_line_to_phosphor(decoder, line_start, available);
+            // Use samples from line buffer
+            int samples_available = decoder->line_buffer_count;
+            if (samples_available > 100) {  // Need minimum samples
+                decode_line_to_pixels(decoder->line_buffer, samples_available,
+                                     &decoder->levels, row_ptr, CVBS_FRAME_WIDTH);
             }
         }
     }
 
-    decoder->state.current_line++;
-    decoder->lines_since_vsync++;
-}
-
-//-----------------------------------------------------------------------------
-// Main Buffer Processing - Continuous line-by-line approach
-//-----------------------------------------------------------------------------
-
-// Find next H-sync pulse in buffer
-// Returns position after the sync pulse ends, or -1 if not found
-// Sets *is_vsync_region to true if we detect V-sync (half-line rate pulses)
-static ssize_t find_next_hsync(const int16_t *buf, size_t count, size_t start,
-                                int16_t threshold, bool *is_vsync_region) {
-    if (start + 500 >= count) return -1;
-    if (is_vsync_region) *is_vsync_region = false;
-
-    size_t last_sync_start = 0;
-    int half_line_count = 0;
-
-    for (size_t i = start + 1; i < count - 300; i++) {
-        // Look for falling edge into sync
-        if (buf[i - 1] >= threshold && buf[i] < threshold) {
-            size_t sync_start = i;
-            size_t j = i;
-
-            // Measure pulse width
-            while (j < count && buf[j] < threshold) {
-                j++;
-            }
-
-            size_t pulse_width = j - sync_start;
-
-            // Skip very short pulses (noise)
-            if (pulse_width < 30) {
-                i = j;
-                continue;
-            }
-
-            // Check interval from last sync to detect V-sync region
-            if (last_sync_start > 0) {
-                size_t interval = sync_start - last_sync_start;
-                // Half-line interval: 1000-1600 samples (25-40µs)
-                if (interval >= 1000 && interval <= 1600) {
-                    half_line_count++;
-                    if (half_line_count >= 3 && is_vsync_region) {
-                        *is_vsync_region = true;
-                    }
-                } else if (interval >= 2200 && interval <= 3000) {
-                    // Full line interval - reset half-line counter
-                    half_line_count = 0;
-                }
-            }
-            last_sync_start = sync_start;
-
-            // Accept H-sync pulses (100-350 samples = 2.5-8.75µs at 40 MSPS)
-            if (pulse_width >= HSYNC_MIN_WIDTH && pulse_width <= HSYNC_MAX_WIDTH) {
-                return (ssize_t)j;  // Return position after sync ends
-            }
-
-            // Skip short/long pulses (equalizing or broad)
-            i = j;
-        }
-    }
-
-    return -1;
+    // Clear line buffer for next line
+    decoder->line_buffer_count = 0;
 }
 
 // Debug counter for periodic logging
@@ -628,8 +615,12 @@ static int s_debug_counter = 0;
 
 void gui_cvbs_process_buffer(cvbs_decoder_t *decoder,
                               const int16_t *buf, size_t count) {
-    if (!decoder || !buf || count < 1000) return;
-    if (!decoder->accum_buffer) return;
+    if (!decoder || !buf || count < 100) return;
+    if (!decoder->line_buffer) return;
+
+    // Track incoming data
+    decoder->debug.buffers_received++;
+    decoder->debug.samples_received += count;
 
     // Update adaptive signal levels from incoming buffer
     update_adaptive_levels(decoder, buf, count);
@@ -640,114 +631,89 @@ void gui_cvbs_process_buffer(cvbs_decoder_t *decoder,
         return;
     }
 
-    // Append new samples to accumulation buffer
-    size_t space_available = CVBS_ACCUM_SIZE - decoder->accum_count;
-    size_t to_copy = (count <= space_available) ? count : space_available;
-
-    if (to_copy > 0) {
-        memcpy(decoder->accum_buffer + decoder->accum_count, buf, to_copy * sizeof(int16_t));
-        decoder->accum_count += to_copy;
-    }
-
     int16_t threshold = decoder->adaptive.threshold;
-    size_t line_period = (decoder->state.format == CVBS_FORMAT_NTSC) ?
-                         CVBS_SAMPLES_PER_LINE_NTSC : CVBS_SAMPLES_PER_LINE_PAL;
+    cvbs_pll_state_t *pll = &decoder->pll;
+    double effective_period = pll->line_period + pll->freq_adjust;
 
-    // We need at least 2 lines worth of data to process
-    size_t min_required = line_period * 2;
-    if (decoder->accum_count < min_required) {
-        return;
+    // Reset hsync counter for this field's debug stats
+    if (pll->current_line == 0) {
+        decoder->debug.hsyncs_last_field = 0;
+        decoder->debug.hsyncs_expected = (decoder->state.format == CVBS_FORMAT_NTSC) ?
+                                          NTSC_FIELD_LINES : PAL_FIELD_LINES;
     }
 
-    // Debug logging periodically
-    s_debug_counter++;
-    bool do_debug = (s_debug_counter % 3000 == 0);
-    if (do_debug) {
-        fprintf(stderr, "[CVBS] lines=%d field=%d frames=%d accum=%zu\n",
-                decoder->lines_since_vsync, decoder->state.current_field,
-                decoder->state.frames_decoded, decoder->accum_count);
-    }
+    // Process each sample
+    for (size_t i = 0; i < count; i++) {
+        int16_t sample = buf[i];
 
-    // Process lines from the accumulation buffer
-    // Keep searching for H-sync and processing complete lines
-    size_t pos = 0;
-    size_t lines_processed = 0;
-    size_t last_safe_pos = 0;  // Last position we can safely discard up to
-    bool in_vsync = false;
+        // Apply lowpass filter for cleaner sync detection
+        double filtered = apply_lowpass(decoder, sample);
 
-    while (pos < decoder->accum_count - line_period - 500) {
-        // Find next H-sync (also detects V-sync region)
-        bool vsync_detected = false;
-        ssize_t hsync_end = find_next_hsync(decoder->accum_buffer, decoder->accum_count,
-                                             pos, threshold, &vsync_detected);
-
-        if (hsync_end < 0) {
-            // No more H-sync found
-            break;
+        // Store UNFILTERED sample in line buffer (for video decoding)
+        // We want full bandwidth for the video, just filtered for sync detect
+        if (decoder->line_buffer_count < CVBS_LINE_BUFFER_SIZE) {
+            decoder->line_buffer[decoder->line_buffer_count++] = sample;
         }
 
-        size_t line_start = (size_t)hsync_end;
+        // Advance PLL phase
+        pll->phase += 1.0;
+        pll->samples_in_line++;
+        pll->total_samples++;
+        decoder->global_sample_pos++;
 
-        // Check if we have enough samples for a full line
-        if (line_start + line_period > decoder->accum_count) {
-            // Not enough data for complete line - stop here
-            break;
+        // Run V-sync detector on filtered signal
+        vsync_result_t vr = detect_vsync(decoder, filtered, threshold,
+                                          decoder->global_sample_pos);
+        if (vr.vsync_complete) {
+            // V-sync detected - start new field
+            start_new_field_pll(decoder);
         }
 
-        // V-sync detection: if we detect half-line pulses, complete current field
-        if (vsync_detected && !in_vsync) {
-            in_vsync = true;
-            // Complete field when entering V-sync
-            if (decoder->lines_since_vsync > 100) {
-                complete_field(decoder);
-                start_new_field(decoder);
+        // Run H-sync detector on filtered signal
+        hsync_result_t hr = detect_hsync(decoder, filtered, threshold,
+                                          decoder->global_sample_pos, pll->phase);
+        if (hr.pulse_complete) {
+            // Valid H-sync pulse detected - update PLL
+            pll_process_hsync(decoder, hr.phase_at_sync);
+        }
+
+        // Update filtered edge state for next iteration
+        decoder->last_filtered_above = (filtered > threshold);
+
+        // Check if PLL indicates line complete (phase >= line_period)
+        if (pll->phase >= effective_period) {
+            // Line complete - decode it
+            decode_current_line(decoder);
+
+            // Advance to next line
+            pll->current_line++;
+            pll->phase -= effective_period;  // Keep fractional phase
+            pll->samples_in_line = 0;
+            decoder->lines_since_vsync++;
+
+            // Check for field overflow (shouldn't happen with proper V-sync)
+            int max_lines = (decoder->state.format == CVBS_FORMAT_NTSC) ?
+                           NTSC_FIELD_LINES + 20 : PAL_FIELD_LINES + 20;
+            if (pll->current_line > max_lines) {
+                // Too many lines - force new field
+                start_new_field_pll(decoder);
             }
-        } else if (!vsync_detected && in_vsync) {
-            // Exiting V-sync region - we're now at the start of a new field
-            in_vsync = false;
-        }
-
-        // Fallback: if we've processed many lines without V-sync, complete field anyway
-        int expected_field_lines = (decoder->state.format == CVBS_FORMAT_NTSC) ?
-                                   NTSC_FIELD_LINES : PAL_FIELD_LINES;
-
-        if (decoder->lines_since_vsync >= expected_field_lines + 20) {
-            // Way past expected field length - force completion
-            complete_field(decoder);
-            start_new_field(decoder);
-        }
-
-        // Skip processing during V-sync region (these aren't video lines)
-        if (!in_vsync) {
-            // Process this video line
-            process_video_line(decoder, decoder->accum_buffer + line_start, line_period);
-            lines_processed++;
-        }
-
-        // Move position forward - skip most of a line to find next H-sync
-        pos = line_start + (line_period * 3 / 4);
-        last_safe_pos = line_start;  // We've fully consumed up to here
-    }
-
-    // Discard processed data, keeping a margin for partial line at end
-    if (last_safe_pos > line_period) {
-        size_t discard = last_safe_pos - line_period;  // Keep 1 line margin
-        if (discard > 0 && discard < decoder->accum_count) {
-            size_t remaining = decoder->accum_count - discard;
-            memmove(decoder->accum_buffer, decoder->accum_buffer + discard,
-                    remaining * sizeof(int16_t));
-            decoder->accum_count = remaining;
         }
     }
 
-    // Safety: if buffer is getting too full, discard more aggressively
-    if (decoder->accum_count > CVBS_ACCUM_SIZE - 20000) {
-        size_t discard = decoder->accum_count / 2;
-        size_t remaining = decoder->accum_count - discard;
-        memmove(decoder->accum_buffer, decoder->accum_buffer + discard,
-                remaining * sizeof(int16_t));
-        decoder->accum_count = remaining;
-        decoder->sync_errors++;
+    // Debug logging periodically (every ~10 seconds at 50 fields/sec)
+    s_debug_counter++;
+    if (s_debug_counter % 500 == 0) {
+        fprintf(stderr, "[CVBS-PLL] fields=%d frames=%d line=%d phase=%.0f "
+                        "locked=%d hsyncs=%d/%d freq_adj=%.2f\n",
+                decoder->debug.fields_decoded,
+                decoder->state.frames_decoded,
+                pll->current_line,
+                pll->phase,
+                pll->locked ? 1 : 0,
+                decoder->debug.hsyncs_last_field,
+                decoder->debug.hsyncs_expected,
+                pll->freq_adjust);
     }
 }
 
@@ -815,91 +781,6 @@ void gui_cvbs_render_frame(cvbs_decoder_t *decoder,
 
     // Note: Format info and frame counter removed - system selector is now
     // an overlay dropdown in the panel (see render_cvbs_system_overlay)
-}
-
-void gui_cvbs_render_phosphor(cvbs_decoder_t *decoder,
-                               float x, float y, float width, float height,
-                               Color channel_color) {
-    (void)channel_color;  // Unused - phosphor uses heatmap colors
-
-    if (!decoder || !decoder->phosphor_buffer) {
-        // Draw placeholder
-        DrawRectangle((int)x, (int)y, (int)width, (int)height, (Color){15, 15, 25, 255});
-        return;
-    }
-
-    int phos_w = decoder->phosphor_width;
-    int phos_h = decoder->phosphor_height;
-
-    // Draw background
-    DrawRectangle((int)x, (int)y, (int)width, (int)height, (Color){15, 15, 25, 255});
-
-    // Draw grid
-    Color grid_color = {40, 40, 55, 255};
-    int div_x = 10, div_y = 4;
-    for (int i = 1; i < div_x; i++) {
-        float gx = x + (width * i / div_x);
-        DrawLine((int)gx, (int)y, (int)gx, (int)(y + height), grid_color);
-    }
-    for (int i = 1; i < div_y; i++) {
-        float gy = y + (height * i / div_y);
-        DrawLine((int)x, (int)gy, (int)(x + width), (int)gy, grid_color);
-    }
-
-    // Draw center line
-    float center_y_line = y + height / 2;
-    DrawLine((int)x, (int)center_y_line, (int)(x + width), (int)center_y_line, (Color){60, 60, 80, 255});
-
-    // Lazy-create phosphor texture
-    if (!decoder->phosphor_valid) {
-        decoder->phosphor_texture = LoadTextureFromImage(decoder->phosphor_image);
-        SetTextureFilter(decoder->phosphor_texture, TEXTURE_FILTER_BILINEAR);
-        decoder->phosphor_valid = true;
-    }
-
-    // Convert intensity buffer to RGBA (simple green phosphor)
-    // Note: keep this cheap; CVBS phosphor is primarily a debug visualization.
-    Color *dst = decoder->phosphor_pixels;
-    size_t n = (size_t)phos_w * (size_t)phos_h;
-    for (size_t i = 0; i < n; i++) {
-        float v = decoder->phosphor_buffer[i];
-        if (v < 0.0f) v = 0.0f;
-        if (v > 1.0f) v = 1.0f;
-        unsigned char g = (unsigned char)(v * 255.0f);
-        dst[i] = (Color){0, g, 0, g};
-    }
-
-    UpdateTexture(decoder->phosphor_texture, decoder->phosphor_image.data);
-
-    // Draw scaled
-    Rectangle srcp = {0, 0, (float)phos_w, (float)phos_h};
-    Rectangle dstp = {x, y, width, height};
-    DrawTexturePro(decoder->phosphor_texture, srcp, dstp, (Vector2){0, 0}, 0, WHITE);
-
-    // Draw sync level indicator if we have valid levels
-    if (decoder->levels.range > 100) {
-        float sync_norm = (float)decoder->levels.sync_threshold / 2048.0f;
-        float sync_screen_y = center_y_line - sync_norm * (height / 2 - 10);
-        DrawLine((int)x, (int)sync_screen_y, (int)(x + 30), (int)sync_screen_y,
-                 (Color){255, 100, 100, 150});
-
-        float black_norm = (float)decoder->levels.black_level / 2048.0f;
-        float black_screen_y = center_y_line - black_norm * (height / 2 - 10);
-        DrawLine((int)x, (int)black_screen_y, (int)(x + 30), (int)black_screen_y,
-                 (Color){100, 100, 100, 150});
-    }
-}
-
-void gui_cvbs_decay_phosphor(cvbs_decoder_t *decoder) {
-    if (!decoder || !decoder->phosphor_buffer) return;
-
-    // Simple decay for CPU phosphor buffer
-    size_t n = (size_t)decoder->phosphor_width * (size_t)decoder->phosphor_height;
-    const float decay = 0.92f;
-    for (size_t i = 0; i < n; i++) {
-        decoder->phosphor_buffer[i] *= decay;
-        if (decoder->phosphor_buffer[i] < 0.0001f) decoder->phosphor_buffer[i] = 0.0f;
-    }
 }
 
 //-----------------------------------------------------------------------------
