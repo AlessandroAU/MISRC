@@ -81,18 +81,43 @@ bool gui_cvbs_init(cvbs_decoder_t *decoder) {
 
     memset(decoder, 0, sizeof(cvbs_decoder_t));
 
-    // Allocate frame buffer at full-frame resolution (D1)
+    // Allocate field buffers (each field is half the frame height)
+    // Max field height is PAL: 288 lines
+    decoder->field_height = PAL_FIELD_HEIGHT;
+    size_t field_size = (size_t)CVBS_FRAME_WIDTH * (size_t)(CVBS_MAX_HEIGHT / 2);
+
+    decoder->field_buffer[0] = (uint8_t *)calloc(field_size, 1);
+    if (!decoder->field_buffer[0]) {
+        return false;
+    }
+
+    decoder->field_buffer[1] = (uint8_t *)calloc(field_size, 1);
+    if (!decoder->field_buffer[1]) {
+        free(decoder->field_buffer[0]);
+        decoder->field_buffer[0] = NULL;
+        return false;
+    }
+
+    // Allocate deinterlaced frame buffer at full-frame resolution (D1)
     decoder->frame_width = CVBS_FRAME_WIDTH;
     decoder->frame_height = CVBS_PAL_HEIGHT;  // Start with PAL full-frame height
     decoder->frame_buffer = (uint8_t *)calloc(CVBS_FRAME_WIDTH * CVBS_MAX_HEIGHT, 1);
     if (!decoder->frame_buffer) {
+        free(decoder->field_buffer[0]);
+        free(decoder->field_buffer[1]);
+        decoder->field_buffer[0] = NULL;
+        decoder->field_buffer[1] = NULL;
         return false;
     }
 
     // Allocate display buffer (double buffering)
     decoder->display_buffer = (uint8_t *)calloc(CVBS_FRAME_WIDTH * CVBS_MAX_HEIGHT, 1);
     if (!decoder->display_buffer) {
+        free(decoder->field_buffer[0]);
+        free(decoder->field_buffer[1]);
         free(decoder->frame_buffer);
+        decoder->field_buffer[0] = NULL;
+        decoder->field_buffer[1] = NULL;
         decoder->frame_buffer = NULL;
         return false;
     }
@@ -101,8 +126,12 @@ bool gui_cvbs_init(cvbs_decoder_t *decoder) {
     // Allocate our own pixel buffer so we control the memory
     Color *frame_pixels = (Color *)calloc(CVBS_FRAME_WIDTH * CVBS_MAX_HEIGHT, sizeof(Color));
     if (!frame_pixels) {
+        free(decoder->field_buffer[0]);
+        free(decoder->field_buffer[1]);
         free(decoder->frame_buffer);
         free(decoder->display_buffer);
+        decoder->field_buffer[0] = NULL;
+        decoder->field_buffer[1] = NULL;
         decoder->frame_buffer = NULL;
         decoder->display_buffer = NULL;
         return false;
@@ -117,9 +146,13 @@ bool gui_cvbs_init(cvbs_decoder_t *decoder) {
     // Allocate line buffer for cross-boundary line assembly
     decoder->line_buffer = (int16_t *)calloc(CVBS_LINE_BUFFER_SIZE, sizeof(int16_t));
     if (!decoder->line_buffer) {
+        free(decoder->field_buffer[0]);
+        free(decoder->field_buffer[1]);
         free(decoder->frame_buffer);
         free(decoder->display_buffer);
         free(decoder->frame_image.data);
+        decoder->field_buffer[0] = NULL;
+        decoder->field_buffer[1] = NULL;
         decoder->frame_buffer = NULL;
         decoder->display_buffer = NULL;
         decoder->frame_image.data = NULL;
@@ -191,10 +224,14 @@ void gui_cvbs_cleanup(cvbs_decoder_t *decoder) {
         decoder->frame_image.data = NULL;
     }
 
+    free(decoder->field_buffer[0]);
+    free(decoder->field_buffer[1]);
     free(decoder->frame_buffer);
     free(decoder->display_buffer);
     free(decoder->line_buffer);
 
+    decoder->field_buffer[0] = NULL;
+    decoder->field_buffer[1] = NULL;
     decoder->frame_buffer = NULL;
     decoder->display_buffer = NULL;
     decoder->line_buffer = NULL;
@@ -202,6 +239,15 @@ void gui_cvbs_cleanup(cvbs_decoder_t *decoder) {
 
 void gui_cvbs_reset(cvbs_decoder_t *decoder) {
     if (!decoder) return;
+
+    // Clear field buffers
+    size_t field_size = (size_t)CVBS_FRAME_WIDTH * (size_t)(CVBS_MAX_HEIGHT / 2);
+    if (decoder->field_buffer[0]) {
+        memset(decoder->field_buffer[0], 0, field_size);
+    }
+    if (decoder->field_buffer[1]) {
+        memset(decoder->field_buffer[1], 0, field_size);
+    }
 
     // Clear frame buffers
     if (decoder->frame_buffer) {
@@ -315,9 +361,9 @@ static void update_adaptive_levels(cvbs_decoder_t *decoder,
 
     // For CVBS, the sync tip is at IRE -40, blanking at IRE 0, black at IRE ~7.5, white at IRE 100
     // So sync is about 40/140 = 28.5% of the range below blanking
-    // Threshold should be midway between sync tip and blanking: ~15% of total range
-    // This gives a clean crossing point in the middle of the sync pulse edge
-    decoder->adaptive.threshold = decoder->adaptive.sync_tip + (int16_t)(range * 0.15f);
+    // Threshold at 25% above sync tip (matching gui_trigger.h CVBS_SYNC_MARGIN)
+    // This is well into the sync pulse region for reliable edge detection
+    decoder->adaptive.threshold = decoder->adaptive.sync_tip + (int16_t)(range * CVBS_SYNC_MARGIN);
 
     // Blanking level: ~28% of range (above sync, at black level start)
     decoder->adaptive.blanking = decoder->adaptive.sync_tip + (int16_t)(range * 0.28f);
@@ -352,9 +398,9 @@ static void update_adaptive_levels(cvbs_decoder_t *decoder,
 #define PLL_LOCK_COUNT      10      // Good syncs needed to declare lock
 #define PLL_UNLOCK_COUNT    5       // Bad syncs to lose lock
 
-// H-sync pulse validation
-#define HSYNC_MIN_WIDTH     100     // ~2.5µs minimum pulse width
-#define HSYNC_MAX_WIDTH     400     // ~10µs maximum pulse width (allows some tolerance)
+// H-sync pulse validation (aligned with gui_trigger.h constants)
+#define HSYNC_MIN_WIDTH     CVBS_HSYNC_MIN_WIDTH  // 100 samples (~2.5µs minimum)
+#define HSYNC_MAX_WIDTH     CVBS_HSYNC_MAX_WIDTH  // 280 samples (~7µs maximum)
 
 // Lowpass filter coefficient (IIR single-pole)
 // At 40 MSPS, a cutoff of ~500kHz gives alpha ≈ 0.08
@@ -464,7 +510,97 @@ static hsync_result_t detect_hsync(cvbs_decoder_t *decoder, double filtered,
     return result;
 }
 
-// Complete a field - copy frame buffer to display
+//-----------------------------------------------------------------------------
+// Deinterlacer
+//-----------------------------------------------------------------------------
+
+// Deinterlace two fields into a full frame using weave with bob fallback
+// - Weave: interleave even/odd fields (best quality when both present)
+// - Bob: interpolate missing field lines (for partial frames)
+static void deinterlace_fields(cvbs_decoder_t *decoder) {
+    if (!decoder || !decoder->field_buffer[0] || !decoder->field_buffer[1]) return;
+    if (!decoder->frame_buffer) return;
+
+    int field_height = (decoder->state.format == CVBS_FORMAT_NTSC) ?
+                       NTSC_FIELD_HEIGHT : PAL_FIELD_HEIGHT;
+    int frame_height = field_height * 2;
+
+    // Clamp to buffer limits
+    if (frame_height > decoder->frame_height) {
+        frame_height = decoder->frame_height;
+        field_height = frame_height / 2;
+    }
+
+    uint8_t *field0 = decoder->field_buffer[0];  // Even/first field (lines 0, 2, 4...)
+    uint8_t *field1 = decoder->field_buffer[1];  // Odd/second field (lines 1, 3, 5...)
+    uint8_t *frame = decoder->frame_buffer;
+
+    // Check which fields are valid
+    bool have_field0 = decoder->field_ready[0];
+    bool have_field1 = decoder->field_ready[1];
+
+    if (have_field0 && have_field1) {
+        // Weave mode: interleave both fields for full vertical resolution
+        for (int fl = 0; fl < field_height; fl++) {
+            uint8_t *src0 = field0 + (size_t)fl * CVBS_FRAME_WIDTH;
+            uint8_t *src1 = field1 + (size_t)fl * CVBS_FRAME_WIDTH;
+
+            // Even lines from field 0, odd lines from field 1
+            uint8_t *dst_even = frame + (size_t)(fl * 2) * CVBS_FRAME_WIDTH;
+            uint8_t *dst_odd = frame + (size_t)(fl * 2 + 1) * CVBS_FRAME_WIDTH;
+
+            memcpy(dst_even, src0, CVBS_FRAME_WIDTH);
+            memcpy(dst_odd, src1, CVBS_FRAME_WIDTH);
+        }
+    } else if (have_field0) {
+        // Bob mode with field 0 only: duplicate lines with slight blur
+        for (int fl = 0; fl < field_height; fl++) {
+            uint8_t *src = field0 + (size_t)fl * CVBS_FRAME_WIDTH;
+            uint8_t *dst_even = frame + (size_t)(fl * 2) * CVBS_FRAME_WIDTH;
+            uint8_t *dst_odd = frame + (size_t)(fl * 2 + 1) * CVBS_FRAME_WIDTH;
+
+            memcpy(dst_even, src, CVBS_FRAME_WIDTH);
+
+            // Interpolate odd line from adjacent even lines
+            if (fl < field_height - 1) {
+                uint8_t *src_next = field0 + (size_t)(fl + 1) * CVBS_FRAME_WIDTH;
+                for (int x = 0; x < CVBS_FRAME_WIDTH; x++) {
+                    dst_odd[x] = (uint8_t)(((int)src[x] + (int)src_next[x]) / 2);
+                }
+            } else {
+                // Last line - just duplicate
+                memcpy(dst_odd, src, CVBS_FRAME_WIDTH);
+            }
+        }
+    } else if (have_field1) {
+        // Bob mode with field 1 only
+        for (int fl = 0; fl < field_height; fl++) {
+            uint8_t *src = field1 + (size_t)fl * CVBS_FRAME_WIDTH;
+            uint8_t *dst_even = frame + (size_t)(fl * 2) * CVBS_FRAME_WIDTH;
+            uint8_t *dst_odd = frame + (size_t)(fl * 2 + 1) * CVBS_FRAME_WIDTH;
+
+            memcpy(dst_odd, src, CVBS_FRAME_WIDTH);
+
+            // Interpolate even line from adjacent odd lines
+            if (fl > 0) {
+                uint8_t *src_prev = field1 + (size_t)(fl - 1) * CVBS_FRAME_WIDTH;
+                for (int x = 0; x < CVBS_FRAME_WIDTH; x++) {
+                    dst_even[x] = (uint8_t)(((int)src_prev[x] + (int)src[x]) / 2);
+                }
+            } else {
+                // First line - just duplicate
+                memcpy(dst_even, src, CVBS_FRAME_WIDTH);
+            }
+        }
+    }
+    // If neither field ready, frame_buffer keeps its previous content
+}
+
+//-----------------------------------------------------------------------------
+// Field Completion
+//-----------------------------------------------------------------------------
+
+// Complete a field - deinterlace and copy to display buffer
 static void complete_field_pll(cvbs_decoder_t *decoder) {
     if (!decoder) return;
 
@@ -483,7 +619,10 @@ static void complete_field_pll(cvbs_decoder_t *decoder) {
     int field_idx = decoder->state.current_field ? 1 : 0;
     decoder->field_ready[field_idx] = true;
 
-    // Copy frame buffer to display - gives updates at field rate (50/60 Hz)
+    // Deinterlace fields into frame buffer
+    deinterlace_fields(decoder);
+
+    // Copy deinterlaced frame to display buffer
     int frame_h = decoder->frame_height;
     if (frame_h > CVBS_MAX_HEIGHT) frame_h = CVBS_MAX_HEIGHT;
 
@@ -575,7 +714,7 @@ static void pll_process_hsync(cvbs_decoder_t *decoder, double phase_at_sync) {
     decoder->debug.hsyncs_last_field++;
 }
 
-// Decode current line from line buffer to frame buffer
+// Decode current line from line buffer to field buffer
 static void decode_current_line(cvbs_decoder_t *decoder) {
     if (!decoder || !decoder->line_buffer) return;
 
@@ -591,11 +730,13 @@ static void decode_current_line(cvbs_decoder_t *decoder) {
     // Only decode active video lines (skip VBI)
     if (line_num >= active_start && line_num < active_start + max_field_lines) {
         int field_line = line_num - active_start;
-        int out_line = field_line * 2 + (decoder->state.current_field ? 1 : 0);
 
-        if (out_line >= 0 && out_line < decoder->frame_height) {
-            uint8_t *row_ptr = decoder->frame_buffer +
-                               ((size_t)out_line * (size_t)CVBS_FRAME_WIDTH);
+        // Write to the appropriate field buffer (not directly to frame)
+        int field_idx = decoder->state.current_field ? 1 : 0;
+        uint8_t *field_buf = decoder->field_buffer[field_idx];
+
+        if (field_buf && field_line >= 0 && field_line < max_field_lines) {
+            uint8_t *row_ptr = field_buf + ((size_t)field_line * (size_t)CVBS_FRAME_WIDTH);
 
             // Use samples from line buffer
             int samples_available = decoder->line_buffer_count;
@@ -818,12 +959,14 @@ void gui_cvbs_set_format(cvbs_decoder_t *decoder, int format_select) {
             decoder->state.total_lines = CVBS_NTSC_TOTAL_LINES;
             decoder->state.active_lines = CVBS_NTSC_ACTIVE_LINES;
             decoder->frame_height = CVBS_NTSC_HEIGHT;
+            decoder->field_height = NTSC_FIELD_HEIGHT;
             decoder->pll.line_period = CVBS_NTSC_LINE_SAMPLES;
         } else {
             // PAL and SECAM share line/field geometry for luma
             decoder->state.total_lines = CVBS_PAL_TOTAL_LINES;
             decoder->state.active_lines = CVBS_PAL_ACTIVE_LINES;
             decoder->frame_height = CVBS_PAL_HEIGHT;
+            decoder->field_height = PAL_FIELD_HEIGHT;
             decoder->pll.line_period = CVBS_PAL_LINE_SAMPLES;
         }
 

@@ -107,10 +107,15 @@ typedef struct cvbs_decoder {
     // Frame state
     cvbs_frame_state_t state;
 
-    // Frame buffer (grayscale, 720 x max_height)
-    uint8_t *frame_buffer;         // Decoded video frame
+    // Field buffers (grayscale, 720 x field_height each)
+    // Each field buffer stores half the vertical resolution
+    uint8_t *field_buffer[2];      // [0]=even/first field, [1]=odd/second field
+    int field_height;              // Height of each field (288 PAL, 243 NTSC)
+
+    // Deinterlaced frame buffer (720 x full_height)
+    uint8_t *frame_buffer;         // Deinterlaced output frame
     int frame_width;               // Always CVBS_FRAME_WIDTH (720)
-    int frame_height;              // Current height based on format
+    int frame_height;              // Full frame height (576 PAL, 486 NTSC)
 
     // Double buffering for display
     uint8_t *display_buffer;       // Buffer currently being displayed
