@@ -94,6 +94,9 @@ typedef struct {
     int16_t black;                 // Estimated black level
     int16_t white;                 // Estimated white level (highest ~95%)
     int16_t threshold;             // Current sync threshold
+    // Per-field accumulators (to avoid mid-field level changes causing shimmer)
+    int16_t field_min;             // Minimum sample value in current field
+    int16_t field_max;             // Maximum sample value in current field
 } cvbs_adaptive_levels_t;
 
 // Line buffer size - stores one complete line of samples for decoding

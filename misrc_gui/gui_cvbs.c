@@ -33,6 +33,12 @@
 // Internal Helper Functions
 //-----------------------------------------------------------------------------
 
+// Luma lowpass filter to remove chroma subcarrier
+// At 40 MSPS: NTSC color burst = 3.58 MHz (~11 samples/cycle)
+//             PAL color burst = 4.43 MHz (~9 samples/cycle)
+// We use a simple box filter averaging over ~1 chroma cycle to null it out
+#define LUMA_LPF_TAPS  11  // Average over ~11 samples (one NTSC chroma cycle)
+
 // Decode a single video line from samples to grayscale pixels
 static void decode_line_to_pixels(const int16_t *samples, size_t sample_count,
                                   const cvbs_levels_t *levels,
@@ -54,17 +60,32 @@ static void decode_line_to_pixels(const int16_t *samples, size_t sample_count,
     float level_range = (float)(levels->white_level - levels->black_level);
     if (level_range < 1.0f) level_range = 1.0f;
 
-    // Decode each pixel
+    // Half the filter width for symmetric averaging
+    int half_taps = LUMA_LPF_TAPS / 2;
+
+    // Decode each pixel with lowpass filtering to remove chroma
     for (int px = 0; px < pixel_width; px++) {
         // Find corresponding sample position
         size_t sample_pos = (size_t)(px * samples_per_pixel);
         if (sample_pos >= active_samples) sample_pos = active_samples - 1;
 
-        // Get sample value and normalize to 0-255
-        int16_t sample = active_start[sample_pos];
+        // Apply box filter: average samples centered on this position
+        // This nulls out the chroma subcarrier (averaging over one cycle)
+        int32_t sum = 0;
+        int count = 0;
+        for (int t = -half_taps; t <= half_taps; t++) {
+            int idx = (int)sample_pos + t;
+            if (idx >= 0 && idx < (int)active_samples) {
+                sum += active_start[idx];
+                count++;
+            }
+        }
+
+        // Get filtered sample value
+        float filtered = (count > 0) ? (float)sum / count : (float)active_start[sample_pos];
 
         // Clamp to black-white range and normalize
-        float normalized = (float)(sample - levels->black_level) / level_range;
+        float normalized = (filtered - (float)levels->black_level) / level_range;
         if (normalized < 0.0f) normalized = 0.0f;
         if (normalized > 1.0f) normalized = 1.0f;
 
@@ -321,38 +342,46 @@ void gui_cvbs_reset(cvbs_decoder_t *decoder) {
 // Adaptive Level Estimation
 //-----------------------------------------------------------------------------
 
-// Update adaptive levels using percentile-like estimation
-static void update_adaptive_levels(cvbs_decoder_t *decoder,
-                                    const int16_t *buf, size_t count) {
-    if (count < 1000) return;
-
-    // Sample every 16th value for efficiency
-    int16_t local_min = buf[0];
-    int16_t local_max = buf[0];
-    int64_t sum = 0;
-    int sample_count = 0;
-
-    for (size_t i = 0; i < count; i += 16) {
-        int16_t s = buf[i];
-        if (s < local_min) local_min = s;
-        if (s > local_max) local_max = s;
-        sum += s;
-        sample_count++;
+// Update min/max from a filtered sample (called from main processing loop)
+// Uses the already-filtered signal from sync detection to reject noise
+static inline void accumulate_filtered_level(cvbs_decoder_t *decoder, int16_t filtered) {
+    if (decoder->adaptive.field_min == 0 && decoder->adaptive.field_max == 0) {
+        // First sample of field
+        decoder->adaptive.field_min = filtered;
+        decoder->adaptive.field_max = filtered;
+    } else {
+        if (filtered < decoder->adaptive.field_min)
+            decoder->adaptive.field_min = filtered;
+        if (filtered > decoder->adaptive.field_max)
+            decoder->adaptive.field_max = filtered;
     }
+}
 
-    // Exponential moving average for stability
-    const float alpha = 0.1f;  // Slow adaptation
+// Commit accumulated levels at end of field (called from start_new_field_pll)
+static void commit_adaptive_levels(cvbs_decoder_t *decoder) {
+    // Only update if we accumulated valid data
+    if (decoder->adaptive.field_min == 0 && decoder->adaptive.field_max == 0) return;
+
+    int16_t field_min = decoder->adaptive.field_min;
+    int16_t field_max = decoder->adaptive.field_max;
+
+    // Reset accumulators for next field
+    decoder->adaptive.field_min = 0;
+    decoder->adaptive.field_max = 0;
+
+    // Exponential moving average for stability (update once per field)
+    const float alpha = 0.1f;  // ~10 fields to converge (~200ms)
 
     if (decoder->adaptive.sync_tip == 0 && decoder->adaptive.white == 0) {
         // First time - initialize directly
-        decoder->adaptive.sync_tip = local_min;
-        decoder->adaptive.white = local_max;
+        decoder->adaptive.sync_tip = field_min;
+        decoder->adaptive.white = field_max;
     } else {
         // Smooth update
         decoder->adaptive.sync_tip = (int16_t)(decoder->adaptive.sync_tip * (1.0f - alpha) +
-                                               local_min * alpha);
+                                               field_min * alpha);
         decoder->adaptive.white = (int16_t)(decoder->adaptive.white * (1.0f - alpha) +
-                                            local_max * alpha);
+                                            field_max * alpha);
     }
 
     // Derive other levels
@@ -620,6 +649,8 @@ static void complete_field_pll(cvbs_decoder_t *decoder) {
     decoder->field_ready[field_idx] = true;
 
     // Deinterlace fields into frame buffer
+    // Note: field_ready flags persist so weave mode works on every field after
+    // the first two fields are received (not just every other frame)
     deinterlace_fields(decoder);
 
     // Copy deinterlaced frame to display buffer
@@ -634,8 +665,8 @@ static void complete_field_pll(cvbs_decoder_t *decoder) {
     if (decoder->field_ready[0] && decoder->field_ready[1]) {
         decoder->state.frame_complete = true;
         decoder->state.frames_decoded++;
-        decoder->field_ready[0] = false;
-        decoder->field_ready[1] = false;
+        // Don't clear field_ready - keep both marked so weave mode continues
+        // Fields will be overwritten in-place by subsequent decoding
     }
 
     decoder->debug.fields_decoded++;
@@ -647,6 +678,10 @@ static void start_new_field_pll(cvbs_decoder_t *decoder) {
     // Complete previous field
     complete_field_pll(decoder);
 
+    // Commit accumulated levels from completed field (before starting new one)
+    // This ensures levels only update at field boundaries, eliminating shimmer
+    commit_adaptive_levels(decoder);
+
     // Reset line counter for new field, but DON'T reset PLL phase
     // The PLL should continue tracking smoothly - resetting phase causes
     // the first ~60 lines to wobble as PLL re-locks after V-sync
@@ -656,6 +691,11 @@ static void start_new_field_pll(cvbs_decoder_t *decoder) {
     // Alternate fields for interlacing
     decoder->state.current_field = 1 - decoder->state.current_field;
     decoder->lines_since_vsync = 0;
+
+    // Reset hsync counter for new field's debug stats
+    decoder->debug.hsyncs_last_field = 0;
+    decoder->debug.hsyncs_expected = (decoder->state.format == CVBS_FORMAT_NTSC) ?
+                                      NTSC_FIELD_LINES : PAL_FIELD_LINES;
 
     decoder->debug.vsync_found++;
 }
@@ -763,25 +803,14 @@ void gui_cvbs_process_buffer(cvbs_decoder_t *decoder,
     decoder->debug.buffers_received++;
     decoder->debug.samples_received += count;
 
-    // Update adaptive signal levels from incoming buffer
-    update_adaptive_levels(decoder, buf, count);
-
-    // Check for minimum signal strength
-    if (decoder->levels.range < 100) {
+    // Check for minimum signal strength (skip check until first V-sync commits levels)
+    if (decoder->levels.range < 100 && decoder->debug.vsync_found > 0) {
         decoder->sync_errors++;
         return;
     }
 
     int16_t threshold = decoder->adaptive.threshold;
     cvbs_pll_state_t *pll = &decoder->pll;
-    double effective_period = pll->line_period + pll->freq_adjust;
-
-    // Reset hsync counter for this field's debug stats
-    if (pll->current_line == 0) {
-        decoder->debug.hsyncs_last_field = 0;
-        decoder->debug.hsyncs_expected = (decoder->state.format == CVBS_FORMAT_NTSC) ?
-                                          NTSC_FIELD_LINES : PAL_FIELD_LINES;
-    }
 
     // Process each sample
     for (size_t i = 0; i < count; i++) {
@@ -789,6 +818,12 @@ void gui_cvbs_process_buffer(cvbs_decoder_t *decoder,
 
         // Apply lowpass filter for cleaner sync detection
         double filtered = apply_lowpass(decoder, sample);
+
+        // Accumulate min/max from filtered signal (every 16th sample for efficiency)
+        // This reuses the sync detection filter to reject noise from level estimates
+        if ((i & 0xF) == 0) {
+            accumulate_filtered_level(decoder, (int16_t)filtered);
+        }
 
         // Store UNFILTERED sample in line buffer (for video decoding)
         // We want full bandwidth for the video, just filtered for sync detect
@@ -820,6 +855,9 @@ void gui_cvbs_process_buffer(cvbs_decoder_t *decoder,
 
         // Update filtered edge state for next iteration
         decoder->last_filtered_above = (filtered > threshold);
+
+        // Calculate effective period with current freq_adjust (updated by PLL each H-sync)
+        double effective_period = pll->line_period + pll->freq_adjust;
 
         // Check if PLL indicates line complete (phase >= line_period)
         if (pll->phase >= effective_period) {
