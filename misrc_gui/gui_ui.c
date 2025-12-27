@@ -697,92 +697,8 @@ static void render_channel_stats(gui_app_t *app, int channel) {
             }
         }
 
-        // CVBS controls
-        {
-            bool cvbs_enabled = (channel == 0) ? (atomic_load(&app->cvbs_a) != NULL) : (atomic_load(&app->cvbs_b) != NULL);
-            int sys = (channel == 0) ? atomic_load(&app->cvbs_system_a) : atomic_load(&app->cvbs_system_b);
-            const char *sys_name = (sys == 0) ? "PAL" : (sys == 2) ? "SECAM" : "NTSC";
-
-            CLAY(CLAY_IDI("CvbsRow", channel), { .layout = STAT_ROW_LAYOUT }) {
-                CLAY(CLAY_IDI("LblCvbs", channel), { .layout = { .sizing = { CLAY_SIZING_FIXED(LABEL_WIDTH), CLAY_SIZING_FIT(0) } } }) {
-                    CLAY_TEXT(CLAY_STRING("CVBS:"),
-                        CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
-                }
-
-                CLAY(CLAY_IDI("CvbsEnableBtn", channel), {
-                    .layout = {
-                        .sizing = { CLAY_SIZING_FIXED(65), CLAY_SIZING_FIXED(18) },
-                        .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER }
-                    },
-                    .backgroundColor = to_clay_color(cvbs_enabled ? COLOR_BUTTON_ACTIVE : COLOR_BUTTON),
-                    .cornerRadius = CLAY_CORNER_RADIUS(3)
-                }) {
-                    CLAY_TEXT(cvbs_enabled ? CLAY_STRING("ON") : CLAY_STRING("OFF"),
-                        CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_DROPDOWN_OPT, .textColor = to_clay_color(COLOR_TEXT) }));
-                }
-            }
-
-            // System selection (manual)
-            CLAY(CLAY_IDI("CvbsSysRow", channel), { .layout = STAT_ROW_LAYOUT }) {
-                CLAY(CLAY_IDI("LblCvbsSys", channel), { .layout = { .sizing = { CLAY_SIZING_FIXED(LABEL_WIDTH), CLAY_SIZING_FIT(0) } } }) {
-                    CLAY_TEXT(CLAY_STRING("Sys:"),
-                        CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
-                }
-
-                bool sys_open = gui_dropdown_is_open(DROPDOWN_CVBS_SYSTEM, channel);
-                CLAY(CLAY_IDI("CvbsSysBtn", channel), {
-                    .layout = {
-                        .sizing = { CLAY_SIZING_FIXED(65), CLAY_SIZING_FIXED(18) },
-                        .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER }
-                    },
-                    .backgroundColor = to_clay_color(sys_open ? COLOR_BUTTON_HOVER : COLOR_BUTTON),
-                    .cornerRadius = CLAY_CORNER_RADIUS(3)
-                }) {
-                    CLAY_TEXT(make_string(sys_name),
-                        CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_DROPDOWN_OPT, .textColor = to_clay_color(COLOR_TEXT) }));
-                }
-            }
-
-            if (gui_dropdown_is_open(DROPDOWN_CVBS_SYSTEM, channel)) {
-                CLAY(CLAY_IDI("CvbsSysOpts", channel), {
-                    .layout = {
-                        .sizing = { CLAY_SIZING_FIXED(65), CLAY_SIZING_FIT(0) },
-                        .layoutDirection = CLAY_TOP_TO_BOTTOM
-                    },
-                    .floating = {
-                        .attachTo = CLAY_ATTACH_TO_ELEMENT_WITH_ID,
-                        .parentId = CLAY_IDI("CvbsSysBtn", channel).id,
-                        .attachPoints = { .element = CLAY_ATTACH_POINT_LEFT_TOP, .parent = CLAY_ATTACH_POINT_LEFT_BOTTOM }
-                    },
-                    .backgroundColor = to_clay_color(COLOR_PANEL_BG),
-                    .cornerRadius = CLAY_CORNER_RADIUS(3)
-                }) {
-                    // PAL
-                    bool pal_hover = Clay_PointerOver(CLAY_IDI("CvbsSysOptPAL", channel));
-                    Color pal_color = gui_dropdown_option_color(sys == 0, pal_hover);
-                    CLAY(CLAY_IDI("CvbsSysOptPAL", channel), {
-                        .layout = { .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(20) }, .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER } },
-                        .backgroundColor = to_clay_color(pal_color)
-                    }) { CLAY_TEXT(CLAY_STRING("PAL"), CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_DROPDOWN_OPT, .textColor = to_clay_color(COLOR_TEXT) })); }
-
-                    // NTSC
-                    bool ntsc_hover = Clay_PointerOver(CLAY_IDI("CvbsSysOptNTSC", channel));
-                    Color ntsc_color = gui_dropdown_option_color(sys == 1, ntsc_hover);
-                    CLAY(CLAY_IDI("CvbsSysOptNTSC", channel), {
-                        .layout = { .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(20) }, .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER } },
-                        .backgroundColor = to_clay_color(ntsc_color)
-                    }) { CLAY_TEXT(CLAY_STRING("NTSC"), CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_DROPDOWN_OPT, .textColor = to_clay_color(COLOR_TEXT) })); }
-
-                    // SECAM
-                    bool secam_hover = Clay_PointerOver(CLAY_IDI("CvbsSysOptSECAM", channel));
-                    Color secam_color = gui_dropdown_option_color(sys == 2, secam_hover);
-                    CLAY(CLAY_IDI("CvbsSysOptSECAM", channel), {
-                        .layout = { .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(20) }, .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER } },
-                        .backgroundColor = to_clay_color(secam_color)
-                    }) { CLAY_TEXT(CLAY_STRING("SECAM"), CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_DROPDOWN_OPT, .textColor = to_clay_color(COLOR_TEXT) })); }
-                }
-            }
-        }
+        // Note: CVBS controls (enable/system selector) have moved to the CVBS panel overlay
+        // See render_cvbs_system_overlay() in gui_panel.c
 
         // Separator line before panel configuration
         CLAY(CLAY_IDI("ModeSep", channel), {
@@ -1509,63 +1425,8 @@ void gui_handle_interactions(gui_app_t *app) {
             }
         }
 
-        // CVBS enable buttons (per-channel)
-        for (int ch = 0; ch < 2; ch++) {
-            if (Clay_PointerOver(CLAY_IDI("CvbsEnableBtn", ch))) {
-                _Atomic(cvbs_decoder_t *) *decp = (ch == 0) ? &app->cvbs_a : &app->cvbs_b;
-                channel_panel_config_t *cfg = (ch == 0) ? &app->panel_config_a : &app->panel_config_b;
-
-                cvbs_decoder_t *cur = atomic_load(decp);
-                if (cur) {
-                    // Disable: detach first so background threads stop using it.
-                    cvbs_decoder_t *old = atomic_exchange(decp, NULL);
-
-                    // Don't free immediately: extraction/sim thread may still be inside gui_cvbs_process_buffer().
-                    // Defer freeing until busy count reaches 0.
-                    if (old) {
-                        _Atomic(cvbs_decoder_t *) *pendingp = (ch == 0) ? &app->cvbs_pending_free_a : &app->cvbs_pending_free_b;
-                        cvbs_decoder_t *prev_pending = atomic_exchange(pendingp, old);
-                        if (prev_pending) {
-                            // Shouldn't happen normally, but avoid leaking.
-                            gui_cvbs_cleanup(prev_pending);
-                            free(prev_pending);
-                        }
-                    }
-
-                    // If current view is CVBS, revert that panel(s) to a safe default.
-                    if (cfg->left_view == PANEL_VIEW_CVBS) {
-                        panel_config_set_left_view(cfg, PANEL_VIEW_WAVEFORM_PHOSPHOR);
-                    }
-                    if (cfg->right_view == PANEL_VIEW_CVBS) {
-                        panel_config_set_right_view(cfg, PANEL_VIEW_WAVEFORM_PHOSPHOR);
-                    }
-                } else {
-                    // Enable
-                    cvbs_decoder_t *new_dec = (cvbs_decoder_t*)calloc(1, sizeof(cvbs_decoder_t));
-                    if (new_dec && gui_cvbs_init(new_dec)) {
-                        gui_cvbs_reset(new_dec);
-
-                        // Default to NTSC for now (simulated test signal is NTSC; add UI later)
-                        gui_cvbs_set_format(new_dec, 1);
-
-                        // Publish decoder for background threads
-                        atomic_store(decp, new_dec);
-
-                        // Switch to CVBS view (do NOT force single/split; just set left panel)
-                        panel_config_set_left_view(cfg, PANEL_VIEW_CVBS);
-                    } else {
-                        if (new_dec) {
-                            gui_cvbs_cleanup(new_dec);
-                            free(new_dec);
-                        }
-                        gui_app_set_status(app, "CVBS init failed");
-                    }
-                }
-
-                s_ui_consumed_click = true;
-                break;
-            }
-        }
+        // Note: CVBS enable/disable is now handled automatically when selecting
+        // CVBS view via ensure_cvbs_enabled_for_channel() in gui_dropdown.c
 
         // Handle all dropdown interactions via centralized handler
         if (!s_ui_consumed_click && gui_dropdown_handle_click(app)) {

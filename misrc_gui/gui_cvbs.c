@@ -813,14 +813,8 @@ void gui_cvbs_render_frame(cvbs_decoder_t *decoder,
     Rectangle dst = {draw_x, draw_y, draw_w, draw_h};
     DrawTexturePro(decoder->frame_texture, src, dst, (Vector2){0, 0}, 0, WHITE);
 
-    // Draw format info
-    const char *format_str = gui_cvbs_get_format_name(decoder);
-    DrawText(format_str, (int)(x + 5), (int)(y + 5), 16, (Color){200, 200, 200, 200});
-
-    // Draw frame counter
-    char frame_info[64];
-    snprintf(frame_info, sizeof(frame_info), "Frame: %d", decoder->state.frames_decoded);
-    DrawText(frame_info, (int)(x + 5), (int)(y + 25), 14, (Color){150, 150, 150, 180});
+    // Note: Format info and frame counter removed - system selector is now
+    // an overlay dropdown in the panel (see render_cvbs_system_overlay)
 }
 
 void gui_cvbs_render_phosphor(cvbs_decoder_t *decoder,

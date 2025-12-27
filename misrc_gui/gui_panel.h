@@ -77,4 +77,12 @@ void panel_config_set_right_view(channel_panel_config_t *config, panel_view_type
 // Toggle split mode (allocates/deallocates right panel state as needed)
 void panel_config_set_split(channel_panel_config_t *config, bool split);
 
+//-----------------------------------------------------------------------------
+// CVBS Panel Overlay Interaction
+//-----------------------------------------------------------------------------
+
+// Handle click on CVBS panel overlay (system selector dropdown)
+// Returns true if click was handled, false otherwise
+bool panel_cvbs_overlay_handle_click(gui_app_t *app, int channel, Vector2 mouse_pos);
+
 #endif // GUI_PANEL_H

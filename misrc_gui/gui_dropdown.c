@@ -240,36 +240,9 @@ static bool handle_right_view_dropdown(gui_app_t *app, int ch) {
     return clicked;
 }
 
-// Handle CVBS system dropdown for a channel
-static bool handle_cvbs_system_dropdown(gui_app_t *app, int ch) {
-    bool clicked = false;
-
-    if (Clay_PointerOver(CLAY_IDI("CvbsSysBtn", ch))) {
-        gui_dropdown_toggle(DROPDOWN_CVBS_SYSTEM, ch);
-        return true;
-    }
-
-    if (!gui_dropdown_is_open(DROPDOWN_CVBS_SYSTEM, ch)) return false;
-
-    if (Clay_PointerOver(CLAY_IDI("CvbsSysOptPAL", ch))) {
-        if (ch == 0) atomic_store(&app->cvbs_system_a, 0);
-        else atomic_store(&app->cvbs_system_b, 0);
-        gui_dropdown_close_all();
-        clicked = true;
-    } else if (Clay_PointerOver(CLAY_IDI("CvbsSysOptNTSC", ch))) {
-        if (ch == 0) atomic_store(&app->cvbs_system_a, 1);
-        else atomic_store(&app->cvbs_system_b, 1);
-        gui_dropdown_close_all();
-        clicked = true;
-    } else if (Clay_PointerOver(CLAY_IDI("CvbsSysOptSECAM", ch))) {
-        if (ch == 0) atomic_store(&app->cvbs_system_a, 2);
-        else atomic_store(&app->cvbs_system_b, 2);
-        gui_dropdown_close_all();
-        clicked = true;
-    }
-
-    return clicked;
-}
+// Note: CVBS system dropdown handling has moved to gui_panel.c
+// (panel_cvbs_overlay_handle_click) since the dropdown is now rendered
+// as an overlay inside the CVBS panel itself.
 
 //-----------------------------------------------------------------------------
 // Centralized Interaction Handler
@@ -277,6 +250,7 @@ static bool handle_cvbs_system_dropdown(gui_app_t *app, int ch) {
 
 bool gui_dropdown_handle_click(gui_app_t *app) {
     bool dropdown_clicked = false;
+    Vector2 mouse = GetMousePosition();
 
     // Device dropdown (global)
     if (handle_device_dropdown(app)) {
@@ -297,7 +271,8 @@ bool gui_dropdown_handle_click(gui_app_t *app) {
         if (handle_right_view_dropdown(app, ch)) {
             dropdown_clicked = true;
         }
-        if (handle_cvbs_system_dropdown(app, ch)) {
+        // CVBS system dropdown is now handled via panel overlay
+        if (panel_cvbs_overlay_handle_click(app, ch, mouse)) {
             dropdown_clicked = true;
         }
     }
