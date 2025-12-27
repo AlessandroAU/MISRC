@@ -115,7 +115,8 @@ typedef struct {
 typedef enum {
     DEVICE_TYPE_HSDAOH,         // Hardware device via hsdaoh
     DEVICE_TYPE_SIMPLE_CAPTURE, // OS video capture
-    DEVICE_TYPE_SIMULATED       // Simulated device for testing
+    DEVICE_TYPE_SIMULATED,      // Simulated device for testing
+    DEVICE_TYPE_PLAYBACK        // Playback from recorded FLAC files
 } device_type_t;
 
 typedef struct {
@@ -183,6 +184,10 @@ typedef struct {
     bool show_grid;
     float time_scale;         // Time per division (ms)
     float amplitude_scale;    // Amplitude scale factor
+
+    // Playback settings
+    char playback_file_a[MAX_FILENAME_LEN];   // FLAC file for channel A playback
+    char playback_file_b[MAX_FILENAME_LEN];   // FLAC file for channel B playback
 } gui_settings_t;
 
 // Main application state
@@ -194,6 +199,9 @@ typedef struct gui_app {
     // Simulated device state
     void *sim_thread;          // Simulated capture thread handle
     atomic_bool sim_running;   // Flag to stop simulated capture
+
+    // Playback device state
+    atomic_bool playback_running;  // Flag for playback mode
 
     // Capture state
     bool is_capturing;

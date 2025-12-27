@@ -178,6 +178,7 @@ if raylib_dep.found()
     '../misrc_gui/gui_record.c',
     '../misrc_gui/gui_extract.c',
     '../misrc_gui/gui_simulated.c',
+    '../misrc_gui/gui_playback.c',
     '../misrc_gui/gui_panel.c',
     '../misrc_gui/gui_text.c',
     '../misrc_gui/gui_vu_meter.c',

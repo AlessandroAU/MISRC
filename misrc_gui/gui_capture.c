@@ -13,6 +13,7 @@
 #include "gui_phosphor_rt.h"
 #include "gui_fft.h"
 #include "gui_simulated.h"
+#include "gui_playback.h"
 #include "gui_panel.h"
 #include "gui_cvbs.h"
 
@@ -262,6 +263,9 @@ void gui_app_init(gui_app_t *app) {
     // Initialize simulated device state
     app->sim_thread = NULL;
     atomic_store(&app->sim_running, false);
+
+    // Initialize playback device state
+    atomic_store(&app->playback_running, false);
 
     app->vu_a.level_pos = 0;
     app->vu_a.level_neg = 0;
@@ -514,6 +518,16 @@ void gui_app_enumerate_devices(gui_app_t *app) {
         app->device_count++;
     }
 
+    // Add playback device option
+    if (app->device_count < MAX_DEVICES) {
+        device_info_t *dst = &app->devices[app->device_count];
+        snprintf(dst->name, sizeof(dst->name), "[Playback] FLAC Files");
+        snprintf(dst->serial, sizeof(dst->serial), "PLAYBACK");
+        dst->type = DEVICE_TYPE_PLAYBACK;
+        dst->index = -1;
+        app->device_count++;
+    }
+
     if (app->device_count == 0) {
         gui_app_set_status(app, "No capture devices found");
     } else {
@@ -544,6 +558,17 @@ int gui_app_start_capture(gui_app_t *app) {
     // Handle simulated device separately
     if (dev->type == DEVICE_TYPE_SIMULATED) {
         return gui_simulated_start(app);
+    }
+
+    // Handle playback device
+    if (dev->type == DEVICE_TYPE_PLAYBACK) {
+        const char *file_a = app->settings.playback_file_a[0] ? app->settings.playback_file_a : NULL;
+        const char *file_b = app->settings.playback_file_b[0] ? app->settings.playback_file_b : NULL;
+        if (!file_a && !file_b) {
+            gui_app_set_status(app, "No playback files selected");
+            return -1;
+        }
+        return gui_playback_start(app, file_a, file_b);
     }
 
     if (!s_rb_initialized) {
@@ -652,10 +677,15 @@ void gui_app_stop_capture(gui_app_t *app) {
         gui_app_stop_recording(app);
     }
 
-    // Check if this is a simulated capture
+    // Check if this is a simulated or playback capture
     device_info_t *dev = &app->devices[app->selected_device];
     if (dev->type == DEVICE_TYPE_SIMULATED) {
         gui_simulated_stop(app);
+        gui_app_clear_display(app);
+        return;
+    }
+    if (dev->type == DEVICE_TYPE_PLAYBACK) {
+        gui_playback_stop(app);
         gui_app_clear_display(app);
         return;
     }

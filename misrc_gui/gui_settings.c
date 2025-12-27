@@ -213,7 +213,9 @@ void gui_settings_save(const gui_settings_t *settings) {
     fprintf(f, "  \"overwrite_files\": %s,\n", settings->overwrite_files ? "true" : "false");
     fprintf(f, "  \"show_grid\": %s,\n", settings->show_grid ? "true" : "false");
     fprintf(f, "  \"time_scale\": %.2f,\n", settings->time_scale);
-    fprintf(f, "  \"amplitude_scale\": %.2f\n", settings->amplitude_scale);
+    fprintf(f, "  \"amplitude_scale\": %.2f,\n", settings->amplitude_scale);
+    fprintf(f, "  \"playback_file_a\": \"%s\",\n", settings->playback_file_a);
+    fprintf(f, "  \"playback_file_b\": \"%s\"\n", settings->playback_file_b);
     fprintf(f, "}\n");
     
     fclose(f);
@@ -490,6 +492,16 @@ void gui_settings_load(gui_settings_t *settings) {
     }
     if ((value = find_value(content, "enable_audio_1ch_4")) != NULL) {
         settings->enable_audio_1ch[3] = (strcmp(value, "true") == 0);
+    }
+
+    // Playback files
+    if ((value = find_value(content, "playback_file_a")) != NULL) {
+        strncpy(settings->playback_file_a, value, MAX_FILENAME_LEN - 1);
+        settings->playback_file_a[MAX_FILENAME_LEN - 1] = '\0';
+    }
+    if ((value = find_value(content, "playback_file_b")) != NULL) {
+        strncpy(settings->playback_file_b, value, MAX_FILENAME_LEN - 1);
+        settings->playback_file_b[MAX_FILENAME_LEN - 1] = '\0';
     }
 
     free(content);

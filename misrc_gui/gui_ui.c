@@ -10,6 +10,7 @@
 #include "gui_fft.h"
 #include "gui_cvbs.h"
 #include "gui_panel.h"
+#include "gui_playback.h"
 #include "version.h"
 #include "gui_custom_elements.h"
 #include <clay.h>
@@ -56,6 +57,10 @@ static char stat_b_peak_neg[16];
 static char stat_b_clip_pos[16];
 static char stat_b_clip_neg[16];
 static char stat_b_errors[16];
+
+// Playback file display buffers
+static char playback_file_a_display[64];
+static char playback_file_b_display[64];
 
 static Clay_String make_string(const char *str) {
     return (Clay_String){ .isStaticallyAllocated = false, .length = (int32_t)strlen(str), .chars = str };
@@ -360,6 +365,52 @@ static void render_settings_panel(gui_app_t *app) {
                             CLAY_TEXT(app->settings.enable_audio_2ch_34 ? CLAY_STRING("ON") : CLAY_STRING("OFF"), CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_NORMAL, .textColor = to_clay_color(COLOR_TEXT) }));
                         }
                         CLAY_TEXT(make_string(app->settings.audio_2ch_34_filename), CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_NORMAL, .textColor = to_clay_color(COLOR_TEXT) }));
+                    }
+
+                    // Playback files section
+                    CLAY_TEXT(CLAY_STRING("Playback files (FLAC):"),
+                        CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_NORMAL, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
+
+                    // Channel A playback file
+                    CLAY(CLAY_ID("PlaybackFileARow"), { .layout = { .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28) }, .layoutDirection = CLAY_LEFT_TO_RIGHT, .childAlignment = { .y = CLAY_ALIGN_Y_CENTER }, .childGap = 6 } }) {
+                        CLAY(CLAY_ID("PlaybackFileBrowseA"), { .layout = { .sizing = { CLAY_SIZING_FIXED(70), CLAY_SIZING_FIXED(28) }, .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER } }, .backgroundColor = to_clay_color(COLOR_BUTTON), .cornerRadius = CLAY_CORNER_RADIUS(4) }) {
+                            CLAY_TEXT(CLAY_STRING("Ch A..."), CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(COLOR_TEXT) }));
+                        }
+                        // Show filename or "(none)"
+                        const char *file_a = app->settings.playback_file_a[0] ? app->settings.playback_file_a : "(none)";
+                        // Truncate long paths for display
+                        size_t len_a = strlen(file_a);
+                        if (len_a > 30) {
+                            snprintf(playback_file_a_display, sizeof(playback_file_a_display), "...%s", file_a + len_a - 27);
+                        } else {
+                            snprintf(playback_file_a_display, sizeof(playback_file_a_display), "%s", file_a);
+                        }
+                        CLAY(CLAY_ID("PlaybackFileAPath"), { .layout = { .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28) }, .childAlignment = { .x = CLAY_ALIGN_X_LEFT, .y = CLAY_ALIGN_Y_CENTER }, .padding = { 6, 6, 0, 0 } }, .backgroundColor = to_clay_color((Color){25,25,30,255}), .cornerRadius = CLAY_CORNER_RADIUS(4) }) {
+                            CLAY_TEXT(make_string(playback_file_a_display), CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(app->settings.playback_file_a[0] ? COLOR_TEXT : COLOR_TEXT_DIM) }));
+                        }
+                        CLAY(CLAY_ID("PlaybackFileClearA"), { .layout = { .sizing = { CLAY_SIZING_FIXED(28), CLAY_SIZING_FIXED(28) }, .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER } }, .backgroundColor = to_clay_color(COLOR_BUTTON), .cornerRadius = CLAY_CORNER_RADIUS(4) }) {
+                            CLAY_TEXT(CLAY_STRING("X"), CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(COLOR_TEXT) }));
+                        }
+                    }
+
+                    // Channel B playback file
+                    CLAY(CLAY_ID("PlaybackFileBRow"), { .layout = { .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28) }, .layoutDirection = CLAY_LEFT_TO_RIGHT, .childAlignment = { .y = CLAY_ALIGN_Y_CENTER }, .childGap = 6 } }) {
+                        CLAY(CLAY_ID("PlaybackFileBrowseB"), { .layout = { .sizing = { CLAY_SIZING_FIXED(70), CLAY_SIZING_FIXED(28) }, .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER } }, .backgroundColor = to_clay_color(COLOR_BUTTON), .cornerRadius = CLAY_CORNER_RADIUS(4) }) {
+                            CLAY_TEXT(CLAY_STRING("Ch B..."), CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(COLOR_TEXT) }));
+                        }
+                        const char *file_b = app->settings.playback_file_b[0] ? app->settings.playback_file_b : "(none)";
+                        size_t len_b = strlen(file_b);
+                        if (len_b > 30) {
+                            snprintf(playback_file_b_display, sizeof(playback_file_b_display), "...%s", file_b + len_b - 27);
+                        } else {
+                            snprintf(playback_file_b_display, sizeof(playback_file_b_display), "%s", file_b);
+                        }
+                        CLAY(CLAY_ID("PlaybackFileBPath"), { .layout = { .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28) }, .childAlignment = { .x = CLAY_ALIGN_X_LEFT, .y = CLAY_ALIGN_Y_CENTER }, .padding = { 6, 6, 0, 0 } }, .backgroundColor = to_clay_color((Color){25,25,30,255}), .cornerRadius = CLAY_CORNER_RADIUS(4) }) {
+                            CLAY_TEXT(make_string(playback_file_b_display), CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(app->settings.playback_file_b[0] ? COLOR_TEXT : COLOR_TEXT_DIM) }));
+                        }
+                        CLAY(CLAY_ID("PlaybackFileClearB"), { .layout = { .sizing = { CLAY_SIZING_FIXED(28), CLAY_SIZING_FIXED(28) }, .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER } }, .backgroundColor = to_clay_color(COLOR_BUTTON), .cornerRadius = CLAY_CORNER_RADIUS(4) }) {
+                            CLAY_TEXT(CLAY_STRING("X"), CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(COLOR_TEXT) }));
+                        }
                     }
                 }
             }
@@ -1422,6 +1473,24 @@ void gui_handle_interactions(gui_app_t *app) {
                 if (gui_settings_choose_output_folder(&app->settings)) {
                     gui_settings_save(&app->settings);
                 }
+            }
+
+            // Playback file selection buttons
+            if (Clay_PointerOver(CLAY_ID("PlaybackFileBrowseA"))) {
+                // TODO: Implement native file picker for FLAC files
+                // For now, user can edit settings file or use command line
+                gui_app_set_status(app, "Edit settings.json to set playback file A");
+            }
+            if (Clay_PointerOver(CLAY_ID("PlaybackFileBrowseB"))) {
+                gui_app_set_status(app, "Edit settings.json to set playback file B");
+            }
+            if (Clay_PointerOver(CLAY_ID("PlaybackFileClearA"))) {
+                app->settings.playback_file_a[0] = '\0';
+                gui_settings_save(&app->settings);
+            }
+            if (Clay_PointerOver(CLAY_ID("PlaybackFileClearB"))) {
+                app->settings.playback_file_b[0] = '\0';
+                gui_settings_save(&app->settings);
             }
         }
 
