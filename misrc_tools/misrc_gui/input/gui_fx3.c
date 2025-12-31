@@ -442,10 +442,7 @@ int gui_fx3_open(gui_app_t *app, int device_index) {
 
     // Default firmware path - look in current directory and common locations
     const char *firmware_paths[] = {
-        "cypress-fx3.fw",
-        "./cypress-fx3.fw",
-        "../cypress-fx3.fw",
-        "C:/git/MISRC/cypress-fx3.fw",
+        "C:\\git\\MISRC\\cypress-fx3.fw",
         NULL
     };
 

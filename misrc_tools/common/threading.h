@@ -204,4 +204,78 @@
 
 #endif
 
+/*-----------------------------------------------------------------------------
+ * Mutex Primitives
+ *-----------------------------------------------------------------------------*/
+
+#ifdef _WIN32
+  /* Windows Critical Section (lightweight mutex) */
+  typedef struct {
+    void *cs_data[5];  /* CRITICAL_SECTION is 40 bytes on x64 */
+  } mtx_t;
+
+  #ifdef _SYNCHAPI_H_
+    /* windows.h was already included - use properly typed declarations */
+    static inline int mtx_init(mtx_t *mtx) {
+      InitializeCriticalSection((LPCRITICAL_SECTION)mtx);
+      return 0;
+    }
+
+    static inline void mtx_destroy(mtx_t *mtx) {
+      DeleteCriticalSection((LPCRITICAL_SECTION)mtx);
+    }
+
+    static inline void mtx_lock(mtx_t *mtx) {
+      EnterCriticalSection((LPCRITICAL_SECTION)mtx);
+    }
+
+    static inline void mtx_unlock(mtx_t *mtx) {
+      LeaveCriticalSection((LPCRITICAL_SECTION)mtx);
+    }
+  #else
+    /* Declare functions ourselves to avoid including windows.h */
+    static inline int mtx_init(mtx_t *mtx) {
+      extern __declspec(dllimport) void __stdcall InitializeCriticalSection(void*);
+      InitializeCriticalSection(mtx);
+      return 0;
+    }
+
+    static inline void mtx_destroy(mtx_t *mtx) {
+      extern __declspec(dllimport) void __stdcall DeleteCriticalSection(void*);
+      DeleteCriticalSection(mtx);
+    }
+
+    static inline void mtx_lock(mtx_t *mtx) {
+      extern __declspec(dllimport) void __stdcall EnterCriticalSection(void*);
+      EnterCriticalSection(mtx);
+    }
+
+    static inline void mtx_unlock(mtx_t *mtx) {
+      extern __declspec(dllimport) void __stdcall LeaveCriticalSection(void*);
+      LeaveCriticalSection(mtx);
+    }
+  #endif
+
+#else
+  /* POSIX pthread mutex */
+  typedef pthread_mutex_t mtx_t;
+
+  static inline int mtx_init(mtx_t *mtx) {
+    return pthread_mutex_init(mtx, NULL);
+  }
+
+  static inline void mtx_destroy(mtx_t *mtx) {
+    pthread_mutex_destroy(mtx);
+  }
+
+  static inline void mtx_lock(mtx_t *mtx) {
+    pthread_mutex_lock(mtx);
+  }
+
+  static inline void mtx_unlock(mtx_t *mtx) {
+    pthread_mutex_unlock(mtx);
+  }
+
+#endif
+
 #endif /* MISRC_THREADING_H */

@@ -7,6 +7,7 @@
 #include <stdatomic.h>
 #include "raylib.h"
 #include "../../common/buffer_manager.h"
+#include "../../common/threading.h"
 
 // Forward declarations
 typedef struct hsdaoh_dev hsdaoh_dev_t;
@@ -35,7 +36,11 @@ typedef enum {
 } waveform_render_mode_t;
 
 // Per-Channel Panel Configuration
+// Note: mutex protects view/state fields from concurrent access by display thread
+// and main thread (during panel switching). Must be held when reading or writing
+// left_view, right_view, left_state, right_state, or split.
 typedef struct channel_panel_config {
+    mtx_t mutex;                   // Protects concurrent access to view/state fields
     bool split;                    // false = single panel, true = split view
     panel_view_type_t left_view;   // View for left panel (or only panel if not split)
     panel_view_type_t right_view;  // View for right panel (only used if split)

@@ -6,6 +6,8 @@
  */
 
 #include "panel_interface.h"
+#include "../core/gui_app.h"
+#include "../../common/threading.h"
 #include <string.h>
 
 //-----------------------------------------------------------------------------
@@ -158,12 +160,16 @@ panel_menu_t panel_instance_get_menu(panel_instance_t *instance, size_t index) {
 //-----------------------------------------------------------------------------
 
 // Helper to process a single panel config's panels
+// Holds mutex for entire duration to prevent setters from destroying state mid-process.
+// This serializes processing with panel switching, but panel switches are rare user events.
 static void process_config_panels(channel_panel_config_t *config,
                                   const int16_t *samples, size_t count,
                                   uint32_t sample_rate) {
     if (!config || !samples || count == 0) return;
 
-    // Get vtable for left panel and process if it has a process function
+    mtx_lock(&config->mutex);
+
+    // Process left panel if state exists
     const panel_vtable_t *left_vtable = panel_get_vtable(config->left_view);
     if (left_vtable && left_vtable->process && config->left_state) {
         left_vtable->process(config->left_state, samples, count, sample_rate);
@@ -176,6 +182,8 @@ static void process_config_panels(channel_panel_config_t *config,
             right_vtable->process(config->right_state, samples, count, sample_rate);
         }
     }
+
+    mtx_unlock(&config->mutex);
 }
 
 void panel_process_all(gui_app_t *app,

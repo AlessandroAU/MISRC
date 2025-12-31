@@ -315,12 +315,14 @@ void gui_app_init(gui_app_t *app) {
     }
 
     // Initialize panel configuration (new panel abstraction system)
+    mtx_init(&app->panel_config_a.mutex);
     app->panel_config_a.split = true;
     app->panel_config_a.left_view = PANEL_VIEW_WAVEFORM;
     app->panel_config_a.right_view = PANEL_VIEW_FFT;
     app->panel_config_a.left_state = panel_create_view_state(PANEL_VIEW_WAVEFORM);
     app->panel_config_a.right_state = panel_create_view_state(PANEL_VIEW_FFT);
 
+    mtx_init(&app->panel_config_b.mutex);
     app->panel_config_b.split = true;
     app->panel_config_b.left_view = PANEL_VIEW_WAVEFORM;
     app->panel_config_b.right_view = PANEL_VIEW_FFT;

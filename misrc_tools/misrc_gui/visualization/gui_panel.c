@@ -153,6 +153,7 @@ void render_channel_panels(gui_app_t *app, int channel,
 //-----------------------------------------------------------------------------
 
 void panel_config_init_default(channel_panel_config_t *config) {
+    mtx_init(&config->mutex);
     config->split = false;
     config->left_view = PANEL_VIEW_WAVEFORM;
     config->right_view = PANEL_VIEW_FFT;
@@ -163,6 +164,7 @@ void panel_config_init_default(channel_panel_config_t *config) {
 }
 
 void panel_config_cleanup(channel_panel_config_t *config) {
+    mtx_lock(&config->mutex);
     if (config->left_state) {
         panel_destroy_view_state(config->left_view, config->left_state);
         config->left_state = NULL;
@@ -171,10 +173,16 @@ void panel_config_cleanup(channel_panel_config_t *config) {
         panel_destroy_view_state(config->right_view, config->right_state);
         config->right_state = NULL;
     }
+    mtx_unlock(&config->mutex);
+    mtx_destroy(&config->mutex);
 }
 
 void panel_config_set_left_view(channel_panel_config_t *config, panel_view_type_t type) {
-    if (config->left_view == type) return;
+    mtx_lock(&config->mutex);
+    if (config->left_view == type) {
+        mtx_unlock(&config->mutex);
+        return;
+    }
 
     // Destroy old state
     if (config->left_state) {
@@ -185,10 +193,15 @@ void panel_config_set_left_view(channel_panel_config_t *config, panel_view_type_
     // Set new view and create state
     config->left_view = type;
     config->left_state = panel_create_view_state(type);
+    mtx_unlock(&config->mutex);
 }
 
 void panel_config_set_right_view(channel_panel_config_t *config, panel_view_type_t type) {
-    if (config->right_view == type) return;
+    mtx_lock(&config->mutex);
+    if (config->right_view == type) {
+        mtx_unlock(&config->mutex);
+        return;
+    }
 
     // Destroy old state
     if (config->right_state) {
@@ -201,10 +214,15 @@ void panel_config_set_right_view(channel_panel_config_t *config, panel_view_type
     if (config->split) {
         config->right_state = panel_create_view_state(type);
     }
+    mtx_unlock(&config->mutex);
 }
 
 void panel_config_set_split(channel_panel_config_t *config, bool split) {
-    if (config->split == split) return;
+    mtx_lock(&config->mutex);
+    if (config->split == split) {
+        mtx_unlock(&config->mutex);
+        return;
+    }
 
     config->split = split;
 
@@ -218,6 +236,7 @@ void panel_config_set_split(channel_panel_config_t *config, bool split) {
             config->right_state = NULL;
         }
     }
+    mtx_unlock(&config->mutex);
 }
 
 //-----------------------------------------------------------------------------
