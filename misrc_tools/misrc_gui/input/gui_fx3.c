@@ -738,20 +738,99 @@ void gui_fx3_close(gui_app_t *app) {
 }
 
 //-----------------------------------------------------------------------------
-// FX3 Capture Thread
+// FX3 Async Transfer Support
+//-----------------------------------------------------------------------------
+
+// Number of async transfers to keep in flight
+#define FX3_ASYNC_TRANSFERS  8
+
+// Context for async transfer callback
+typedef struct {
+    gui_app_t *app;
+    struct libusb_transfer *transfer;
+    uint8_t *buffer;
+    int index;
+} fx3_transfer_ctx_t;
+
+// Global state for async transfers
+static fx3_transfer_ctx_t s_transfers[FX3_ASYNC_TRANSFERS];
+static atomic_int s_completed_count;
+static atomic_int s_active_transfers;
+static atomic_bool s_transfer_error;
+
+// Async transfer completion callback
+static void LIBUSB_CALL fx3_transfer_callback(struct libusb_transfer *transfer) {
+    fx3_transfer_ctx_t *ctx = (fx3_transfer_ctx_t *)transfer->user_data;
+    gui_app_t *app = ctx->app;
+
+    if (transfer->status == LIBUSB_TRANSFER_COMPLETED) {
+        int actual_length = transfer->actual_length;
+
+        if (actual_length > 0) {
+            // Write raw data directly to ringbuffer
+            uint8_t *buf_out = bufmgr_write_begin(&app->buffers, BUF_CAPTURE_RF,
+                                                   actual_length, NULL);
+            if (buf_out) {
+                memcpy(buf_out, ctx->buffer, actual_length);
+                bufmgr_write_end(&app->buffers, BUF_CAPTURE_RF, actual_length);
+                bufmgr_signal_data(&app->buffers, BUF_CAPTURE_RF);
+            } else {
+                // Buffer full - drop data
+                atomic_fetch_add(&app->rb_drop_count, 1);
+            }
+
+            // Update statistics
+            size_t num_samples = actual_length / 4;
+            atomic_fetch_add(&app->total_samples, num_samples);
+            atomic_store(&app->last_callback_time_ms, get_time_ms());
+        }
+
+        atomic_fetch_add(&s_completed_count, 1);
+
+        // Resubmit transfer if still running
+        if (atomic_load(&app->fx3_running)) {
+            int r = libusb_submit_transfer(transfer);
+            if (r < 0) {
+                fprintf(stderr, "[FX3] Failed to resubmit transfer %d: %s\n",
+                        ctx->index, libusb_error_name(r));
+                atomic_fetch_sub(&s_active_transfers, 1);
+                atomic_store(&s_transfer_error, true);
+            }
+        } else {
+            atomic_fetch_sub(&s_active_transfers, 1);
+        }
+    } else if (transfer->status == LIBUSB_TRANSFER_CANCELLED) {
+        // Normal during shutdown
+        atomic_fetch_sub(&s_active_transfers, 1);
+    } else if (transfer->status == LIBUSB_TRANSFER_TIMED_OUT) {
+        // Timeout - resubmit if still running
+        if (atomic_load(&app->fx3_running)) {
+            int r = libusb_submit_transfer(transfer);
+            if (r < 0) {
+                atomic_fetch_sub(&s_active_transfers, 1);
+                atomic_store(&s_transfer_error, true);
+            }
+        } else {
+            atomic_fetch_sub(&s_active_transfers, 1);
+        }
+    } else {
+        // Error
+        fprintf(stderr, "[FX3] Transfer %d error: status=%d\n", ctx->index, transfer->status);
+        atomic_fetch_add(&app->error_count, 1);
+        atomic_fetch_sub(&s_active_transfers, 1);
+        atomic_store(&s_transfer_error, true);
+    }
+}
+
+//-----------------------------------------------------------------------------
+// FX3 Capture Thread (async version)
 //-----------------------------------------------------------------------------
 
 static int fx3_capture_thread(void *ctx) {
     gui_app_t *app = (gui_app_t *)ctx;
 
-    // Allocate transfer buffer
-    uint8_t *transfer_buf = (uint8_t *)malloc(FX3_TRANSFER_SIZE);
-    if (!transfer_buf) {
-        fprintf(stderr, "[FX3] Failed to allocate transfer buffer\n");
-        return -1;
-    }
-
-    fprintf(stderr, "[FX3] Capture thread started at %d MSPS\n", FX3_SAMPLE_RATE / 1000000);
+    fprintf(stderr, "[FX3] Capture thread started at %d MSPS (async mode, %d transfers)\n",
+            FX3_SAMPLE_RATE / 1000000, FX3_ASYNC_TRANSFERS);
 
     // Wait for the start signal (CMD_START has been sent)
     fprintf(stderr, "[FX3] Waiting for start signal...\n");
@@ -761,11 +840,10 @@ static int fx3_capture_thread(void *ctx) {
 
     if (!atomic_load(&app->fx3_running)) {
         fprintf(stderr, "[FX3] Capture thread cancelled before start\n");
-        free(transfer_buf);
         return 0;
     }
 
-    fprintf(stderr, "[FX3] Start signal received, beginning data transfers\n");
+    fprintf(stderr, "[FX3] Start signal received, beginning async transfers\n");
 
     // Clear any stale data from endpoint
     fprintf(stderr, "[FX3] Clearing endpoint 0x%02X...\n", FX3_EP_BULK_IN);
@@ -774,88 +852,98 @@ static int fx3_capture_thread(void *ctx) {
     atomic_store(&app->stream_synced, true);
     atomic_store(&app->sample_rate, FX3_SAMPLE_RATE);
 
-    uint64_t batch_count = 0;
-    uint64_t timeout_count = 0;
-    int actual_length = 0;
+    // Initialize async transfer state
+    atomic_store(&s_completed_count, 0);
+    atomic_store(&s_active_transfers, 0);
+    atomic_store(&s_transfer_error, false);
+    memset(s_transfers, 0, sizeof(s_transfers));
 
-    fprintf(stderr, "[FX3] Transfer params: EP=0x%02X, size=%d, timeout=%dms\n",
-            FX3_EP_BULK_IN, FX3_TRANSFER_SIZE, FX3_TRANSFER_TIMEOUT);
+    // Allocate and submit async transfers
+    fprintf(stderr, "[FX3] Allocating %d async transfers of %d bytes each\n",
+            FX3_ASYNC_TRANSFERS, FX3_TRANSFER_SIZE);
 
-    // Try configured endpoint first, then other bulk IN endpoints
-    uint8_t endpoints_to_try[] = {FX3_EP_BULK_IN, 0x81, 0x83};
-    int current_ep_idx = 0;
-    uint8_t current_ep = endpoints_to_try[0];
+    for (int i = 0; i < FX3_ASYNC_TRANSFERS; i++) {
+        s_transfers[i].app = app;
+        s_transfers[i].index = i;
+        s_transfers[i].buffer = (uint8_t *)malloc(FX3_TRANSFER_SIZE);
+        if (!s_transfers[i].buffer) {
+            fprintf(stderr, "[FX3] Failed to allocate buffer %d\n", i);
+            goto cleanup;
+        }
 
-    while (atomic_load(&app->fx3_running)) {
-        // Perform bulk transfer from FX3
-        int r = fx3_usb_bulk_transfer(s_fx3_handle, current_ep,
-                                       transfer_buf, FX3_TRANSFER_SIZE,
-                                       &actual_length, FX3_TRANSFER_TIMEOUT);
+        s_transfers[i].transfer = libusb_alloc_transfer(0);
+        if (!s_transfers[i].transfer) {
+            fprintf(stderr, "[FX3] Failed to allocate transfer %d\n", i);
+            goto cleanup;
+        }
 
+        libusb_fill_bulk_transfer(s_transfers[i].transfer,
+                                   s_fx3_handle,
+                                   FX3_EP_BULK_IN,
+                                   s_transfers[i].buffer,
+                                   FX3_TRANSFER_SIZE,
+                                   fx3_transfer_callback,
+                                   &s_transfers[i],
+                                   FX3_TRANSFER_TIMEOUT);
+
+        int r = libusb_submit_transfer(s_transfers[i].transfer);
         if (r < 0) {
-            if (r == LIBUSB_ERROR_TIMEOUT) {
-                timeout_count++;
-                if (timeout_count <= 3) {
-                    fprintf(stderr, "[FX3] Bulk transfer timeout #%llu on EP 0x%02X (no data received)\n",
-                            (unsigned long long)timeout_count, current_ep);
-                }
-                // After 3 timeouts on current endpoint, try next one
-                if (timeout_count == 3 && current_ep_idx < 2) {
-                    current_ep_idx++;
-                    current_ep = endpoints_to_try[current_ep_idx];
-                    fprintf(stderr, "[FX3] Switching to endpoint 0x%02X\n", current_ep);
-                    libusb_clear_halt(s_fx3_handle, current_ep);
-                    timeout_count = 0;
-                }
-                continue;
-            }
-            fprintf(stderr, "[FX3] Bulk transfer error on EP 0x%02X: %s (%d)\n",
-                    current_ep, libusb_error_name(r), r);
-            atomic_fetch_add(&app->error_count, 1);
-            continue;
+            fprintf(stderr, "[FX3] Failed to submit transfer %d: %s\n", i, libusb_error_name(r));
+            goto cleanup;
         }
-
-        if (actual_length == 0) {
-            fprintf(stderr, "[FX3] Got 0-length transfer\n");
-            continue;
-        }
-
-        // First successful transfer
-        if (batch_count == 0) {
-            fprintf(stderr, "[FX3] First data received: %d bytes\n", actual_length);
-        }
-
-        // Write raw data directly to ringbuffer
-        // FX3 data is already in the correct 32-bit packed format:
-        // Bits 0-11:  Channel A (12-bit)
-        // Bits 12-19: AUX data (8 bits)
-        // Bits 20-31: Channel B (12-bit)
-        uint8_t *buf_out = bufmgr_write_begin(&app->buffers, BUF_CAPTURE_RF,
-                                               actual_length, NULL);
-        if (buf_out) {
-            memcpy(buf_out, transfer_buf, actual_length);
-            bufmgr_write_end(&app->buffers, BUF_CAPTURE_RF, actual_length);
-            bufmgr_signal_data(&app->buffers, BUF_CAPTURE_RF);
-        } else {
-            // Buffer full - drop data
-            atomic_fetch_add(&app->rb_drop_count, 1);
-            if (atomic_load(&app->rb_drop_count) <= 5) {
-                fprintf(stderr, "[FX3] Warning: BUF_CAPTURE_RF full, data dropped\n");
-            }
-        }
-
-        // Update statistics
-        size_t num_samples = actual_length / 4;  // 4 bytes per sample
-        atomic_fetch_add(&app->total_samples, num_samples);
-        atomic_store(&app->last_callback_time_ms, get_time_ms());
-
-        batch_count++;
+        atomic_fetch_add(&s_active_transfers, 1);
     }
 
-    fprintf(stderr, "[FX3] Capture thread exiting after %llu batches\n",
-            (unsigned long long)batch_count);
+    fprintf(stderr, "[FX3] All %d transfers submitted, entering event loop\n", FX3_ASYNC_TRANSFERS);
 
-    free(transfer_buf);
+    // Event loop - handle USB events while running
+    struct timeval tv = {0, 100000};  // 100ms timeout
+    while (atomic_load(&app->fx3_running) && !atomic_load(&s_transfer_error)) {
+        int r = libusb_handle_events_timeout(s_fx3_usb_ctx, &tv);
+        if (r < 0 && r != LIBUSB_ERROR_TIMEOUT && r != LIBUSB_ERROR_INTERRUPTED) {
+            fprintf(stderr, "[FX3] Event handling error: %s\n", libusb_error_name(r));
+            break;
+        }
+    }
+
+    fprintf(stderr, "[FX3] Stopping capture, cancelling transfers...\n");
+
+    // Cancel all pending transfers
+    for (int i = 0; i < FX3_ASYNC_TRANSFERS; i++) {
+        if (s_transfers[i].transfer) {
+            libusb_cancel_transfer(s_transfers[i].transfer);
+        }
+    }
+
+    // Wait for all transfers to complete/cancel (with timeout)
+    int wait_count = 0;
+    while (atomic_load(&s_active_transfers) > 0 && wait_count < 50) {
+        struct timeval tv_wait = {0, 100000};  // 100ms
+        libusb_handle_events_timeout(s_fx3_usb_ctx, &tv_wait);
+        wait_count++;
+    }
+
+    if (atomic_load(&s_active_transfers) > 0) {
+        fprintf(stderr, "[FX3] Warning: %d transfers still active after timeout\n",
+                atomic_load(&s_active_transfers));
+    }
+
+cleanup:
+    // Free all transfers and buffers
+    for (int i = 0; i < FX3_ASYNC_TRANSFERS; i++) {
+        if (s_transfers[i].transfer) {
+            libusb_free_transfer(s_transfers[i].transfer);
+            s_transfers[i].transfer = NULL;
+        }
+        if (s_transfers[i].buffer) {
+            free(s_transfers[i].buffer);
+            s_transfers[i].buffer = NULL;
+        }
+    }
+
+    fprintf(stderr, "[FX3] Capture thread exiting after %d completed transfers\n",
+            atomic_load(&s_completed_count));
+
     return 0;
 }
 

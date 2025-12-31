@@ -34,7 +34,6 @@ typedef struct gui_app gui_app_t;
 // - Larger transfers = fewer USB transactions = higher throughput
 // - 256KB (8 x 32KB) gives good balance of latency vs throughput
 #define FX3_BUFFER_SIZE      (256 * 1024 / 4) * 2 // 64K samples = 256KB per transfer
-#define FX3_NUM_TRANSFERS    4                  // 8 async transfers for pipeline
 
 // FX3 USB endpoints
 #define FX3_EP_BULK_IN       0x82        // Bulk IN endpoint for ADC data
