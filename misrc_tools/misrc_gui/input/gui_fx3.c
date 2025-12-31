@@ -47,7 +47,7 @@
 
 // USB transfer parameters
 #define FX3_TRANSFER_SIZE    (FX3_BUFFER_SIZE * 4)  // 4 bytes per sample (32-bit packed)
-#define FX3_TRANSFER_TIMEOUT 1000                    // 1 second timeout
+#define FX3_TRANSFER_TIMEOUT 2000                    // 2 second timeout (matches fx3_test.c)
 #define FX3_CTRL_TIMEOUT     100                     // Control transfer timeout (ms)
 
 //-----------------------------------------------------------------------------
@@ -209,7 +209,7 @@ static int fx3_upload_firmware(const char *firmware_path) {
     long filesize = ftell(fp);
     fseek(fp, 0, SEEK_SET);
 
-    if (filesize < 8 || filesize > 256 * 1024) {
+    if (filesize < 8 || filesize > 512 * 1024) {
         fprintf(stderr, "[FX3] Invalid firmware file size: %ld\n", filesize);
         fclose(fp);
         return -1;
@@ -557,11 +557,10 @@ retry_after_firmware:;
                         }
 
                         // Wait for device to re-enumerate with new firmware
-                        // Sigrok waits 1 second before polling, then up to 3 seconds total
-                        fprintf(stderr, "[FX3] Waiting for device to re-enumerate (1s initial delay)...\n");
-                        thrd_sleep_ms(1000);  // 1 second initial delay as sigrok does
+                        fprintf(stderr, "[FX3] Waiting for device to re-enumerate (3s)...\n");
+                        thrd_sleep_ms(3000);  // 3 second initial delay
 
-                        for (int wait = 0; wait < 20; wait++) {  // Poll for up to 2 more seconds
+                        for (int wait = 0; wait < 30; wait++) {  // Poll for up to 3 more seconds
                             thrd_sleep_ms(100);  // 100ms
 
                             // Check if device appeared with firmware loaded
@@ -754,16 +753,23 @@ static int fx3_capture_thread(void *ctx) {
 
     fprintf(stderr, "[FX3] Capture thread started at %d MSPS\n", FX3_SAMPLE_RATE / 1000000);
 
+    // Wait for the start signal (CMD_START has been sent)
+    fprintf(stderr, "[FX3] Waiting for start signal...\n");
+    while (!atomic_load(&s_fx3_transfer_ready) && atomic_load(&app->fx3_running)) {
+        thrd_sleep_ms(10);
+    }
+
+    if (!atomic_load(&app->fx3_running)) {
+        fprintf(stderr, "[FX3] Capture thread cancelled before start\n");
+        free(transfer_buf);
+        return 0;
+    }
+
+    fprintf(stderr, "[FX3] Start signal received, beginning data transfers\n");
+
     // Clear any stale data from endpoint
     fprintf(stderr, "[FX3] Clearing endpoint 0x%02X...\n", FX3_EP_BULK_IN);
     libusb_clear_halt(s_fx3_handle, FX3_EP_BULK_IN);
-
-    // Diagnostic: Try a quick read BEFORE CMD_START to check endpoint status
-    int diag_len = 0;
-    int diag_ret = libusb_bulk_transfer(s_fx3_handle, FX3_EP_BULK_IN,
-                                         transfer_buf, 1024, &diag_len, 100);
-    fprintf(stderr, "[FX3] Pre-CMD_START test read: ret=%d (%s), len=%d\n",
-            diag_ret, libusb_error_name(diag_ret), diag_len);
 
     atomic_store(&app->stream_synced, true);
     atomic_store(&app->sample_rate, FX3_SAMPLE_RATE);
@@ -772,11 +778,8 @@ static int fx3_capture_thread(void *ctx) {
     uint64_t timeout_count = 0;
     int actual_length = 0;
 
-    // Signal that we're about to start the first transfer
-    fprintf(stderr, "[FX3] Capture thread signaling ready for transfers\n");
     fprintf(stderr, "[FX3] Transfer params: EP=0x%02X, size=%d, timeout=%dms\n",
             FX3_EP_BULK_IN, FX3_TRANSFER_SIZE, FX3_TRANSFER_TIMEOUT);
-    atomic_store(&s_fx3_transfer_ready, true);
 
     // Try configured endpoint first, then other bulk IN endpoints
     uint8_t endpoints_to_try[] = {FX3_EP_BULK_IN, 0x81, 0x83};
@@ -928,7 +931,10 @@ int gui_fx3_start(gui_app_t *app) {
         }
     }
 
-    // Start FX3 capture thread
+    // Initialize transfer ready flag (will be set after CMD_START)
+    atomic_store(&s_fx3_transfer_ready, false);
+
+    // Start FX3 capture thread (it will wait for s_fx3_transfer_ready signal)
     thrd_t thread;
     if (thrd_create(&thread, fx3_capture_thread, app) != thrd_success) {
         fprintf(stderr, "[FX3] Failed to create capture thread\n");
@@ -942,27 +948,8 @@ int gui_fx3_start(gui_app_t *app) {
     }
     app->fx3_thread = (void *)(uintptr_t)thread;
 
-    // Wait for capture thread to signal it's ready (about to call bulk transfer)
-    atomic_store(&s_fx3_transfer_ready, false);
-    fprintf(stderr, "[FX3] Waiting for capture thread to be ready...\n");
-    for (int i = 0; i < 100; i++) {  // Max 1 second wait
-        if (atomic_load(&s_fx3_transfer_ready)) {
-            fprintf(stderr, "[FX3] Capture thread ready after %d ms\n", i * 10);
-            break;
-        }
-        thrd_sleep_ms(10);
-    }
-    if (!atomic_load(&s_fx3_transfer_ready)) {
-        fprintf(stderr, "[FX3] Warning: Capture thread did not signal ready\n");
-    }
-
-    // Additional delay to ensure bulk transfer is actually pending in libusb
-    // The capture thread signals "ready" just before calling bulk_transfer,
-    // but we need to ensure the USB transfer is actually submitted
-    thrd_sleep_ms(100);
-    fprintf(stderr, "[FX3] Waited additional 100ms for bulk transfer to be pending\n");
-
-    // NOW send start acquisition command - capture thread is listening
+    // Send start acquisition command FIRST (like fx3_test.c does)
+    // The FX3 will start sending data immediately after this
     if (fx3_cmd_start_acquisition(FX3_SAMPLE_RATE) != 0) {
         fprintf(stderr, "[FX3] Failed to start acquisition\n");
         gui_app_set_status(app, "FX3: Failed to start acquisition");
@@ -977,6 +964,14 @@ int gui_fx3_start(gui_app_t *app) {
         app->is_capturing = false;
         return -1;
     }
+
+    // Small delay after CMD_START to let acquisition begin (like fx3_test.c)
+    thrd_sleep_ms(100);
+    fprintf(stderr, "[FX3] CMD_START sent, waited 100ms for acquisition to begin\n");
+
+    // NOW signal the capture thread to start reading data
+    atomic_store(&s_fx3_transfer_ready, true);
+    fprintf(stderr, "[FX3] Signaled capture thread to start reading\n");
 
     gui_app_set_status(app, "FX3 capture running");
     return 0;

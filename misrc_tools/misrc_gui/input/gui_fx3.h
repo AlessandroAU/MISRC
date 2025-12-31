@@ -26,8 +26,15 @@ typedef struct gui_app gui_app_t;
 //-----------------------------------------------------------------------------
 
 #define FX3_SAMPLE_RATE      40000000    // 40 MSPS - matches HDMI capture
-#define FX3_BUFFER_SIZE      65536       // Samples per USB transfer
-#define FX3_NUM_TRANSFERS    8           // Number of async USB transfers
+
+// USB transfer buffer configuration
+// FX3 firmware uses 32KB DMA buffers with 16-packet SuperSpeed bursts.
+// For optimal throughput:
+// - Transfer size should be multiple of 32KB (FX3 DMA buffer size)
+// - Larger transfers = fewer USB transactions = higher throughput
+// - 256KB (8 x 32KB) gives good balance of latency vs throughput
+#define FX3_BUFFER_SIZE      (256 * 1024 / 4) * 2 // 64K samples = 256KB per transfer
+#define FX3_NUM_TRANSFERS    4                  // 8 async transfers for pipeline
 
 // FX3 USB endpoints
 #define FX3_EP_BULK_IN       0x82        // Bulk IN endpoint for ADC data
