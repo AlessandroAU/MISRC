@@ -127,7 +127,7 @@ void gui_settings_init_defaults(gui_settings_t *settings) {
     // FLAC defaults
     settings->use_flac = true;
     settings->flac_12bit = false;
-    settings->flac_level = 4;             // Balanced compression
+    settings->flac_level = 8;             // Balanced compression
     settings->flac_verification = false;  // Faster
     settings->flac_threads = 0;           // Auto
     

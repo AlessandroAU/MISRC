@@ -15,27 +15,35 @@
 #include <sys/types.h>
 
 //-----------------------------------------------------------------------------
-// CVBS Signal Constants (for ~40 MSPS sample rate)
+// CVBS Signal Constants (derived from MISRC_SAMPLE_RATE_MHZ in gui_app.h)
 //-----------------------------------------------------------------------------
 
-// H-sync pulse timing
-#define CVBS_HSYNC_MIN_WIDTH  100    // Minimum H-sync samples (~2.5µs)
-#define CVBS_HSYNC_MAX_WIDTH  280    // Maximum H-sync samples (~7µs)
+// H-sync pulse timing (microseconds * MHz = samples)
+#define CVBS_HSYNC_MIN_US     2.5f
+#define CVBS_HSYNC_MAX_US     7.0f
+#define CVBS_HSYNC_MIN_WIDTH  ((int)(CVBS_HSYNC_MIN_US * MISRC_SAMPLE_RATE_MHZ))  // ~2.5µs
+#define CVBS_HSYNC_MAX_WIDTH  ((int)(CVBS_HSYNC_MAX_US * MISRC_SAMPLE_RATE_MHZ))  // ~7µs
 #define CVBS_SYNC_MARGIN      0.25f  // Threshold at 25% above minimum
 
-// V-sync broad pulse timing (for future use)
-#define CVBS_VSYNC_MIN_WIDTH  800    // Minimum V-sync broad pulse (~20µs)
-#define CVBS_VSYNC_MAX_WIDTH  1200   // Maximum V-sync broad pulse (~30µs)
+// V-sync broad pulse timing
+#define CVBS_VSYNC_MIN_US     20.0f
+#define CVBS_VSYNC_MAX_US     30.0f
+#define CVBS_VSYNC_MIN_WIDTH  ((int)(CVBS_VSYNC_MIN_US * MISRC_SAMPLE_RATE_MHZ))  // ~20µs
+#define CVBS_VSYNC_MAX_WIDTH  ((int)(CVBS_VSYNC_MAX_US * MISRC_SAMPLE_RATE_MHZ))  // ~30µs
 
 // Histogram-based level detection
 #define CVBS_HIST_BINS        128    // Number of histogram bins for level detection
 #define CVBS_HIST_MIN_PEAK    0.005f // Minimum peak height (0.5% of samples)
 
-// Line timing at 40 MSPS
-#define CVBS_PAL_LINE_SAMPLES   2560  // 64µs PAL line
-#define CVBS_NTSC_LINE_SAMPLES  2540  // 63.5µs NTSC line
-#define CVBS_BACK_PORCH_SAMPLES 228   // ~5.7µs back porch
-#define CVBS_ACTIVE_SAMPLES     2080  // ~52µs active video
+// Line timing (microseconds * MHz = samples)
+#define CVBS_PAL_LINE_US      64.0f
+#define CVBS_NTSC_LINE_US     63.5f
+#define CVBS_BACK_PORCH_US    5.7f
+#define CVBS_ACTIVE_US        52.0f
+#define CVBS_PAL_LINE_SAMPLES   ((int)(CVBS_PAL_LINE_US * MISRC_SAMPLE_RATE_MHZ))    // 64µs PAL line
+#define CVBS_NTSC_LINE_SAMPLES  ((int)(CVBS_NTSC_LINE_US * MISRC_SAMPLE_RATE_MHZ))   // 63.5µs NTSC line
+#define CVBS_BACK_PORCH_SAMPLES ((int)(CVBS_BACK_PORCH_US * MISRC_SAMPLE_RATE_MHZ))  // ~5.7µs back porch
+#define CVBS_ACTIVE_SAMPLES     ((int)(CVBS_ACTIVE_US * MISRC_SAMPLE_RATE_MHZ))      // ~52µs active video
 
 //-----------------------------------------------------------------------------
 // CVBS Signal Level Analysis

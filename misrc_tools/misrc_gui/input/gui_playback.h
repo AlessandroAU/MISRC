@@ -26,9 +26,9 @@ typedef struct gui_app gui_app_t;
 // Playback Configuration
 //-----------------------------------------------------------------------------
 
-#define PLAYBACK_SAMPLE_RATE      40000     // 40 kHz - matches MISRC recordings
-#define PLAYBACK_BUFFER_SIZE      65536     // Samples per batch (matches simulated)
-#define PLAYBACK_UPDATE_INTERVAL_MS  2      // Time between batches (matches simulated)
+#define PLAYBACK_SAMPLE_RATE      MISRC_FLAC_SAMPLE_RATE  // Uses master FLAC rate from gui_app.h
+#define PLAYBACK_BUFFER_SIZE      65536                    // Samples per batch (matches simulated)
+#define PLAYBACK_UPDATE_INTERVAL_MS  2                     // Time between batches (matches simulated)
 
 // Playback speed presets
 typedef enum {

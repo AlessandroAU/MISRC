@@ -654,7 +654,7 @@ int flac_file_writer(void *ctx)
 	filewriter_ctx_t *file_ctx = ctx;
 	size_t len = BUFFER_READ_SIZE;
 	void *buf;
-	uint32_t srate = 40000;
+	uint32_t srate = 80000;
 	int result;
 #if LIBSOXR_ENABLED == 1
 	uint8_t *resample_buffer = NULL;

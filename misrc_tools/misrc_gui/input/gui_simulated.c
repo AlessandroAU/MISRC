@@ -44,21 +44,21 @@
 #endif
 
 //-----------------------------------------------------------------------------
-// PAL Timing Constants (in samples at 40 MSPS)
+// PAL Timing Constants (derived from MISRC_SAMPLE_RATE_MHZ)
 // Using PAL-B/G standard (625 lines, 50 Hz, 4.43361875 MHz subcarrier)
 //-----------------------------------------------------------------------------
 
 #define PAL_LINE_DURATION_US     64.0      // One horizontal line (1/15625 Hz)
-#define PAL_LINE_SAMPLES         ((int)(PAL_LINE_DURATION_US * 40.0))   // 2560 samples per line
-#define PAL_HALF_LINE_SAMPLES    (PAL_LINE_SAMPLES / 2)                 // 1280 samples
+#define PAL_LINE_SAMPLES         ((int)(PAL_LINE_DURATION_US * MISRC_SAMPLE_RATE_MHZ))
+#define PAL_HALF_LINE_SAMPLES    (PAL_LINE_SAMPLES / 2)
 
 // Horizontal timing
 #define PAL_HSYNC_US             4.7       // H-sync pulse width
-#define PAL_HSYNC_SAMPLES        ((int)(PAL_HSYNC_US * 40.0))           // ~188 samples
+#define PAL_HSYNC_SAMPLES        ((int)(PAL_HSYNC_US * MISRC_SAMPLE_RATE_MHZ))
 #define PAL_BACK_PORCH_US        5.7       // Back porch (includes colorburst)
-#define PAL_BACK_PORCH_SAMPLES   ((int)(PAL_BACK_PORCH_US * 40.0))
+#define PAL_BACK_PORCH_SAMPLES   ((int)(PAL_BACK_PORCH_US * MISRC_SAMPLE_RATE_MHZ))
 #define PAL_FRONT_PORCH_US       1.65      // Front porch
-#define PAL_FRONT_PORCH_SAMPLES  ((int)(PAL_FRONT_PORCH_US * 40.0))
+#define PAL_FRONT_PORCH_SAMPLES  ((int)(PAL_FRONT_PORCH_US * MISRC_SAMPLE_RATE_MHZ))
 #define PAL_COLORBURST_CYCLES    10        // Number of colorburst cycles
 #define PAL_COLORBURST_FREQ      4433618.75 // 4.43361875 MHz color subcarrier
 
@@ -76,9 +76,9 @@
 
 // Equalizing and serration pulse widths
 #define PAL_EQ_PULSE_US              2.35   // Equalizing pulse width
-#define PAL_EQ_PULSE_SAMPLES         ((int)(PAL_EQ_PULSE_US * 40.0))
+#define PAL_EQ_PULSE_SAMPLES         ((int)(PAL_EQ_PULSE_US * MISRC_SAMPLE_RATE_MHZ))
 #define PAL_SERR_PULSE_US            4.7    // Serration pulse width
-#define PAL_SERR_PULSE_SAMPLES       ((int)(PAL_SERR_PULSE_US * 40.0))
+#define PAL_SERR_PULSE_SAMPLES       ((int)(PAL_SERR_PULSE_US * MISRC_SAMPLE_RATE_MHZ))
 
 // Use PAL constants throughout (aliased for compatibility with existing code)
 #define LINE_SAMPLES             PAL_LINE_SAMPLES
@@ -121,18 +121,15 @@ static double s_vhs_fm_phase = 0.0;  // FM phase must be accumulated (frequency 
 
 // Color carrier lookup table (hacktv approach)
 // The table length equals sample_rate / carrier_freq in lowest terms
-// For 40MHz / 3.579545MHz ≈ 11.177, but we use integer math
+// For MISRC_SAMPLE_RATE_MHZ MHz / 3.579545MHz, but we use integer math
 // hacktv uses { 39375000, 11 } = 3579545.4545... Hz exactly
-// At 40 MSPS: lookup_width = 40000000 * 11 / 39375000 = 440000000 / 39375000 ≈ 11.175
 // To get exact integer cycles, we'd need GCD, but for now use a large enough table
 #define COLOR_CARRIER_NUM  39375000   // Numerator (frequency * 11)
 #define COLOR_CARRIER_DEN  11         // Denominator
 // Actual carrier freq = 39375000 / 11 = 3579545.454545... Hz
 
 // Lookup table: stores cos and sin for each sample position in one color cycle period
-// Table width = sample_rate * denominator / numerator = 40000000 * 11 / 39375000
-// Simplified: 440000000 / 39375000 = 8800 / 787.5 ≈ 11.175
-// We'll compute this properly at init time
+// We'll compute this properly at init time using MISRC_SAMPLE_RATE
 static int16_t *s_colour_lookup_i = NULL;  // cos(phase) * 32767
 static int16_t *s_colour_lookup_q = NULL;  // sin(phase) * 32767
 static int s_colour_lookup_width = 0;
@@ -185,19 +182,13 @@ static void init_colour_lookup(void) {
     if (s_colour_lookup_i != NULL) return;  // Already initialized
 
     // PAL carrier: 4.43361875 MHz = 17734475/4 Hz (hacktv uses this rational)
-    // At 40 MSPS: samples per cycle = 40000000 / 4433618.75 ≈ 9.022
-    // For exact repeat: 40000000 * 4 / 17734475 = 160000000 / 17734475
-    // GCD(160000000, 17734475) = 25 -> 6400000 / 709379
+    // Samples per cycle = MISRC_SAMPLE_RATE / 4433618.75
     // This doesn't simplify nicely, so use a large table
     // hacktv uses: colour_lookup_width = a.num where a = pixel_rate / carrier
     // For PAL at various sample rates, they compute the exact rational
 
-    // For simplicity, use enough samples to cover many complete cycles
-    // 709379 samples would give exact 6400000 cycles, but that's huge
-    // Instead use a reasonable size that covers several lines worth
-    // At 9.022 samples/cycle, 2560 samples = ~284 cycles (close enough)
-
-    s_colour_lookup_width = 2560;  // One line width for PAL
+    // For simplicity, use one line width (covers many complete cycles)
+    s_colour_lookup_width = LINE_SAMPLES;
     int total_size = s_colour_lookup_width + LINE_SAMPLES;
 
     s_colour_lookup_i = (int16_t *)malloc(total_size * sizeof(int16_t));
@@ -209,7 +200,6 @@ static void init_colour_lookup(void) {
     }
 
     // Phase increment per sample = 2*PI * (carrier_freq / sample_rate)
-    // PAL: 2*PI * 4433618.75 / 40000000
     double phase_inc = 2.0 * M_PI * PAL_COLORBURST_FREQ / (double)SIM_SAMPLE_RATE;
 
     for (int i = 0; i < total_size; i++) {
@@ -474,8 +464,8 @@ static double sim_generate_cvbs(uint64_t sample_index, int *out_line_number, int
             else if (sample_in_line < active_start) {
                 // Back porch - includes color burst
                 int back_porch_pos = sample_in_line - HSYNC_SAMPLES;
-                int burst_start = (int)(0.6 * 40);   // 0.6µs after hsync
-                int burst_duration = (int)(COLORBURST_CYCLES * 40.0 / (COLORBURST_FREQ / 1000000.0));
+                int burst_start = (int)(0.6 * MISRC_SAMPLE_RATE_MHZ);   // 0.6µs after hsync
+                int burst_duration = (int)(COLORBURST_CYCLES * MISRC_SAMPLE_RATE_MHZ / (COLORBURST_FREQ / 1000000.0));
 
                 if (back_porch_pos >= burst_start && back_porch_pos < burst_start + burst_duration) {
                     // PAL colorburst: 135° phase (swinging ±45° from line to line)

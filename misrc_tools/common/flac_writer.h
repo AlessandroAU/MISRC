@@ -53,7 +53,7 @@ typedef void (*flac_bytes_written_callback_t)(
  * ============================================================================ */
 typedef struct {
     // Core encoder settings
-    uint32_t sample_rate;            // Sample rate in Hz (default: 40000)
+    uint32_t sample_rate;            // Sample rate in Hz (default: 80000)
     uint8_t bits_per_sample;         // 8, 12, or 16 (default: 16)
     uint8_t compression_level;       // 0-8 (default: 1)
     bool verify;                     // Enable verification (default: false)
@@ -81,7 +81,7 @@ typedef struct flac_writer flac_writer_t;
  * ============================================================================ */
 
 // Create default configuration with sensible defaults
-// Returns config: 40kHz, 16-bit, level 1, no verify, auto threads, seektable enabled
+// Returns config: 80kHz, 16-bit, level 1, no verify, auto threads, seektable enabled
 flac_writer_config_t flac_writer_default_config(void);
 
 // Create writer and initialize encoder for FILE* output

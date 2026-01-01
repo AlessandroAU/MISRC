@@ -141,13 +141,13 @@ static void report_error(flac_writer_t *writer, flac_writer_error_t error, const
  * ============================================================================ */
 flac_writer_config_t flac_writer_default_config(void) {
     flac_writer_config_t config = {
-        .sample_rate = 40000,
+        .sample_rate = 80000,
         .bits_per_sample = 16,
         .compression_level = 1,
         .verify = false,
         .num_threads = 0,  // Auto-detect
         .enable_seektable = true,
-        .seektable_spacing = 1 << 18,  // ~6.5 seconds at 40kHz
+        .seektable_spacing = 1 << 18,  // ~3.3 seconds at 80kHz
         .error_cb = NULL,
         .bytes_cb = NULL,
         .callback_user_data = NULL

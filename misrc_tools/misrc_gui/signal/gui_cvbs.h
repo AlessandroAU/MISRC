@@ -49,9 +49,9 @@ typedef enum {
 #define CVBS_PAL_ACTIVE_LINES 576
 #define CVBS_NTSC_ACTIVE_LINES 480
 
-// Timing at 40 MSPS (from gui_trigger.h constants)
-#define CVBS_SAMPLES_PER_LINE_PAL   CVBS_PAL_LINE_SAMPLES    // 2560
-#define CVBS_SAMPLES_PER_LINE_NTSC  CVBS_NTSC_LINE_SAMPLES   // 2540
+// Timing (derived from gui_trigger.h constants which use MISRC_SAMPLE_RATE_MHZ)
+#define CVBS_SAMPLES_PER_LINE_PAL   CVBS_PAL_LINE_SAMPLES    // 64µs * MISRC_SAMPLE_RATE_MHZ
+#define CVBS_SAMPLES_PER_LINE_NTSC  CVBS_NTSC_LINE_SAMPLES   // 63.5µs * MISRC_SAMPLE_RATE_MHZ
 
 //-----------------------------------------------------------------------------
 // Decoder State Structures
@@ -98,8 +98,8 @@ typedef struct {
     bool in_vsync;                 // Currently in V-sync region
 } cvbs_vsync_state_t;
 
-// Histogram-based level detection buffer size
-#define CVBS_LEVEL_SAMPLE_BUFFER_SIZE  16384  // ~0.4ms of samples at 40 MSPS
+// Histogram-based level detection buffer size (~0.4ms of samples)
+#define CVBS_LEVEL_SAMPLE_BUFFER_SIZE  ((int)(0.4f * MISRC_SAMPLE_RATE_MHZ * 1000))
 
 // Adaptive threshold state (histogram-based)
 typedef struct {
@@ -116,7 +116,8 @@ typedef struct {
 
 // Line buffer size - stores one complete line of samples for decoding
 // We need this because H-sync edges may not align with buffer boundaries
-#define CVBS_LINE_BUFFER_SIZE   3000  // Slightly more than max line period (2560 PAL)
+// Slightly more than max line period (PAL = 64µs)
+#define CVBS_LINE_BUFFER_SIZE   ((int)(75.0f * MISRC_SAMPLE_RATE_MHZ))  // ~75µs buffer
 
 // Main decoder structure
 typedef struct cvbs_decoder {

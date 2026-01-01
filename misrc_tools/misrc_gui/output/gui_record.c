@@ -418,7 +418,7 @@ static int gui_record_start_confirmed(gui_app_t *app) {
 
         // Configure FLAC writers using shared library
         flac_writer_config_t config = flac_writer_default_config();
-        config.sample_rate = 40000;
+        config.sample_rate = MISRC_FLAC_SAMPLE_RATE;
         // bits_per_sample is set per-channel below
         config.bits_per_sample = 16;
         config.compression_level = app->settings.flac_level;

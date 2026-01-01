@@ -6,7 +6,7 @@
  *
  * Features:
  * - Direct USB 3.0 bulk transfers via libcyusb
- * - 40 MSPS dual-channel ADC capture
+ * - 80 MSPS dual-channel ADC capture
  * - Same data format as hsdaoh (12-bit ADC A + 12-bit ADC B + 8-bit AUX)
  */
 
@@ -25,7 +25,7 @@ typedef struct gui_app gui_app_t;
 // FX3 Device Configuration
 //-----------------------------------------------------------------------------
 
-#define FX3_SAMPLE_RATE      40000000    // 40 MSPS - matches HDMI capture
+#define FX3_SAMPLE_RATE      MISRC_SAMPLE_RATE   // Uses master sample rate from gui_app.h
 
 // USB transfer buffer configuration
 // FX3 firmware uses 32KB DMA buffers with 16-packet SuperSpeed bursts.
@@ -44,8 +44,15 @@ typedef struct gui_app gui_app_t;
 #define FX3_CMD_START            0xb1    // Start acquisition
 #define FX3_CMD_GET_REVID        0xb2    // Get revision ID
 
-// FX3 PIB clock for sample rate calculation (from sigrok)
-#define FX3_PIB_CLOCK            400000000  // 400 MHz
+// FX3 clock configuration for sample rate calculation
+// SYS_CLK = 480 MHz, PIB_CLK = 400 MHz (from sigrok)
+#define FX3_SYS_CLOCK            480000000  // 480 MHz system clock
+#define FX3_PIB_CLOCK            400000000  // 400 MHz PIB clock
+
+// Clock divisor calculation: clock_divisor_x2 = SYS_CLK / sample_rate * 2 = 960 / sample_rate_mhz
+// GPIF clock = SYS_CLK / (clock_divisor_x2 / 2) = sample_rate
+// Examples: 20 MHz -> 48, 40 MHz -> 24, 80 MHz -> 12
+#define FX3_CLOCK_DIVISOR_X2     (960 / MISRC_SAMPLE_RATE_MHZ)
 
 // FX3 firmware upload parameters
 #define FX3_FW_CHUNK_SIZE        4096    // Max bytes per control transfer

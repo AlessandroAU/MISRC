@@ -133,14 +133,18 @@ static int fx3_cmd_start_acquisition(uint32_t sample_rate) {
     struct fx3_cmd_start_acquisition cmd;
     cmd.sampling_factor = (uint16_t)(FX3_PIB_CLOCK / sample_rate);
 
-    fprintf(stderr, "[FX3] Starting acquisition: sample_rate=%u, sampling_factor=%u\n",
-            sample_rate, cmd.sampling_factor);
+    // Calculate clock divisor: clock_divisor_x2 = 960 / sample_rate_mhz
+    // This sets GPIF clock = SYS_CLK / (clock_divisor_x2 / 2) = sample_rate
+    uint16_t clock_divisor_x2 = FX3_CLOCK_DIVISOR_X2;
+
+    fprintf(stderr, "[FX3] Starting acquisition: sample_rate=%u MHz, clock_divisor_x2=%u, sampling_factor=%u\n",
+            sample_rate / 1000000, clock_divisor_x2, cmd.sampling_factor);
 
     int ret = libusb_control_transfer(s_fx3_handle,
         LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_ENDPOINT_OUT,
         FX3_CMD_START,
-        0x0000, 0x0000,
-        (unsigned char *)&cmd, sizeof(cmd),
+        0x0001, 0x0000,
+        (unsigned char *)&clock_divisor_x2, sizeof(cmd),
         FX3_CTRL_TIMEOUT);
 
     if (ret < 0) {

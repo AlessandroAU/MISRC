@@ -116,8 +116,18 @@ typedef struct {
 #define ZOOM_SCALE_MAX 128.0f  // 128 samples per pixel (max zoom out)
 #define ZOOM_SCALE_DEFAULT 32.0f
 
-// Default sample rate (40 MSPS per channel)
-#define DEFAULT_SAMPLE_RATE 40000000
+//-----------------------------------------------------------------------------
+// Master Sample Rate Configuration
+//-----------------------------------------------------------------------------
+// All timing constants throughout the codebase are derived from this value.
+// To change the sample rate, modify MISRC_SAMPLE_RATE_MHZ here.
+
+#define MISRC_SAMPLE_RATE_MHZ   20                                      // Sample rate in MHz
+#define MISRC_SAMPLE_RATE       (MISRC_SAMPLE_RATE_MHZ * 1000000)       // Sample rate in Hz (80000000)
+#define MISRC_FLAC_SAMPLE_RATE  (MISRC_SAMPLE_RATE_MHZ * 1000)          // FLAC sample rate in Hz (80000)
+
+// Legacy alias for compatibility
+#define DEFAULT_SAMPLE_RATE     MISRC_SAMPLE_RATE
 
 // Digital phosphor display settings
 #define PHOSPHOR_MAX_WIDTH 4096   // Maximum phosphor buffer width (pixels)

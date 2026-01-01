@@ -23,7 +23,8 @@ static double g_field_decode_avg_ms = 0.0;  // Last completed field's decode tim
 //-----------------------------------------------------------------------------
 
 // Back porch offset (after H-sync, before active video)
-#define BACK_PORCH_SAMPLES      228  // ~7µs - slightly more than standard to skip color burst
+// ~7µs - slightly more than standard to skip color burst
+#define BACK_PORCH_SAMPLES      ((int)(7.0f * MISRC_SAMPLE_RATE_MHZ))
 
 // Field detection constants
 #define PAL_FIELD_LINES         312  // Lines per PAL field (312.5 rounded)
@@ -40,8 +41,8 @@ static double g_field_decode_avg_ms = 0.0;  // Last completed field's decode tim
 //-----------------------------------------------------------------------------
 
 // Luma lowpass filter to remove chroma subcarrier
-// At 40 MSPS: PAL color burst = 4.43 MHz (~9 samples/cycle)
-// 9-tap filter matches PAL chroma cycle, works well for NTSC too
+// PAL color burst = 4.43 MHz, samples/cycle = MISRC_SAMPLE_RATE_MHZ / 4.43 ≈ 18 at 80 MHz
+// 9-tap filter still works, could be extended for better filtering
 #define LUMA_LPF_TAPS  9
 #define LUMA_LPF_HALF  4   // Half the taps (for centering)
 
@@ -54,8 +55,8 @@ static const int16_t luma_kernel[LUMA_LPF_TAPS] = {
 #define LUMA_KERNEL_SHIFT 8  // Divide by 256 = shift right 8
 
 // Pre-filtered line buffer (avoids per-pixel convolution)
-// Max active samples is ~2100, add padding for filter taps
-#define FILTERED_LINE_MAX 2200
+// Max active samples ≈ 52µs * MISRC_SAMPLE_RATE_MHZ, add padding for filter taps
+#define FILTERED_LINE_MAX ((int)(55.0f * MISRC_SAMPLE_RATE_MHZ))
 static int16_t g_filtered_line[FILTERED_LINE_MAX];
 
 // Decode a single video line from samples to grayscale pixels
@@ -525,16 +526,17 @@ static void commit_adaptive_levels(cvbs_decoder_t *decoder) {
 #define PLL_LOCK_COUNT      10      // Good syncs needed to declare lock
 #define PLL_UNLOCK_COUNT    5       // Bad syncs to lose lock
 
-// H-sync pulse validation (aligned with gui_trigger.h constants)
-#define HSYNC_MIN_WIDTH     CVBS_HSYNC_MIN_WIDTH  // 100 samples (~2.5µs minimum)
-#define HSYNC_MAX_WIDTH     CVBS_HSYNC_MAX_WIDTH  // 280 samples (~7µs maximum)
+// H-sync pulse validation (derived from gui_trigger.h constants)
+#define HSYNC_MIN_WIDTH     CVBS_HSYNC_MIN_WIDTH  // ~2.5µs minimum
+#define HSYNC_MAX_WIDTH     CVBS_HSYNC_MAX_WIDTH  // ~7µs maximum
 
 // Lowpass filter coefficient (IIR single-pole) - Fixed-point Q8
-// At 40 MSPS, a cutoff of ~500kHz gives alpha ≈ 0.08
+// Cutoff ~500kHz: alpha ≈ 2*PI*500000 / MISRC_SAMPLE_RATE
+// At 80 MSPS: alpha ≈ 0.039, at 40 MSPS: alpha ≈ 0.078
 // Lower alpha = more smoothing (removes HF noise while preserving sync edges)
-// Fixed-point: alpha = 20/256 ≈ 0.078, (1-alpha) = 236/256 ≈ 0.922
-#define LPF_ALPHA_FP        20      // 0.08 * 256 ≈ 20
-#define LPF_ONE_MINUS_FP    236     // (1 - 0.08) * 256 ≈ 236
+// Using 20/MISRC_SAMPLE_RATE_MHZ * 256 / 10 ≈ 10 at 80MHz, 20 at 40MHz
+#define LPF_ALPHA_FP        (256 * 4 / MISRC_SAMPLE_RATE_MHZ)  // scales with sample rate
+#define LPF_ONE_MINUS_FP    (256 - LPF_ALPHA_FP)
 #define LPF_SHIFT           8       // Divide by 256
 
 //-----------------------------------------------------------------------------
@@ -572,8 +574,19 @@ typedef struct {
     double phase_at_sync;      // PLL phase when sync was detected
 } hsync_result_t;
 
+// V-sync interval detection constants (derived from sample rate)
+// Half-line = ~32µs, Full line = ~64µs (PAL)
+#define VSYNC_HALF_LINE_MIN_US  25.0f
+#define VSYNC_HALF_LINE_MAX_US  40.0f
+#define VSYNC_FULL_LINE_MIN_US  55.0f
+#define VSYNC_FULL_LINE_MAX_US  75.0f
+#define VSYNC_HALF_LINE_MIN     ((int)(VSYNC_HALF_LINE_MIN_US * MISRC_SAMPLE_RATE_MHZ))
+#define VSYNC_HALF_LINE_MAX     ((int)(VSYNC_HALF_LINE_MAX_US * MISRC_SAMPLE_RATE_MHZ))
+#define VSYNC_FULL_LINE_MIN     ((int)(VSYNC_FULL_LINE_MIN_US * MISRC_SAMPLE_RATE_MHZ))
+#define VSYNC_FULL_LINE_MAX     ((int)(VSYNC_FULL_LINE_MAX_US * MISRC_SAMPLE_RATE_MHZ))
+
 // Detect V-sync by tracking falling edge intervals
-// V-sync region has half-line rate pulses (~1280 samples apart vs ~2560 for normal lines)
+// V-sync region has half-line rate pulses (~32µs apart vs ~64µs for normal lines)
 // Field detection: odd field has 16 half-lines, even field has 14
 static vsync_result_t detect_vsync(cvbs_decoder_t *decoder, int16_t filtered,
                                     int16_t threshold, size_t sample_pos) {
@@ -587,8 +600,8 @@ static vsync_result_t detect_vsync(cvbs_decoder_t *decoder, int16_t filtered,
         result.interval = sample_pos - decoder->vsync_last_edge_pos;
         decoder->vsync_last_edge_pos = sample_pos;
 
-        // Half-line interval: 1000-1600 samples (vs 2200-3000 for full line)
-        bool is_half_line = (result.interval >= 1000 && result.interval <= 1600);
+        // Half-line interval detection (derived from sample rate)
+        bool is_half_line = (result.interval >= VSYNC_HALF_LINE_MIN && result.interval <= VSYNC_HALF_LINE_MAX);
 
         if (is_half_line) {
             vs->half_line_count++;
@@ -600,7 +613,7 @@ static vsync_result_t detect_vsync(cvbs_decoder_t *decoder, int16_t filtered,
             }
         } else {
             // Full line interval - if in V-sync, it's ending
-            if (vs->in_vsync && result.interval >= 2200 && result.interval <= 3000) {
+            if (vs->in_vsync && result.interval >= VSYNC_FULL_LINE_MIN && result.interval <= VSYNC_FULL_LINE_MAX) {
                 vs->in_vsync = false;
                 result.vsync_complete = true;
 
@@ -972,8 +985,8 @@ void gui_cvbs_process_buffer(cvbs_decoder_t *decoder,
             decoder->vsync_last_edge_pos = global_sample_pos;
             cvbs_vsync_state_t *vs = &decoder->vsync;
 
-            // Half-line interval: 1000-1600 samples (vs 2200-3000 for full line)
-            bool is_half_line = (interval >= 1000 && interval <= 1600);
+            // Half-line interval detection (derived from sample rate)
+            bool is_half_line = (interval >= VSYNC_HALF_LINE_MIN && interval <= VSYNC_HALF_LINE_MAX);
 
             if (is_half_line) {
                 vs->half_line_count++;
@@ -982,7 +995,7 @@ void gui_cvbs_process_buffer(cvbs_decoder_t *decoder,
                     vs->in_vsync = true;
                     vs->total_half_lines = vs->half_line_count;
                 }
-            } else if (vs->in_vsync && interval >= 2200 && interval <= 3000) {
+            } else if (vs->in_vsync && interval >= VSYNC_FULL_LINE_MIN && interval <= VSYNC_FULL_LINE_MAX) {
                 // V-sync complete
                 vs->in_vsync = false;
                 decoder->debug.last_half_line_count = vs->total_half_lines;

@@ -25,9 +25,9 @@ typedef struct gui_app gui_app_t;
 // Simulated Device Configuration
 //-----------------------------------------------------------------------------
 
-#define SIM_SAMPLE_RATE      40000000    // 40 MSPS - matches real hardware
-#define SIM_BUFFER_SIZE      65536       // Samples per batch
-#define SIM_UPDATE_INTERVAL_MS  2        // Time between batches
+#define SIM_SAMPLE_RATE      MISRC_SAMPLE_RATE   // Uses master sample rate from gui_app.h
+#define SIM_BUFFER_SIZE      65536               // Samples per batch
+#define SIM_UPDATE_INTERVAL_MS  2                // Time between batches
 
 //-----------------------------------------------------------------------------
 // Simulated Device API
