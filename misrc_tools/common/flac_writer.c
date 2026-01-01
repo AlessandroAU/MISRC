@@ -8,6 +8,19 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Large file support for files > 2GB */
+#if defined(_WIN32) || defined(_WIN64)
+#include <io.h>
+#define fseek_large(f, off, whence) _fseeki64((f), (off), (whence))
+#define ftell_large(f) _ftelli64(f)
+typedef __int64 file_offset_t;
+#else
+/* POSIX: use fseeko/ftello with _FILE_OFFSET_BITS=64 */
+#define fseek_large(f, off, whence) fseeko((f), (off), (whence))
+#define ftell_large(f) ftello(f)
+typedef off_t file_offset_t;
+#endif
+
 #if LIBFLAC_ENABLED == 1
 
 #include "FLAC/stream_encoder.h"
@@ -100,7 +113,7 @@ static FLAC__StreamEncoderSeekStatus stream_seek_callback(
     (void)encoder;
     flac_writer_t *writer = (flac_writer_t *)client_data;
 
-    if (fseek(writer->output_file, (long)absolute_byte_offset, SEEK_SET) < 0) {
+    if (fseek_large(writer->output_file, (file_offset_t)absolute_byte_offset, SEEK_SET) != 0) {
         return FLAC__STREAM_ENCODER_SEEK_STATUS_ERROR;
     }
     return FLAC__STREAM_ENCODER_SEEK_STATUS_OK;
@@ -115,7 +128,7 @@ static FLAC__StreamEncoderTellStatus stream_tell_callback(
     (void)encoder;
     flac_writer_t *writer = (flac_writer_t *)client_data;
 
-    long pos = ftell(writer->output_file);
+    file_offset_t pos = ftell_large(writer->output_file);
     if (pos < 0) {
         return FLAC__STREAM_ENCODER_TELL_STATUS_ERROR;
     }
