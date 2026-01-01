@@ -169,7 +169,7 @@ bool gui_cvbs_init(cvbs_decoder_t *decoder) {
 
     // Allocate deinterlaced frame buffer at full-frame resolution (D1)
     decoder->frame_width = CVBS_FRAME_WIDTH;
-    decoder->frame_height = CVBS_PAL_HEIGHT;  // Start with PAL full-frame height
+    atomic_init(&decoder->frame_height, CVBS_PAL_HEIGHT);  // Start with PAL full-frame height
     decoder->frame_buffer = (uint8_t *)calloc(CVBS_FRAME_WIDTH * CVBS_MAX_HEIGHT, 1);
     if (!decoder->frame_buffer) {
         free(decoder->field_buffer[0]);
@@ -197,6 +197,8 @@ bool gui_cvbs_init(cvbs_decoder_t *decoder) {
         return false;
     }
     atomic_init(&decoder->display_ready, 0);
+    atomic_init(&decoder->display_height, CVBS_PAL_HEIGHT);
+    decoder->front_height = CVBS_PAL_HEIGHT;
 
     // Create raylib Image for video display (RGBA format at full-frame resolution)
     // Allocate our own pixel buffer so we control the memory
@@ -362,6 +364,10 @@ void gui_cvbs_reset(cvbs_decoder_t *decoder) {
         memset(decoder->display_back, 0, CVBS_FRAME_WIDTH * CVBS_MAX_HEIGHT);
     }
     atomic_store(&decoder->display_ready, 0);
+    // Reset display height to match current frame_height
+    int cur_height = atomic_load(&decoder->frame_height);
+    atomic_store(&decoder->display_height, cur_height);
+    decoder->front_height = cur_height;
 
     // Reset line buffer
     decoder->line_buffer_count = 0;
@@ -370,6 +376,10 @@ void gui_cvbs_reset(cvbs_decoder_t *decoder) {
     int16_t *level_buf = decoder->adaptive.level_sample_buf;
     memset(&decoder->adaptive, 0, sizeof(decoder->adaptive));
     decoder->adaptive.level_sample_buf = level_buf;
+
+    // Reset legacy levels struct to force re-detection
+    // This ensures the decoder won't process with stale levels after a format switch
+    memset(&decoder->levels, 0, sizeof(decoder->levels));
 
     // Reset software PLL (keep line period consistent with selected system)
     decoder->pll.phase = 0;
@@ -682,9 +692,10 @@ static void deinterlace_fields(cvbs_decoder_t *decoder) {
                        NTSC_FIELD_HEIGHT : PAL_FIELD_HEIGHT;
     int frame_height = field_height * 2;
 
-    // Clamp to buffer limits
-    if (frame_height > decoder->frame_height) {
-        frame_height = decoder->frame_height;
+    // Clamp to buffer limits (use atomic load for thread safety)
+    int max_height = atomic_load(&decoder->frame_height);
+    if (frame_height > max_height) {
+        frame_height = max_height;
         field_height = frame_height / 2;
     }
 
@@ -798,6 +809,13 @@ static void complete_field_pll(cvbs_decoder_t *decoder) {
         return;
     }
 
+    // Don't display frames until we have valid signal levels
+    // This prevents showing garbage frames during initial level detection
+    // or after a format switch while levels are being re-learned
+    if (decoder->levels.range < 100) {
+        return;
+    }
+
     // Mark this field as received
     int field_idx = decoder->state.current_field ? 1 : 0;
     decoder->field_ready[field_idx] = true;
@@ -807,12 +825,15 @@ static void complete_field_pll(cvbs_decoder_t *decoder) {
     deinterlace_fields(decoder);
 
     // Copy deinterlaced frame to back buffer (display thread writes here)
-    int frame_h = decoder->frame_height;
+    // Read frame_height atomically and store it with the frame so render thread
+    // knows the correct height to use when swapping buffers
+    int frame_h = atomic_load(&decoder->frame_height);
     if (frame_h > CVBS_MAX_HEIGHT) frame_h = CVBS_MAX_HEIGHT;
 
     memcpy(decoder->display_back, decoder->frame_buffer,
            (size_t)CVBS_FRAME_WIDTH * (size_t)frame_h);
-    // Signal that new frame is ready for the render thread
+    // Store the height used for this frame, then signal ready
+    atomic_store(&decoder->display_height, frame_h);
     atomic_store(&decoder->display_ready, 1);
     decoder->state.frame_complete = true;
     decoder->state.frames_decoded++;
@@ -931,10 +952,20 @@ void gui_cvbs_process_buffer(cvbs_decoder_t *decoder,
     // Start timing for this buffer processing
     uint64_t start_time = get_time_us();
 
-    // Check for minimum signal strength (skip until first V-sync commits levels)
-    if (decoder->levels.range < 100 && decoder->debug.vsync_found > 0) {
-        decoder->sync_errors++;
-        return;
+    // If we don't have valid levels yet, analyze this buffer immediately
+    // This provides instant initialization instead of waiting for V-sync detection
+    if (decoder->levels.range < 100) {
+        cvbs_levels_t detected;
+        trigger_analyze_cvbs_levels(buf, count, &detected);
+        if (detected.range >= 100) {
+            // Initialize levels directly from first buffer analysis
+            decoder->adaptive.sync_tip = detected.sig_min;
+            decoder->adaptive.blanking = detected.black_level;
+            decoder->adaptive.black = detected.black_level;
+            decoder->adaptive.white = detected.white_level;
+            decoder->adaptive.threshold = detected.sync_threshold;
+            decoder->levels = detected;
+        }
     }
 
     // Cache frequently accessed values in local variables
@@ -1085,11 +1116,14 @@ void gui_cvbs_swap_buffers(cvbs_decoder_t *decoder) {
 
     // Check if new frame is available
     if (atomic_exchange(&decoder->display_ready, 0)) {
-        // Copy back buffer to front buffer
-        int frame_h = decoder->frame_height;
+        // Read the height that was used when the back buffer was written
+        // This ensures we copy exactly the data that was written, avoiding race conditions
+        int frame_h = atomic_load(&decoder->display_height);
         if (frame_h > CVBS_MAX_HEIGHT) frame_h = CVBS_MAX_HEIGHT;
         memcpy(decoder->display_front, decoder->display_back,
                (size_t)CVBS_FRAME_WIDTH * (size_t)frame_h);
+        // Store the height for the render function to use
+        decoder->front_height = frame_h;
     }
 }
 
@@ -1110,8 +1144,9 @@ void gui_cvbs_render_frame(cvbs_decoder_t *decoder,
         decoder->texture_valid = true;
     }
 
-    // Get frame height
-    int field_h = decoder->frame_height;
+    // Get frame height from front buffer (set by swap_buffers, render thread only)
+    int field_h = decoder->front_height;
+    if (field_h <= 0) field_h = CVBS_PAL_HEIGHT;  // Fallback if not yet set
     if (field_h > CVBS_MAX_HEIGHT) field_h = CVBS_MAX_HEIGHT;
 
     // Convert grayscale to RGBA for the image
@@ -1201,14 +1236,14 @@ void gui_cvbs_set_format(cvbs_decoder_t *decoder, int format_select) {
         if (new_format == CVBS_FORMAT_NTSC) {
             decoder->state.total_lines = CVBS_NTSC_TOTAL_LINES;
             decoder->state.active_lines = CVBS_NTSC_ACTIVE_LINES;
-            decoder->frame_height = CVBS_NTSC_HEIGHT;
+            atomic_store(&decoder->frame_height, CVBS_NTSC_HEIGHT);
             decoder->field_height = NTSC_FIELD_HEIGHT;
             decoder->pll.line_period = CVBS_NTSC_LINE_SAMPLES;
         } else {
             // PAL and SECAM share line/field geometry for luma
             decoder->state.total_lines = CVBS_PAL_TOTAL_LINES;
             decoder->state.active_lines = CVBS_PAL_ACTIVE_LINES;
-            decoder->frame_height = CVBS_PAL_HEIGHT;
+            atomic_store(&decoder->frame_height, CVBS_PAL_HEIGHT);
             decoder->field_height = PAL_FIELD_HEIGHT;
             decoder->pll.line_period = CVBS_PAL_LINE_SAMPLES;
         }

@@ -134,13 +134,15 @@ typedef struct cvbs_decoder {
     // Deinterlaced frame buffer (720 x full_height)
     uint8_t *frame_buffer;         // Deinterlaced output frame
     int frame_width;               // Always CVBS_FRAME_WIDTH (720)
-    int frame_height;              // Full frame height (576 PAL, 486 NTSC)
+    atomic_int frame_height;       // Full frame height (576 PAL, 486 NTSC) - atomic for thread safety
 
     // Double buffering for thread-safe display
     // Display thread writes to back buffer, render thread reads from front
     uint8_t *display_front;        // Front buffer - read by render thread
     uint8_t *display_back;         // Back buffer - written by display thread
     atomic_int display_ready;      // 1 when back buffer has new frame to swap
+    atomic_int display_height;     // Height used when writing to back buffer (for render thread)
+    int front_height;              // Height of data in front buffer (render thread only)
 
     // GPU resources for video display
     Image frame_image;
