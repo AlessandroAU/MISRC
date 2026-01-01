@@ -18,6 +18,10 @@
 #include "../../common/threading.h"
 #include "../../common/buffer.h"
 
+#if ENABLE_ANTIALIASING
+#include "../signal/gui_antialias.h"
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -65,6 +69,14 @@ static rb_event_t s_data_event;       // Signaled when new data is available in 
 static rb_event_t s_space_event;      // Signaled when space becomes available in ringbuffer
 static bool s_events_initialized = false;
 
+#if ENABLE_ANTIALIASING
+// Anti-aliasing filter state (per-channel)
+static antialias_coeffs_t s_aa_coeffs;
+static antialias_state_t s_aa_state_a;
+static antialias_state_t s_aa_state_b;
+static bool s_aa_initialized = false;
+#endif
+
 // Note: Record buffer events now managed by buffer manager
 
 // Periodic buffer stats logging interval (in frames, ~1 frame = 65536 samples at 40MHz = 1.64ms)
@@ -104,6 +116,13 @@ static int extraction_thread(void *ctx) {
 
         // Mark capture buffer as consumed via buffer manager
         bufmgr_read_end(&s_extract_app->buffers, BUF_CAPTURE_RF, read_size);
+
+#if ENABLE_ANTIALIASING
+        // Apply anti-aliasing lowpass filter to both channels
+        // Filter is at 75% of Nyquist to prevent aliasing during later processing
+        antialias_process_buffer_fast(&s_aa_coeffs, &s_aa_state_a, s_buf_a, BUFFER_READ_SIZE);
+        antialias_process_buffer_fast(&s_aa_coeffs, &s_aa_state_b, s_buf_b, BUFFER_READ_SIZE);
+#endif
 
         // Signal that space is now available (buffer manager handles events internally)
 
@@ -303,6 +322,19 @@ void gui_extract_init(void) {
         }
     }
 
+#if ENABLE_ANTIALIASING
+    // Initialize anti-aliasing filter coefficients
+    // Cutoff at 75% of Nyquist frequency (0.75 * sample_rate / 2 = 0.375 * sample_rate)
+    if (!s_aa_initialized) {
+        antialias_init_coeffs(&s_aa_coeffs, (float)MISRC_SAMPLE_RATE, 0.55f);
+        antialias_reset(&s_aa_state_a);
+        antialias_reset(&s_aa_state_b);
+        s_aa_initialized = true;
+        fprintf(stderr, "[EXTRACT] Anti-aliasing filter initialized (cutoff: %.2f MHz, 75%% Nyquist)\n",
+                (float)MISRC_SAMPLE_RATE * 0.375f / 1e6f);
+    }
+#endif
+
     // Note: Record buffer events now managed by buffer manager
 
     s_initialized = true;
@@ -367,6 +399,12 @@ int gui_extract_start(gui_app_t *app) {
     s_extract_app = app;
     atomic_store(&s_recording_enabled, false);
     atomic_store(&s_use_flac, false);
+
+#if ENABLE_ANTIALIASING
+    // Reset filter state for new capture session
+    antialias_reset(&s_aa_state_a);
+    antialias_reset(&s_aa_state_b);
+#endif
 
     // Ensure buffers are initialized in buffer manager
     if (bufmgr_ensure_init(&app->buffers, BUF_CAPTURE_RF) < 0) {
