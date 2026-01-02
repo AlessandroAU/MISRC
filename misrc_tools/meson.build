@@ -221,9 +221,11 @@ if raylib_dep.found()
     'misrc_gui/input/gui_capture.c',
     'misrc_gui/input/gui_simulated.c',
     'misrc_gui/input/gui_playback.c',
+    'misrc_gui/input/gui_soundcard.c',
     # Processing
     'misrc_gui/processing/gui_extract.c',
     'misrc_gui/processing/gui_display_thread.c',
+    'misrc_gui/processing/gui_soundcard_display_thread.c',
     # Signal
     'misrc_gui/signal/gui_trigger.c',
     'misrc_gui/signal/gui_cvbs.c',
@@ -247,6 +249,7 @@ if raylib_dep.found()
     # Output
     'misrc_gui/output/gui_record.c',
     'misrc_gui/output/gui_audio.c',
+    'misrc_gui/output/gui_soundcard_writer.c',
     'common/extract.c',
     'common/ringbuffer.c',
     'common/rb_event.c',
