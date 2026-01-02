@@ -56,6 +56,7 @@ typedef struct {
     uint32_t sample_rate;            // Sample rate in Hz (default: 80000)
     uint8_t bits_per_sample;         // 8, 12, or 16 (default: 16)
     uint8_t compression_level;       // 0-8 (default: 1)
+    uint8_t num_channels;            // 1 = mono, 2 = stereo (default: 1)
     bool verify;                     // Enable verification (default: false)
 
     // Multi-threading (FLAC API v14+, requires libflac >= 1.5.0)

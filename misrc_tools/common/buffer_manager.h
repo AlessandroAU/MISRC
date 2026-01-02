@@ -30,6 +30,8 @@ typedef enum {
     BUF_RECORD_A,          /* Extraction -> File writer A (extracted samples) */
     BUF_RECORD_B,          /* Extraction -> File writer B (extracted samples) */
     BUF_DISPLAY,           /* Extraction -> Display thread (for CVBS/oscilloscope) */
+    BUF_SOUNDCARD_AUDIO,   /* Soundcard -> VU meter (small, lossy OK for preview) */
+    BUF_SOUNDCARD_RECORD,  /* Soundcard -> FLAC writer (large, for recording) */
     BUF_COUNT              /* Must be last */
 } buffer_id_t;
 
@@ -40,6 +42,8 @@ typedef enum {
 #define BUFMGR_SIZE_CAPTURE_AUDIO (65536 * 256)    /* 16MB */
 #define BUFMGR_SIZE_RECORD        (65536 * 1024)   /* 64MB per channel */
 #define BUFMGR_SIZE_DISPLAY       (4 * 1024 * 1024) /* 4MB (lossy OK) */
+#define BUFMGR_SIZE_SOUNDCARD_AUDIO  (64 * 1024)   /* 64KB (small, for VU meter only) */
+#define BUFMGR_SIZE_SOUNDCARD_RECORD (4 * 1024 * 1024) /* 4MB (~21s at 48kHz stereo) */
 
 /*
  * Per-buffer configuration

@@ -42,6 +42,16 @@ static const buffer_config_t s_default_configs[BUF_COUNT] = {
         .size = BUFMGR_SIZE_DISPLAY,
         .lazy_init = false,
     },
+    [BUF_SOUNDCARD_AUDIO] = {
+        .name = "soundcard_audio",
+        .size = BUFMGR_SIZE_SOUNDCARD_AUDIO,
+        .lazy_init = true,
+    },
+    [BUF_SOUNDCARD_RECORD] = {
+        .name = "soundcard_record",
+        .size = BUFMGR_SIZE_SOUNDCARD_RECORD,
+        .lazy_init = true,
+    },
 };
 
 static const backpressure_policy_t s_default_policies[BUF_COUNT] = {
@@ -72,6 +82,18 @@ static const backpressure_policy_t s_default_policies[BUF_COUNT] = {
     [BUF_DISPLAY] = {
         .max_wait_attempts = 3,    /* Don't really care if this drops */
         .wait_timeout_ms = 1,
+        .log_first_wait = true,
+        .log_drops = true,
+    },
+    [BUF_SOUNDCARD_AUDIO] = {
+        .max_wait_attempts = 0,    /* VU meter preview - drop immediately if full, no waiting */
+        .wait_timeout_ms = 0,
+        .log_first_wait = false,
+        .log_drops = false,
+    },
+    [BUF_SOUNDCARD_RECORD] = {
+        .max_wait_attempts = 200,  /* Recording - wait like other record buffers */
+        .wait_timeout_ms = 5,
         .log_first_wait = true,
         .log_drops = true,
     },
@@ -503,12 +525,14 @@ void bufmgr_log_periodic(buffer_manager_t *mgr) {
         /* Short name for buffer */
         const char *short_name;
         switch ((buffer_id_t)i) {
-            case BUF_CAPTURE_RF:    short_name = "RF"; break;
-            case BUF_CAPTURE_AUDIO: short_name = "AUD"; break;
-            case BUF_RECORD_A:      short_name = "REC_A"; break;
-            case BUF_RECORD_B:      short_name = "REC_B"; break;
-            case BUF_DISPLAY:       short_name = "DISP"; break;
-            default:                short_name = "?"; break;
+            case BUF_CAPTURE_RF:      short_name = "RF"; break;
+            case BUF_CAPTURE_AUDIO:   short_name = "AUD"; break;
+            case BUF_RECORD_A:        short_name = "REC_A"; break;
+            case BUF_RECORD_B:        short_name = "REC_B"; break;
+            case BUF_DISPLAY:         short_name = "DISP"; break;
+            case BUF_SOUNDCARD_AUDIO: short_name = "SC_AUD"; break;
+            case BUF_SOUNDCARD_RECORD: short_name = "SC_REC"; break;
+            default:                  short_name = "?"; break;
         }
 
         if (active_count > 0) {

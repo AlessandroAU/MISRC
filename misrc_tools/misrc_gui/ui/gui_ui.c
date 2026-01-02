@@ -390,6 +390,40 @@ static void render_settings_panel(gui_app_t *app) {
                             CLAY_TEXT(CLAY_STRING("X"), CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_STATS, .textColor = to_clay_color(COLOR_TEXT) }));
                         }
                     }
+
+                    // Soundcard capture section (for VHS linear audio)
+                    CLAY_TEXT(CLAY_STRING("Linear Audio (Soundcard):"),
+                        CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_NORMAL, .textColor = to_clay_color(COLOR_TEXT_DIM) }));
+
+                    CLAY(CLAY_ID("ToggleRowSoundcard"), { .layout = { .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28) }, .layoutDirection = CLAY_LEFT_TO_RIGHT, .childAlignment = { .y = CLAY_ALIGN_Y_CENTER }, .childGap = 10 } }) {
+                        CLAY(CLAY_ID("ToggleSoundcard"), { .layout = { .sizing = { CLAY_SIZING_FIXED(80), CLAY_SIZING_FIXED(28) }, .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER } }, .backgroundColor = to_clay_color(app->settings.enable_soundcard_capture ? COLOR_BUTTON_ACTIVE : COLOR_BUTTON), .cornerRadius = CLAY_CORNER_RADIUS(4) }) {
+                            CLAY_TEXT(app->settings.enable_soundcard_capture ? CLAY_STRING("ON") : CLAY_STRING("OFF"), CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_NORMAL, .textColor = to_clay_color(COLOR_TEXT) }));
+                        }
+                        CLAY_TEXT(CLAY_STRING("Capture from soundcard"), CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_NORMAL, .textColor = to_clay_color(COLOR_TEXT) }));
+                    }
+
+                    // Soundcard device dropdown (only show if there are devices)
+                    if (app->soundcard_device_count > 0) {
+                        CLAY(CLAY_ID("SoundcardDeviceRow"), { .layout = { .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28) }, .layoutDirection = CLAY_LEFT_TO_RIGHT, .childAlignment = { .y = CLAY_ALIGN_Y_CENTER }, .childGap = 10 } }) {
+                            CLAY_TEXT(CLAY_STRING("Device:"), CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_NORMAL, .textColor = to_clay_color(COLOR_TEXT) }));
+                            bool sc_dropdown_open = gui_dropdown_is_open(DROPDOWN_SOUNDCARD, 0);
+                            Color sc_dropdown_color = sc_dropdown_open ? COLOR_BUTTON_ACTIVE : COLOR_BUTTON;
+                            CLAY(CLAY_ID("SoundcardDropdown"), {
+                                .layout = {
+                                    .sizing = { CLAY_SIZING_FIXED(280), CLAY_SIZING_FIXED(28) },
+                                    .childAlignment = { .x = CLAY_ALIGN_X_LEFT, .y = CLAY_ALIGN_Y_CENTER },
+                                    .padding = { 8, 8, 4, 4 }
+                                },
+                                .backgroundColor = to_clay_color(sc_dropdown_color),
+                                .cornerRadius = CLAY_CORNER_RADIUS(4)
+                            }) {
+                                int sc_idx = app->settings.soundcard_device_index;
+                                if (sc_idx >= app->soundcard_device_count) sc_idx = 0;
+                                CLAY_TEXT(make_string(app->soundcard_device_names[sc_idx]),
+                                    CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_DROPDOWN, .textColor = to_clay_color(COLOR_TEXT) }));
+                            }
+                        }
+                    }
                 }
             }
 
@@ -1188,6 +1222,40 @@ void gui_render_layout(gui_app_t *app) {
         }
     }
 
+    // Soundcard device dropdown overlay (if open)
+    if (gui_dropdown_is_open(DROPDOWN_SOUNDCARD, 0) && app->soundcard_device_count > 0) {
+        CLAY(CLAY_ID("SoundcardDropdownOverlay"), {
+            .layout = {
+                .sizing = { CLAY_SIZING_FIXED(280), CLAY_SIZING_FIT(0) },
+                .layoutDirection = CLAY_TOP_TO_BOTTOM
+            },
+            .floating = {
+                .attachTo = CLAY_ATTACH_TO_ELEMENT_WITH_ID,
+                .parentId = CLAY_ID("SoundcardDropdown").id,
+                .attachPoints = { .element = CLAY_ATTACH_POINT_LEFT_TOP, .parent = CLAY_ATTACH_POINT_LEFT_BOTTOM }
+            },
+            .backgroundColor = to_clay_color(COLOR_PANEL_BG),
+            .cornerRadius = CLAY_CORNER_RADIUS(4)
+        }) {
+            for (int i = 0; i < app->soundcard_device_count; i++) {
+                bool opt_hover = Clay_PointerOver(CLAY_IDI("SoundcardOption", i));
+                Color item_color = gui_dropdown_option_color(i == app->settings.soundcard_device_index, opt_hover);
+
+                CLAY(CLAY_IDI("SoundcardOption", i), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28) },
+                        .childAlignment = { .x = CLAY_ALIGN_X_LEFT, .y = CLAY_ALIGN_Y_CENTER },
+                        .padding = { 10, 10, 0, 0 }
+                    },
+                    .backgroundColor = to_clay_color(item_color)
+                }) {
+                    CLAY_TEXT(make_string(app->soundcard_device_names[i]),
+                        CLAY_TEXT_CONFIG({ .fontSize = FONT_SIZE_DROPDOWN, .textColor = to_clay_color(COLOR_TEXT) }));
+                }
+            }
+        }
+    }
+
     // Popup overlay (renders on top of everything)
     gui_popup_render();
 }
@@ -1330,6 +1398,12 @@ void gui_handle_interactions(gui_app_t *app) {
             }
             if (Clay_PointerOver(CLAY_ID("PlaybackFileClearB"))) {
                 app->settings.playback_file_b[0] = '\0';
+                gui_settings_save(&app->settings);
+            }
+
+            // Soundcard capture toggle
+            if (Clay_PointerOver(CLAY_ID("ToggleSoundcard"))) {
+                app->settings.enable_soundcard_capture = !app->settings.enable_soundcard_capture;
                 gui_settings_save(&app->settings);
             }
         }

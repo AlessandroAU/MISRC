@@ -143,6 +143,11 @@ void gui_settings_init_defaults(gui_settings_t *settings) {
     settings->show_grid = true;
     settings->time_scale = 1.0f;
     settings->amplitude_scale = 1.0f;
+
+    // Soundcard capture defaults
+    settings->enable_soundcard_capture = false;
+    settings->soundcard_device_index = 0;
+    strcpy(settings->soundcard_filename, "linear_audio.flac");
 }
 
 // Simple JSON-like format for settings
@@ -215,7 +220,12 @@ void gui_settings_save(const gui_settings_t *settings) {
     fprintf(f, "  \"time_scale\": %.2f,\n", settings->time_scale);
     fprintf(f, "  \"amplitude_scale\": %.2f,\n", settings->amplitude_scale);
     fprintf(f, "  \"playback_file_a\": \"%s\",\n", settings->playback_file_a);
-    fprintf(f, "  \"playback_file_b\": \"%s\"\n", settings->playback_file_b);
+    fprintf(f, "  \"playback_file_b\": \"%s\",\n", settings->playback_file_b);
+
+    // Soundcard capture settings
+    fprintf(f, "  \"enable_soundcard_capture\": %s,\n", settings->enable_soundcard_capture ? "true" : "false");
+    fprintf(f, "  \"soundcard_device_index\": %d,\n", settings->soundcard_device_index);
+    fprintf(f, "  \"soundcard_filename\": \"%s\"\n", settings->soundcard_filename);
     fprintf(f, "}\n");
     
     fclose(f);
@@ -502,6 +512,18 @@ void gui_settings_load(gui_settings_t *settings) {
     if ((value = find_value(content, "playback_file_b")) != NULL) {
         strncpy(settings->playback_file_b, value, MAX_FILENAME_LEN - 1);
         settings->playback_file_b[MAX_FILENAME_LEN - 1] = '\0';
+    }
+
+    // Soundcard capture settings
+    if ((value = find_value(content, "enable_soundcard_capture")) != NULL) {
+        settings->enable_soundcard_capture = (strcmp(value, "true") == 0);
+    }
+    if ((value = find_value(content, "soundcard_device_index")) != NULL) {
+        settings->soundcard_device_index = atoi(value);
+    }
+    if ((value = find_value(content, "soundcard_filename")) != NULL) {
+        strncpy(settings->soundcard_filename, value, MAX_FILENAME_LEN - 1);
+        settings->soundcard_filename[MAX_FILENAME_LEN - 1] = '\0';
     }
 
     free(content);

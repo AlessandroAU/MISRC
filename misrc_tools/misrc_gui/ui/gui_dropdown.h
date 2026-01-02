@@ -28,6 +28,7 @@ typedef struct gui_app gui_app_t;
 #define DROPDOWN_RIGHT_VIEW     "RightView"
 #define DROPDOWN_CVBS_SYSTEM    "CvbsSystem"
 #define DROPDOWN_HISTOGRAM_BINS "HistogramBins"
+#define DROPDOWN_SOUNDCARD      "Soundcard"
 
 //-----------------------------------------------------------------------------
 // State Management

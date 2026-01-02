@@ -14,6 +14,7 @@
 #include "../visualization/gui_fft.h"
 #include "gui_simulated.h"
 #include "gui_playback.h"
+#include "gui_soundcard.h"
 #ifdef ENABLE_FX3
 #include "gui_fx3.h"
 #endif
@@ -21,6 +22,7 @@
 #include "../visualization/panel_interface.h"
 #include "../visualization/gui_histogram_panel.h"
 #include "../signal/gui_cvbs.h"
+#include "../signal/gui_vhs_fm.h"
 #include "../processing/gui_display_thread.h"
 
 #include <hsdaoh.h>
@@ -53,6 +55,60 @@
 
 // Capture handler context (includes frame parser state)
 static capture_handler_ctx_t s_capture_handler;
+
+//-----------------------------------------------------------------------------
+// Soundcard accessor functions
+//
+// These are used by gui_soundcard.c which cannot include gui_app.h due to
+// raylib/Windows header conflicts. See gui_soundcard.c for details.
+//-----------------------------------------------------------------------------
+
+buffer_manager_t* gui_soundcard_get_bufmgr(gui_app_t *app) {
+    return app ? &app->buffers : NULL;
+}
+
+int gui_soundcard_get_device_index(gui_app_t *app) {
+    return app ? app->settings.soundcard_device_index : 0;
+}
+
+void gui_soundcard_set_ctx(gui_app_t *app, void *ctx) {
+    if (app) app->soundcard_ctx = ctx;
+}
+
+void* gui_soundcard_get_ctx(gui_app_t *app) {
+    return app ? app->soundcard_ctx : NULL;
+}
+
+void gui_soundcard_set_running(gui_app_t *app, bool running) {
+    if (app) atomic_store(&app->soundcard_running, running);
+}
+
+bool gui_soundcard_get_running(gui_app_t *app) {
+    return app ? atomic_load(&app->soundcard_running) : false;
+}
+
+void gui_soundcard_set_peaks(gui_app_t *app, uint16_t peak_l, uint16_t peak_r) {
+    if (app) {
+        atomic_store(&app->soundcard_peak_l, peak_l);
+        atomic_store(&app->soundcard_peak_r, peak_r);
+    }
+}
+
+void gui_soundcard_reset_peaks(gui_app_t *app) {
+    if (app) {
+        atomic_store(&app->soundcard_peak_l, 0);
+        atomic_store(&app->soundcard_peak_r, 0);
+    }
+}
+
+void gui_soundcard_store_device_names(gui_app_t *app, soundcard_device_info_t *devices, int count) {
+    if (!app) return;
+    app->soundcard_device_count = (count < 16) ? count : 16;
+    for (int i = 0; i < app->soundcard_device_count; i++) {
+        strncpy(app->soundcard_device_names[i], devices[i].name, 127);
+        app->soundcard_device_names[i][127] = '\0';
+    }
+}
 
 // Message callback for hsdaoh
 static void gui_message_callback(void *ctx, enum hsdaoh_msg_level level, const char *format, ...) {
@@ -231,6 +287,7 @@ void gui_app_init(gui_app_t *app) {
     gui_fft_panel_register();
     gui_cvbs_panel_register();
     gui_histogram_panel_register();
+    gui_vhs_fm_panel_register();
 
     // Initialize per-channel display buffers
     memset(app->display_samples_a, 0, sizeof(app->display_samples_a));
@@ -364,6 +421,17 @@ void gui_app_init(gui_app_t *app) {
 
     // Set app for text rendering
     gui_text_set_app(app);
+
+    // Enumerate soundcard devices for the settings dropdown
+    soundcard_device_info_t sc_devices[MAX_SOUNDCARD_DEVICES];
+    int sc_count = gui_soundcard_enumerate_devices(sc_devices, MAX_SOUNDCARD_DEVICES);
+    if (sc_count > 0) {
+        gui_soundcard_store_device_names(app, sc_devices, sc_count);
+        fprintf(stderr, "[GUI] Enumerated %d soundcard devices\n", sc_count);
+    } else {
+        app->soundcard_device_count = 0;
+        fprintf(stderr, "[GUI] No soundcard capture devices found\n");
+    }
 }
 
 // Cleanup application
@@ -511,6 +579,21 @@ int gui_app_start_capture(gui_app_t *app) {
     device_info_t *dev = &app->devices[app->selected_device];
     fprintf(stderr, "[GUI] Selected device: %s (type %d, index %d)\n", dev->name, dev->type, dev->index);
 
+    // Start soundcard capture if enabled (device-agnostic, for VHS linear audio)
+    // This must happen before device-specific start functions which may return early
+    fprintf(stderr, "[GUI] Soundcard capture enabled: %s\n",
+            app->settings.enable_soundcard_capture ? "yes" : "no");
+    if (app->settings.enable_soundcard_capture) {
+        fprintf(stderr, "[GUI] Starting soundcard capture...\n");
+        if (gui_soundcard_start(app) < 0) {
+            fprintf(stderr, "[GUI] Soundcard capture failed to start (non-fatal)\n");
+            gui_app_set_status(app, "Warning: Soundcard capture failed");
+            // Non-fatal - continue with device capture
+        } else {
+            fprintf(stderr, "[GUI] Soundcard capture started successfully\n");
+        }
+    }
+
     // Handle simulated device separately
     if (dev->type == DEVICE_TYPE_SIMULATED) {
         return gui_simulated_start(app);
@@ -651,6 +734,11 @@ int gui_app_start_capture(gui_app_t *app) {
 void gui_app_stop_capture(gui_app_t *app) {
     if (!app->is_capturing) {
         return;
+    }
+
+    // Stop soundcard capture first (if running)
+    if (gui_soundcard_is_running(app)) {
+        gui_soundcard_stop(app);
     }
 
     if (app->is_recording) {

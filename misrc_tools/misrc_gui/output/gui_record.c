@@ -12,7 +12,9 @@
 #include "../processing/gui_extract.h"
 #include "../ui/gui_popup.h"
 #include "gui_audio.h"
+#include "gui_soundcard_writer.h"
 #include "../input/gui_capture.h"
+#include "../input/gui_soundcard.h"
 
 #include "../../common/ringbuffer.h"
 #include "../../common/rb_event.h"
@@ -496,6 +498,18 @@ static int gui_record_start_confirmed(gui_app_t *app) {
         // Start audio output/monitoring (if enabled)
         gui_audio_start(app, &app->buffers);
 
+        // Start soundcard writer (if soundcard capture is active)
+        fprintf(stderr, "[REC] Soundcard running: %s\n", gui_soundcard_is_running(app) ? "yes" : "no");
+        if (gui_soundcard_is_running(app)) {
+            fprintf(stderr, "[REC] Starting soundcard writer...\n");
+            if (gui_soundcard_writer_start(app, &app->buffers) < 0) {
+                fprintf(stderr, "[REC] Warning: Soundcard writer failed to start\n");
+                // Non-fatal - continue with RF recording
+            } else {
+                fprintf(stderr, "[REC] Soundcard writer started\n");
+            }
+        }
+
         gui_app_set_status(app, "Recording (FLAC)...");
     } else
 #endif
@@ -557,6 +571,18 @@ static int gui_record_start_confirmed(gui_app_t *app) {
         // Start audio output/monitoring (if enabled)
         gui_audio_start(app, &app->buffers);
 
+        // Start soundcard writer (if soundcard capture is active)
+        fprintf(stderr, "[REC RAW] Soundcard running: %s\n", gui_soundcard_is_running(app) ? "yes" : "no");
+        if (gui_soundcard_is_running(app)) {
+            fprintf(stderr, "[REC RAW] Starting soundcard writer...\n");
+            if (gui_soundcard_writer_start(app, &app->buffers) < 0) {
+                fprintf(stderr, "[REC RAW] Warning: Soundcard writer failed to start\n");
+                // Non-fatal - continue with RF recording
+            } else {
+                fprintf(stderr, "[REC RAW] Soundcard writer started\n");
+            }
+        }
+
         gui_app_set_status(app, "Recording (RAW)...");
     }
 
@@ -573,14 +599,19 @@ void gui_record_stop(gui_app_t *app) {
     // This stops new data from being written to record ringbuffers
     gui_extract_set_recording(false, false, 16, 16);
 
+    // Signal threads to stop - MUST happen before stopping writer threads
+    // so they know to exit their wait loops
+    app->is_recording = false;
+
+    // Stop soundcard writer (if running)
+    // Note: is_recording must be false before this so the writer thread exits
+    gui_soundcard_writer_stop();
+
     // Stop audio output/monitoring
     gui_audio_stop(app);
 
     // Restore normal process priority
     proc_set_priority(PROC_PRIORITY_NORMAL);
-
-    // Signal threads to stop
-    app->is_recording = false;
 
     // Wait for writer threads to drain and exit
     if (s_writer_threads_running) {

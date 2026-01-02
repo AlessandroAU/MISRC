@@ -1,0 +1,2 @@
+option('enable_antialiasing', type : 'boolean', value : false,
+       description : 'Enable anti-aliasing filter (75% Nyquist lowpass) on raw captures')

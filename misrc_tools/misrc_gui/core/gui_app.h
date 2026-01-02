@@ -24,6 +24,7 @@ typedef enum {
     PANEL_VIEW_FFT,                // FFT spectrum analysis
     PANEL_VIEW_CVBS,               // CVBS luma decoder view
     PANEL_VIEW_HISTOGRAM,          // Amplitude histogram
+    PANEL_VIEW_VHS_FM,             // VHS FM video demodulator
     PANEL_VIEW_COUNT
     // Future: PANEL_VIEW_XY, PANEL_VIEW_SPECTROGRAM
 } panel_view_type_t;
@@ -122,7 +123,7 @@ typedef struct {
 // All timing constants throughout the codebase are derived from this value.
 // To change the sample rate, modify MISRC_SAMPLE_RATE_MHZ here.
 
-#define MISRC_SAMPLE_RATE_MHZ   20                                      // Sample rate in MHz
+#define MISRC_SAMPLE_RATE_MHZ   40                                      // Sample rate in MHz
 #define MISRC_SAMPLE_RATE       (MISRC_SAMPLE_RATE_MHZ * 1000000)       // Sample rate in Hz (80000000)
 #define MISRC_FLAC_SAMPLE_RATE  (MISRC_SAMPLE_RATE_MHZ * 1000)          // FLAC sample rate in Hz (80000)
 
@@ -216,6 +217,11 @@ typedef struct {
     // Playback settings
     char playback_file_a[MAX_FILENAME_LEN];   // FLAC file for channel A playback
     char playback_file_b[MAX_FILENAME_LEN];   // FLAC file for channel B playback
+
+    // Soundcard capture settings (for VHS linear audio)
+    bool enable_soundcard_capture;            // Enable soundcard capture
+    int soundcard_device_index;               // Selected soundcard device index
+    char soundcard_filename[MAX_FILENAME_LEN]; // Output filename (default: "linear_audio.flac")
 } gui_settings_t;
 
 // Main application state
@@ -332,6 +338,16 @@ typedef struct gui_app {
     // FFT state is now owned by panel_config_*.left_state or right_state
     // CVBS decoder state is also owned by panel's left_state or right_state
     channel_panel_config_t panel_config_a, panel_config_b;
+
+    // Soundcard capture state (for VHS linear audio)
+    void *soundcard_ctx;                      // Soundcard context (opaque)
+    atomic_bool soundcard_running;            // Soundcard capture active
+    atomic_uint_fast16_t soundcard_peak_l;    // Left channel peak for VU meter
+    atomic_uint_fast16_t soundcard_peak_r;    // Right channel peak for VU meter
+
+    // Soundcard device enumeration (for UI dropdown)
+    char soundcard_device_names[16][128];     // Device names for dropdown
+    int soundcard_device_count;               // Number of enumerated devices
 
 } gui_app_t;
 

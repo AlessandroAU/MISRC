@@ -11,6 +11,7 @@
 #include "../visualization/gui_panel.h"
 #include "gui_ui.h"
 #include "../signal/gui_cvbs.h"
+#include "../input/gui_soundcard.h"
 #include <string.h>
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -176,6 +177,46 @@ static bool handle_right_view_dropdown(gui_app_t *app, int ch) {
     return clicked;
 }
 
+// Handle soundcard device selection
+static bool handle_soundcard_dropdown(gui_app_t *app) {
+    bool clicked = false;
+
+    if (Clay_PointerOver(CLAY_ID("SoundcardDropdown"))) {
+        gui_dropdown_toggle(DROPDOWN_SOUNDCARD, 0);
+        clicked = true;
+    } else if (gui_dropdown_is_open(DROPDOWN_SOUNDCARD, 0)) {
+        for (int i = 0; i < app->soundcard_device_count; i++) {
+            if (Clay_PointerOver(CLAY_IDI("SoundcardOption", i))) {
+                if (i != app->settings.soundcard_device_index) {
+                    // Check if soundcard capture is currently running
+                    bool was_running = atomic_load(&app->soundcard_running);
+
+                    // If soundcard is running, restart it with the new device
+                    // This only restarts the capture (reading from soundcard into buffer),
+                    // NOT the writer (writing buffer to FLAC file) - that only runs during recording
+                    if (was_running) {
+                        gui_soundcard_stop(app);
+                    }
+
+                    // Update device selection
+                    app->settings.soundcard_device_index = i;
+                    gui_settings_save(&app->settings);
+
+                    // Restart soundcard capture with new device if it was running
+                    if (was_running) {
+                        gui_soundcard_start(app);
+                    }
+                }
+                gui_dropdown_close_all();
+                clicked = true;
+                break;
+            }
+        }
+    }
+
+    return clicked;
+}
+
 //-----------------------------------------------------------------------------
 // Centralized Interaction Handler
 //-----------------------------------------------------------------------------
@@ -186,6 +227,11 @@ bool gui_dropdown_handle_click(gui_app_t *app) {
 
     // Device dropdown (global)
     if (handle_device_dropdown(app)) {
+        dropdown_clicked = true;
+    }
+
+    // Soundcard device dropdown (in settings panel)
+    if (handle_soundcard_dropdown(app)) {
         dropdown_clicked = true;
     }
 

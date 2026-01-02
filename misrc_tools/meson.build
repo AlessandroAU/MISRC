@@ -138,6 +138,17 @@ else
   message('FFTW3 not found, building without FFT support')
 endif
 
+# Anti-aliasing filter option (default: disabled)
+# enable_antialiasing = get_option('enable_antialiasing')
+# if enable_antialiasing
+#  cflags += ['-DENABLE_ANTIALIASING=1']
+#  message('Anti-aliasing filter enabled (75% Nyquist lowpass)')
+#else
+#  cflags += ['-DENABLE_ANTIALIASING=0']
+#  message('Anti-aliasing filter disabled')
+# endif
+#cflags += ['-DENABLE_ANTIALIASING=1']
+
 # FX3 support (optional, Linux uses cyusb, others use libusb)
 fx3_enabled = false
 if host_system == 'linux'
@@ -216,7 +227,9 @@ if raylib_dep.found()
     # Signal
     'misrc_gui/signal/gui_trigger.c',
     'misrc_gui/signal/gui_cvbs.c',
+    'misrc_gui/signal/gui_vhs_fm.c',
     'misrc_gui/signal/gui_histogram.c',
+    'misrc_gui/signal/gui_antialias.c',
     # Visualization
     'misrc_gui/visualization/gui_oscilloscope.c',
     'misrc_gui/visualization/gui_phosphor_rt.c',

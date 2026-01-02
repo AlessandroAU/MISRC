@@ -157,6 +157,7 @@ flac_writer_config_t flac_writer_default_config(void) {
         .sample_rate = 80000,
         .bits_per_sample = 16,
         .compression_level = 1,
+        .num_channels = 1,  // Mono (backwards compatible)
         .verify = false,
         .num_threads = 0,  // Auto-detect
         .enable_seektable = true,
@@ -175,9 +176,13 @@ static flac_writer_error_t configure_encoder(flac_writer_t *writer) {
     FLAC__StreamEncoder *enc = writer->encoder;
     FLAC__bool ok = true;
 
+    // Default to mono if not specified (backwards compatibility)
+    uint8_t channels = writer->config.num_channels;
+    if (channels == 0) channels = 1;
+
     ok &= FLAC__stream_encoder_set_verify(enc, writer->config.verify);
     ok &= FLAC__stream_encoder_set_compression_level(enc, writer->config.compression_level);
-    ok &= FLAC__stream_encoder_set_channels(enc, 1);  // Always mono for MISRC
+    ok &= FLAC__stream_encoder_set_channels(enc, channels);
     ok &= FLAC__stream_encoder_set_bits_per_sample(enc, writer->config.bits_per_sample);
     ok &= FLAC__stream_encoder_set_sample_rate(enc, writer->config.sample_rate);
     ok &= FLAC__stream_encoder_set_total_samples_estimate(enc, 0);  // Unknown length
@@ -325,25 +330,42 @@ flac_writer_t *flac_writer_create_stream(FILE *output_file, const flac_writer_co
 
 /* ============================================================================
  * Process Samples (int32_t)
+ * For mono: samples is a simple array of samples
+ * For stereo: samples is interleaved L,R,L,R,... and num_samples is total samples
  * ============================================================================ */
 int flac_writer_process(flac_writer_t *writer, const int32_t *samples, uint32_t num_samples) {
     if (!writer || !samples || num_samples == 0) return -1;
 
-    // FLAC expects pointer to array of pointers (for multi-channel)
-    // For mono, we pass address of our single pointer
-    const FLAC__int32 *channel_ptrs[1] = { samples };
+    uint8_t channels = writer->config.num_channels;
+    if (channels == 0) channels = 1;
 
-    FLAC__bool ok = FLAC__stream_encoder_process(writer->encoder, channel_ptrs, num_samples);
-    if (!ok) {
-        char msg[256];
-        snprintf(msg, sizeof(msg), "FLAC process error: %s",
-                 FLAC__StreamEncoderStateString[FLAC__stream_encoder_get_state(writer->encoder)]);
-        report_error(writer, FLAC_WRITER_ERR_PROCESS, msg);
-        return -1;
+    if (channels == 1) {
+        // Mono: simple case
+        const FLAC__int32 *channel_ptrs[1] = { samples };
+        FLAC__bool ok = FLAC__stream_encoder_process(writer->encoder, channel_ptrs, num_samples);
+        if (!ok) {
+            char msg[256];
+            snprintf(msg, sizeof(msg), "FLAC process error: %s",
+                     FLAC__StreamEncoderStateString[FLAC__stream_encoder_get_state(writer->encoder)]);
+            report_error(writer, FLAC_WRITER_ERR_PROCESS, msg);
+            return -1;
+        }
+        writer->samples_written += num_samples;
+        return (int)num_samples;
+    } else {
+        // Stereo: use process_interleaved which handles L,R,L,R format
+        uint32_t num_frames = num_samples / channels;
+        FLAC__bool ok = FLAC__stream_encoder_process_interleaved(writer->encoder, samples, num_frames);
+        if (!ok) {
+            char msg[256];
+            snprintf(msg, sizeof(msg), "FLAC process error: %s",
+                     FLAC__StreamEncoderStateString[FLAC__stream_encoder_get_state(writer->encoder)]);
+            report_error(writer, FLAC_WRITER_ERR_PROCESS, msg);
+            return -1;
+        }
+        writer->samples_written += num_frames;  // FLAC counts frames, not samples
+        return (int)num_samples;
     }
-
-    writer->samples_written += num_samples;
-    return (int)num_samples;
 }
 
 /* ============================================================================

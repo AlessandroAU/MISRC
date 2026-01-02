@@ -23,6 +23,7 @@ static const char* s_view_names[] = {
     [PANEL_VIEW_FFT] = "FFT",
     [PANEL_VIEW_CVBS] = "CVBS",
     [PANEL_VIEW_HISTOGRAM] = "Histogram",
+    [PANEL_VIEW_VHS_FM] = "VHS FM",
 };
 
 const char* panel_view_type_name(panel_view_type_t type) {
@@ -35,6 +36,7 @@ bool panel_view_type_available(panel_view_type_t type) {
         case PANEL_VIEW_WAVEFORM:
         case PANEL_VIEW_CVBS:
         case PANEL_VIEW_HISTOGRAM:
+        case PANEL_VIEW_VHS_FM:
             return true;
         case PANEL_VIEW_FFT:
             return gui_fft_available();
